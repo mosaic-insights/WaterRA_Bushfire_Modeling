@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = 'WaterRA_Bushfire_Modeling'
+description="Library for modelling impacts of bushfire on water quality in water supply catchments"
+keywords = ["hydrology", "bushfire", "water quality", "catchment"]
+license = {text = "ISC License"}
+version = "0.1"
+readme = {file = "README.md", content-type = "text/markdown"}
+dependencies = ["numpy", "pandas"]
+authors = [
+    {name = "Joel Rahman", email = "joel@flowmatters.com.au"}
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: ISC License (ISCL)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+
+[project.urls]
+Homepage = "https://github.com/mosaic-insights/WaterRA_Bushfire_Modeling"
+
+[project.optional-dependencies]
+test = []
+
+[tool.setuptools.packages.find]
+
+[tools.setuptools]
+include-package-data = true
+zip-safe = true
+packages = ["fire_impacts"]
+py_modules=['fire_impacts']
