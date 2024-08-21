@@ -64,3 +64,4 @@ target/
 __*.ipynb
 
 *.code-workspace
+*.py.prof
