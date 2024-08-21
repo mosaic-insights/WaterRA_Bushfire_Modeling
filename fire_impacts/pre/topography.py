@@ -1,27 +1,18 @@
 import os
 from glob import glob
-import requests
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib import colors
-import seaborn as sns
 import geopandas as gpd
 import rasterio as rio
-import rioxarray as rxr
 from rasterio.mask import mask
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from shapely.geometry import box, mapping, shape, Point, LineString
 from shapely.strtree import STRtree
 from rasterio.features import shapes
-from pyproj import Proj
-import elevation
 from pysheds.grid import Grid
 from scipy.ndimage import label
 import copy
 import shutil
-import time
-# import warnings
 import logging
 logger = logging.getLogger(__name__)
 
