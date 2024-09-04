@@ -205,6 +205,31 @@ def calculate_movement_distance(point, spatial_index, lines):
             break  # Exit the loop once the relevant branch is found
     return displacement, movement_distance, start_point, end_point
 
+# Find the nearest index in the grid based on coordinates
+def find_nearest_index(x, y, transform):
+    col, row = ~transform * (x, y)  # Convert coordinates to grid indices
+    col, row = int(np.round(col)), int(np.round(row))  # Round to the nearest integer
+    return row, col
+
+def get_adjacent_cells(row, col):
+    # Get the indices of the adjacent cells including the center cell itself
+    adjacent_indices = [(row + i, col + j) for i in range(-1, 2) for j in range(-1, 2)]
+    return adjacent_indices
+
+def find_closest_to_threshold(acc, row, col, threshold_cells):
+    adjacent_indices = get_adjacent_cells(row, col)
+    closest_cell = (row, col)
+    min_diff = abs(acc[row, col] - threshold_cells)
+
+    for adj_row, adj_col in adjacent_indices:
+        if 0 <= adj_row < acc.shape[0] and 0 <= adj_col < acc.shape[1]:
+            diff = abs(acc[adj_row, adj_col] - threshold_cells)
+            if diff < min_diff:
+                min_diff = diff
+                closest_cell = (adj_row, adj_col)
+
+    return closest_cell
+    
 def extract_headwaters(project,name,threshold_m2):
     # Extract CRS and transform and copy meta from DEM to write headwaters
     logger.info(f'Extracting headwaters for catchment: {name}')
@@ -236,7 +261,7 @@ def extract_headwaters(project,name,threshold_m2):
     logger.info('Computing flow accumulation')
     acc = grid.accumulation(fdir, dirmap=dirmap)  # Calculate flow accumulation
     mask_at_threshold = acc == threshold_cells
-    mask_above_threshold = acc > threshold_cells
+    mask_above_threshold = acc >= threshold_cells  # need to be equal or greater then threshold
     # Extract river network based on flow accumulation threshold
     logger.info('Extracting river network')
     branches = grid.extract_river_network(fdir, mask_above_threshold, dirmap=dirmap) # mask if the flow acc is less than threshold
@@ -245,6 +270,7 @@ def extract_headwaters(project,name,threshold_m2):
     logger.info('Building spatial index of %d branches',len(branches['features']))
     lines = [LineString(branch['geometry']['coordinates']) for branch in branches['features']]
     spatial_index = STRtree(lines)
+    stream_order = grid.stream_order(fdir, mask_above_threshold, dirmap=dirmap, method='strahler') # get the stream order to filter the headwaters for first stream order
 
     # Initialize result storage
     WH_df = []
@@ -263,22 +289,38 @@ def extract_headwaters(project,name,threshold_m2):
         # Get the pour point (start point) from the river network branch
         # start_point_coords = list(line.coords)[0]
         start_point = Point([x,y])
-        # x, y = start_point.x, start_point.y
+        x, y = start_point.x, start_point.y
+        
+        # Find the nearest index for the start point in the grid
+        row, col = find_nearest_index(x, y, grid.affine)
+        # Check the stream order at this location
+        if stream_order[row, col] > 1:
+            continue  # Skip to the next line if stream order is greater than 1
+    
+        # If the flow accumulation in the pour point is greater then threshold, get the an adjesent cell with the closest flow acc to the thrshold
+        if acc[row, col] > threshold_cells:
+            # Find the closest cell with flow accumulation near to threshold
+            row, col = find_closest_to_threshold(acc, row, col, threshold_cells)
+            x, y = grid.affine * (col, row)  # Update the coordinates
 
         # Snap the point to the nearest stream
         grid_1 = copy.deepcopy(grid)
         # x_snap, y_snap = grid_1.snap_to_mask(mask_at_threshold, (x, y)) # snap the pour point for a cell that is 26 (to get 2 heactares headwaters)
 
-        catch = grid_1.catchment(x=x_snap, y=y_snap, fdir=fdir, dirmap=dirmap, xytype='coordinate')
+        catch = grid_1.catchment(x=x, y=y, fdir=fdir, dirmap=dirmap, xytype='coordinate') # snap the 
         grid_1.clip_to(catch)
         clipped_catch = grid_1.view(catch)
+        
+        # get the affine of the clipped catch (grid) for writing the headwaters as raster and shapefile
+        min_x, min_y, max_x, max_y = grid_1.extent
+        transform_clipped = Affine(resolution[0], 0, min_x, 0, -resolution[1], max_y)
 
         # Write headwaters as a raster
         meta.update({
             'driver': 'GTiff',
             'height': clipped_catch.shape[0],
             'width': clipped_catch.shape[1],
-            'transform': transform,
+            'transform': transform_clipped,
             'crs': crs
         })
         # Specify the path where the clipped catchment raster file will be saved
@@ -291,7 +333,7 @@ def extract_headwaters(project,name,threshold_m2):
 
         # Convert catchment to GeoDataFrame
         clipped_catch = np.array(clipped_catch, dtype=np.int16)
-        shapes_generator = shapes(clipped_catch, transform=transform)
+        shapes_generator = shapes(clipped_catch, transform=transform_clipped)
         all_geometries = [shape(geom) for geom, value in shapes_generator if value == 1]
         combined_geometry = gpd.GeoSeries(all_geometries).unary_union if len(all_geometries) > 1 else all_geometries[0]
 
