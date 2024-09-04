@@ -9,6 +9,7 @@ from rasterio.warp import calculate_default_transform, reproject, Resampling
 from shapely.geometry import box, mapping, shape, Point, LineString
 from shapely.strtree import STRtree
 from rasterio.features import shapes
+from affine import Affine
 from pysheds.grid import Grid
 from scipy.ndimage import label
 import copy
