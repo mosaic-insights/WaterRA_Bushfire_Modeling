@@ -280,16 +280,16 @@ def extract_headwaters(project,name,threshold_m2):
     start_xs = [list(l.coords)[0][0] for l in lines]
     start_ys = [list(l.coords)[0][1] for l in lines]
     start_xy = np.column_stack([start_xs, start_ys])
-    new_xy = grid.snap_to_mask(mask_at_threshold, start_xy)
+    #new_xy = grid.snap_to_mask(mask_at_threshold, start_xy)
 
     logger.info('Processing %d line segments',len(lines))
     # Iterate through each branch in the river network
     idx=1
-    for line,x,y,(x_snap,y_snap) in zip(lines,start_xs,start_ys,new_xy):
+    for line,x,y in zip(lines,start_xs,start_ys):
         # Get the pour point (start point) from the river network branch
         # start_point_coords = list(line.coords)[0]
         start_point = Point([x,y])
-        x, y = start_point.x, start_point.y
+        #x, y = start_point.x, start_point.y
         
         # Find the nearest index for the start point in the grid
         row, col = find_nearest_index(x, y, grid.affine)
@@ -324,7 +324,7 @@ def extract_headwaters(project,name,threshold_m2):
             'crs': crs
         })
         # Specify the path where the clipped catchment raster file will be saved
-        output_raster_path = os.path.join(project['Topography'], name, 'HW_Rasters', f'ID-{idx + 1}.tif')
+        output_raster_path = os.path.join(project['Topography'], name, 'HW_Rasters', f'ID-{idx}.tif')
         with rio.open(output_raster_path, 'w', **meta) as dst:
             dst.write(clipped_catch, 1)
 
@@ -353,7 +353,7 @@ def extract_headwaters(project,name,threshold_m2):
             gdf['Y_EndP'] = None
 
         # Save the GeoDataFrame as a shapefile
-        shp_output_path = os.path.join(project['Topography'], name, 'HW_SHPs', f'ID-{idx + 1}.shp')
+        shp_output_path = os.path.join(project['Topography'], name, 'HW_SHPs', f'ID-{idx}.shp')
         gdf.to_file(shp_output_path, driver='ESRI Shapefile')
 
         WH_df.append(gdf.iloc[:, 1:])
