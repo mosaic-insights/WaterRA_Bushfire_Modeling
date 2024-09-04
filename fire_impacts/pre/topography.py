@@ -284,9 +284,8 @@ def extract_headwaters(project,name,threshold_m2):
 
     logger.info('Processing %d line segments',len(lines))
     # Iterate through each branch in the river network
-    for idx, (line,x,y,(x_snap,y_snap)) in enumerate(zip(lines,start_xs,start_ys,new_xy)):
-        if (idx + 1) % 100 == 0:
-            logger.info('Processing branch %d/%d',(idx + 1), len(lines))
+    idx=1
+    for line,x,y,(x_snap,y_snap) in zip(lines,start_xs,start_ys,new_xy):
         # Get the pour point (start point) from the river network branch
         # start_point_coords = list(line.coords)[0]
         start_point = Point([x,y])
@@ -339,7 +338,7 @@ def extract_headwaters(project,name,threshold_m2):
         combined_geometry = gpd.GeoSeries(all_geometries).unary_union if len(all_geometries) > 1 else all_geometries[0]
 
         gdf = gpd.GeoDataFrame(geometry=[combined_geometry], crs=crs)
-        gdf['ID'] = idx + 1
+        gdf['ID'] = idx
         gdf['Area_m2'] = round(gdf['geometry'].area, 0)
         gdf['Area_ha'] = round(gdf['Area_m2'] / 10000, 1)
         gdf['PourPt_X'] = x
@@ -358,6 +357,7 @@ def extract_headwaters(project,name,threshold_m2):
         gdf.to_file(shp_output_path, driver='ESRI Shapefile')
 
         WH_df.append(gdf.iloc[:, 1:])
+        idx +=1
 
     logger.info('Headwaters extraction completed for catchment: %s',name)
     # Save the data as a DataFrame in a CSV file
