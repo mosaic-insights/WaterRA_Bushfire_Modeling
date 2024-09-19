@@ -216,95 +216,94 @@ def extract_headwaters(project,name,threshold_m2):
     spatial_index = STRtree(lines)
     stream_order = grid.stream_order(fdir, mask_above_threshold, dirmap=dirmap, method='strahler') # get the stream order to filter the headwaters for first stream order
 
-    # Initialize result storage
-    WH_df = []
-
     logger.info('Snapping start points to stream heads')
     start_xs = [list(l.coords)[0][0] for l in lines]
     start_ys = [list(l.coords)[0][1] for l in lines]
-    start_xy = np.column_stack([start_xs, start_ys])
-    #new_xy = grid.snap_to_mask(mask_at_threshold, start_xy)
 
     logger.info('Processing %d line segments',len(lines))
     # Iterate through each branch in the river network
+
+    geometries = []
+    records = []
+    subcatchment_raster = np.zeros_like(dem,dtype=np.int16)
+
     idx=1
+    count = 0
     for line,x,y in zip(lines,start_xs,start_ys):
+        count += 1
+        catchment_id = idx
+        if (count) % 100 == 0:
+            logger.info('Processing branch %d/%d',(count), len(lines))
+
         # Get the pour point (start point) from the river network branch
         # start_point_coords = list(line.coords)[0]
         start_point = Point([x,y])
-        #x, y = start_point.x, start_point.y
-        
+
         # Find the nearest index for the start point in the grid
         row, col = find_nearest_index(x, y, grid.affine)
         # Check the stream order at this location
         if stream_order[row, col] > 1:
             continue  # Skip to the next line if stream order is greater than 1
-    
+
         # If the flow accumulation in the pour point is greater then threshold, get the an adjesent cell with the closest flow acc to the thrshold
         if acc[row, col] > threshold_cells:
             # Find the closest cell with flow accumulation near to threshold
             row, col = find_closest_to_threshold(acc, row, col, threshold_cells)
             x, y = grid.affine * (col, row)  # Update the coordinates
 
-        # Snap the point to the nearest stream
         grid_1 = copy.deepcopy(grid)
-        # x_snap, y_snap = grid_1.snap_to_mask(mask_at_threshold, (x, y)) # snap the pour point for a cell that is 26 (to get 2 heactares headwaters)
 
-        catch = grid_1.catchment(x=x, y=y, fdir=fdir, dirmap=dirmap, xytype='coordinate') # snap the 
-        grid_1.clip_to(catch)
-        clipped_catch = grid_1.view(catch)
-        
-        # get the affine of the clipped catch (grid) for writing the headwaters as raster and shapefile
-        min_x, min_y, max_x, max_y = grid_1.extent
-        transform_clipped = Affine(resolution[0], 0, min_x, 0, -resolution[1], max_y)
-
-        # Write headwaters as a raster
-        meta.update({
-            'driver': 'GTiff',
-            'height': clipped_catch.shape[0],
-            'width': clipped_catch.shape[1],
-            'transform': transform_clipped,
-            'crs': crs
-        })
-        # Specify the path where the clipped catchment raster file will be saved
-        output_raster_path = os.path.join(project['Topography'], name, 'HW_Rasters', f'ID-{idx}.tif')
-        with rio.open(output_raster_path, 'w', **meta) as dst:
-            dst.write(clipped_catch, 1)
+        catch = grid_1.catchment(x=x, y=y, fdir=fdir, dirmap=dirmap, xytype='coordinate') # snap the
+        catchment_view = grid_1.view(catch)
+        catchment_cells = catchment_view * catchment_id
+        subcatchment_raster += catchment_cells
 
         # Calculate movement distance using the optimized function
         displacement, movement_distance, _, end_point = calculate_movement_distance(start_point, spatial_index, lines)
 
         # Convert catchment to GeoDataFrame
-        clipped_catch = np.array(clipped_catch, dtype=np.int16)
-        shapes_generator = shapes(clipped_catch, transform=transform_clipped)
+        catchment_view = np.array(catchment_view, dtype=np.int16)
+        shapes_generator = shapes(catchment_view, transform=transform)
         all_geometries = [shape(geom) for geom, value in shapes_generator if value == 1]
         combined_geometry = gpd.GeoSeries(all_geometries).unary_union if len(all_geometries) > 1 else all_geometries[0]
+        geometries.append(combined_geometry)
 
-        gdf = gpd.GeoDataFrame(geometry=[combined_geometry], crs=crs)
-        gdf['ID'] = idx
-        gdf['Area_m2'] = round(gdf['geometry'].area, 0)
-        gdf['Area_ha'] = round(gdf['Area_m2'] / 10000, 1)
-        gdf['PourPt_X'] = x
-        gdf['PourPt_Y'] = y
-        gdf['Dist'] = round(displacement, 1) if displacement else 0
-        gdf['Move_dist'] = round(movement_distance, 1) if movement_distance else 0
-        if end_point:
-            gdf['X_EndP'] = end_point.x
-            gdf['Y_EndP'] = end_point.y
-        else:
-            gdf['X_EndP'] = None
-            gdf['Y_EndP'] = None
-
-        # Save the GeoDataFrame as a shapefile
-        shp_output_path = os.path.join(project['Topography'], name, 'HW_SHPs', f'ID-{idx}.shp')
-        gdf.to_file(shp_output_path, driver='ESRI Shapefile')
-
-        WH_df.append(gdf.iloc[:, 1:])
+        records.append({
+            'ID': catchment_id,
+            'Area_m2': round(combined_geometry.area, 0),
+            'Area_ha': round(combined_geometry.area / 10000, 1),
+            'PourPt_X': x,
+            'PourPt_Y': y,
+            'Dist': round(displacement, 1) if displacement else 0,
+            'Move_dist': round(movement_distance, 1) if movement_distance else 0,
+            'X_EndP': end_point.x if end_point else None,
+            'Y_EndP': end_point.y if end_point else None
+        })
         idx +=1
 
     logger.info('Headwaters extraction completed for catchment: %s',name)
     # Save the data as a DataFrame in a CSV file
-    hw_data = pd.concat(WH_df, ignore_index=True)
+    gdf = gpd.GeoDataFrame(records, geometry=geometries, crs=crs)
+    shp_output_path = os.path.join(project['Topography'], name, f'HW.shp')
+    logger.info('Writing headwaters data to shapefile: %s',shp_output_path)
+    gdf.to_file(shp_output_path, driver='ESRI Shapefile')
+
+    subcatchment_raster[subcatchment_raster == 0] = -9999
+    meta.update({
+        'driver': 'GTiff',
+        'height': subcatchment_raster.shape[0],
+        'width': subcatchment_raster.shape[1],
+        'transform': transform,
+        'crs': crs,
+        'nodata': -9999
+    })
+    # Specify the path where the clipped catchment raster file will be saved
+    output_raster_path = os.path.join(project['Topography'], name, 'HW_Raster.tif')
+    with rio.open(output_raster_path, 'w', **meta) as dst:
+        dst.write(subcatchment_raster, 1)
+    hw_data = pd.DataFrame.from_records(records)
+
+    # hw_data = pd.concat(WH_df, ignore_index=True)
     csv_path = os.path.join(project['Topography'], name, f'{name}.csv')
     logger.info('Writing summary data to CSV file: %s',csv_path)
     hw_data.to_csv(csv_path, index=False)
