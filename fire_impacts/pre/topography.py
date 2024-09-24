@@ -192,10 +192,10 @@ def extract_headwaters(project,name,threshold_m2):
         slope = np.arctan(np.sqrt(dx**2 + dy**2)) * (180.0 / np.pi)
         # Save slope as a new GeoTIFF
         slope_profile = src.profile
-        slope_profile.update(dtype=rasterio.float32, count=1)
+        slope_profile.update(dtype=rio.float32, count=1)
         output_slope_path = os.path.join(project['Topography'], name, 'Catchment_Files', f'{name}_Slope.tif')
         with rio.open(output_slope_path, 'w', **slope_profile) as slope_dataset:
-            slope_dataset.write(slope.astype(rasterio.float32), 1)       
+            slope_dataset.write(slope.astype(rio.float32), 1)       
     
     threshold_cells = int(threshold_m2 / res_sq)
     logger.info('Threshold # cells: %d (%f m^2)', threshold_cells, threshold_m2)
