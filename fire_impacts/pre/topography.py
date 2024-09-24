@@ -31,7 +31,7 @@ def extract_catchment_dems(project,dem_path,target_resolution=None):
       logger.info('Extracting DEM for catchment: %s',shapefile)
 
       # Construct the output file names
-      output_path1 = os.path.join(project[shapefile_filename], 'Catchment_DEM', f'{shapefile_filename}_DEM.tif')
+      output_path1 = os.path.join(project[shapefile_filename], 'Catchment_Files', f'{shapefile_filename}_DEM.tif')
       output_path2 = os.path.join(project['Catchments_DEM'], f'{shapefile_filename}_DEM.tif')
 
       # Clip and reproject the raster with the shapefile
@@ -98,7 +98,29 @@ def clip_and_reproject_raster(raster_file, shapefile, output_files, target_resol
                         dst_transform=transform,
                         dst_crs=shapefile_crs,
                         resampling=Resampling.nearest)
+        
+    # Calculate the slope and save it 
+    with rio.open(temp_file) as src:
+        dem_data = src.read(1)
+        cellsize_x = src.transform[0]
+        cellsize_y = -src.transform[4]
 
+        # Calculate the slope using numpy gradients
+        dz_dx, dz_dy = np.gradient(dem_data, cellsize_x, cellsize_y)
+        slope_radians = np.arctan(np.sqrt(dz_dx**2 + dz_dy**2))
+        slope_degrees = np.degrees(slope_radians)
+
+        # Update metadata for slope file
+        slope_meta = src.meta.copy()
+        slope_meta.update({
+            'dtype': 'float32',
+            'count': 1
+        })
+
+        # Save the slope layer
+        slope_file = output_files[0].replace('_DEM.tif', '_Slope.tif')
+        with rio.open(slope_file, 'w', **slope_meta) as dst:
+            dst.write(slope_degrees.astype(np.float32), 1)
     # Clean up temporary file
     os.remove(temp_file)
 
@@ -204,12 +226,47 @@ def extract_headwaters(project,name,threshold_m2):
     fdir = fdir.astype(float)
     logger.info('Computing flow accumulation')
     acc = grid.accumulation(fdir, dirmap=dirmap)  # Calculate flow accumulation
+    # Save flow accumulation as Flow_acc
+    flow_acc_file = os.path.join(project['Topography'], name, 'Catchment_DEM', 'Flow_accumulation.tif')
+    acc_meta = meta.copy()
+    acc_meta.update({
+        'dtype': 'float32',
+        'count': 1,
+        'nodata': -9999
+    })
+    with rio.open(flow_acc_file, 'w', **acc_meta) as dst:
+        dst.write(acc.astype(np.float32), 1)
+    logger.info(f'Saved Flow Accumulation to: {flow_acc_file}')
     mask_at_threshold = acc == threshold_cells
     mask_above_threshold = acc >= threshold_cells  # need to be equal or greater then threshold
     # Extract river network based on flow accumulation threshold
     logger.info('Extracting river network')
     branches = grid.extract_river_network(fdir, mask_above_threshold, dirmap=dirmap) # mask if the flow acc is less than threshold
-
+    # Save the stream network as Stream_Network.tif
+    stream_network_file = os.path.join(project['Topography'], name, 'Catchment_DEM', 'Stream_Network.tif')
+    stream_meta = meta.copy()
+    stream_meta.update({
+        'dtype': 'int32',
+        'count': 1,
+        'nodata': -9999
+    })
+    
+    # Create an empty array for stream network output
+    stream_network_array = np.zeros_like(acc, dtype=np.int32)
+    
+    for feature in branches['features']:
+        coords = np.array(feature['geometry']['coordinates'])
+        # Convert coordinates to row/col indices and update stream network array
+        for x, y in coords:
+            col, row = ~transform * (x, y)
+            col, row = int(col), int(row)
+            if 0 <= col < stream_network_array.shape[1] and 0 <= row < stream_network_array.shape[0]:
+                stream_network_array[row, col] = 1  # Mark the stream cells
+    
+    with rio.open(stream_network_file, 'w', **stream_meta) as dst:
+        dst.write(stream_network_array, 1)
+    logger.info(f'Saved Stream Network to: {stream_network_file}')
+    
     # Build a spatial index for the LineStrings in branches
     logger.info('Building spatial index of %d branches',len(branches['features']))
     lines = [LineString(branch['geometry']['coordinates']) for branch in branches['features']]
@@ -250,7 +307,8 @@ def extract_headwaters(project,name,threshold_m2):
             # Find the closest cell with flow accumulation near to threshold
             row, col = find_closest_to_threshold(acc, row, col, threshold_cells)
             x, y = grid.affine * (col, row)  # Update the coordinates
-
+        # Get the flow accumulation at the pour point and save it in the dataframe
+        pp_flow_acc = acc[row, col]
         grid_1 = copy.deepcopy(grid)
 
         catch = grid_1.catchment(x=x, y=y, fdir=fdir, dirmap=dirmap, xytype='coordinate') # snap the
@@ -272,6 +330,7 @@ def extract_headwaters(project,name,threshold_m2):
             'ID': catchment_id,
             'Area_m2': round(combined_geometry.area, 0),
             'Area_ha': round(combined_geometry.area / 10000, 1),
+            'PP_Flow_acc': pp_flow_acc,
             'PourPt_X': x,
             'PourPt_Y': y,
             'Dist': round(displacement, 1) if displacement else 0,
@@ -284,7 +343,7 @@ def extract_headwaters(project,name,threshold_m2):
     logger.info('Headwaters extraction completed for catchment: %s',name)
     # Save the data as a DataFrame in a CSV file
     gdf = gpd.GeoDataFrame(records, geometry=geometries, crs=crs)
-    shp_output_path = os.path.join(project['Topography'], name, f'HW.shp')
+    shp_output_path = os.path.join(project['Topography'], name, 'HW_SHPs', f'{name}.shp')
     logger.info('Writing headwaters data to shapefile: %s',shp_output_path)
     gdf.to_file(shp_output_path, driver='ESRI Shapefile')
 
@@ -298,7 +357,7 @@ def extract_headwaters(project,name,threshold_m2):
         'nodata': -9999
     })
     # Specify the path where the clipped catchment raster file will be saved
-    output_raster_path = os.path.join(project['Topography'], name, 'HW_Raster.tif')
+    output_raster_path = os.path.join(project['Topography'], name, 'HW_Rasters', f'{name}.tif')
     with rio.open(output_raster_path, 'w', **meta) as dst:
         dst.write(subcatchment_raster, 1)
     hw_data = pd.DataFrame.from_records(records)
