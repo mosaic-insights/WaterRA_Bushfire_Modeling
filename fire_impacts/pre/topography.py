@@ -194,7 +194,7 @@ def extract_headwaters(project,name,threshold_m2):
         slope_profile = src.profile
         slope_profile.update(dtype=rasterio.float32, count=1)
         output_slope_path = os.path.join(project['Topography'], name, 'Catchment_Files', f'{name}_Slope.tif')
-        with rasterio.open(output_slope_path, 'w', **slope_profile) as slope_dataset:
+        with rio.open(output_slope_path, 'w', **slope_profile) as slope_dataset:
             slope_dataset.write(slope.astype(rasterio.float32), 1)       
     
     threshold_cells = int(threshold_m2 / res_sq)
