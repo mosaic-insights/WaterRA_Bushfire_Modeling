@@ -98,29 +98,7 @@ def clip_and_reproject_raster(raster_file, shapefile, output_files, target_resol
                         dst_transform=transform,
                         dst_crs=shapefile_crs,
                         resampling=Resampling.nearest)
-        
-    # Calculate the slope and save it 
-    with rio.open(temp_file) as src:
-        dem_data = src.read(1)
-        cellsize_x = src.transform[0]
-        cellsize_y = -src.transform[4]
 
-        # Calculate the slope using numpy gradients
-        dz_dx, dz_dy = np.gradient(dem_data, cellsize_x, cellsize_y)
-        slope_radians = np.arctan(np.sqrt(dz_dx**2 + dz_dy**2))
-        slope_degrees = np.degrees(slope_radians)
-
-        # Update metadata for slope file
-        slope_meta = src.meta.copy()
-        slope_meta.update({
-            'dtype': 'float32',
-            'count': 1
-        })
-
-        # Save the slope layer
-        slope_file = output_files[0].replace('_DEM.tif', '_Slope.tif')
-        with rio.open(slope_file, 'w', **slope_meta) as dst:
-            dst.write(slope_degrees.astype(np.float32), 1)
     # Clean up temporary file
     os.remove(temp_file)
 
@@ -206,6 +184,19 @@ def extract_headwaters(project,name,threshold_m2):
         meta = src.meta.copy()
         resolution = src.res
         res_sq = resolution[0] * resolution[1]
+        # Calculate and save slope
+        dem_data = src.read(1)  # Read the first band (DEM values)
+        # Calculate gradient in the x and y directions
+        dx, dy = np.gradient(dem_data, transform[0], transform[4])
+        # Calculate slope in degrees
+        slope = np.arctan(np.sqrt(dx**2 + dy**2)) * (180.0 / np.pi)
+        # Save slope as a new GeoTIFF
+        slope_profile = src.profile
+        slope_profile.update(dtype=rasterio.float32, count=1)
+        output_slope_path = os.path.join(project['Topography'], name, 'Catchment_Files', f'{name}_Slope.tif')
+        with rasterio.open(output_slope_path, 'w', **slope_profile) as slope_dataset:
+            slope_dataset.write(slope.astype(rasterio.float32), 1)       
+    
     threshold_cells = int(threshold_m2 / res_sq)
     logger.info('Threshold # cells: %d (%f m^2)', threshold_cells, threshold_m2)
 
@@ -227,7 +218,7 @@ def extract_headwaters(project,name,threshold_m2):
     logger.info('Computing flow accumulation')
     acc = grid.accumulation(fdir, dirmap=dirmap)  # Calculate flow accumulation
     # Save flow accumulation as Flow_acc
-    flow_acc_file = os.path.join(project['Topography'], name, 'Catchment_DEM', 'Flow_accumulation.tif')
+    flow_acc_file = os.path.join(project['Topography'], name, 'Catchment_Files', 'Flow_accumulation.tif')
     acc_meta = meta.copy()
     acc_meta.update({
         'dtype': 'float32',
@@ -243,7 +234,7 @@ def extract_headwaters(project,name,threshold_m2):
     logger.info('Extracting river network')
     branches = grid.extract_river_network(fdir, mask_above_threshold, dirmap=dirmap) # mask if the flow acc is less than threshold
     # Save the stream network as Stream_Network.tif
-    stream_network_file = os.path.join(project['Topography'], name, 'Catchment_DEM', 'Stream_Network.tif')
+    stream_network_file = os.path.join(project['Topography'], name, 'Catchment_Files', 'Stream_Network.tif')
     stream_meta = meta.copy()
     stream_meta.update({
         'dtype': 'int32',

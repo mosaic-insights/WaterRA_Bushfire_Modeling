@@ -42,7 +42,7 @@ def create_catchment_folders(project):
         main_path = os.path.join(topography_path, catch_name)
         os.makedirs(main_path, exist_ok=True)
         # Create subfolders inside each main folder
-        subfolders = ['HW_SHPs', 'HW_Rasters', 'Catchment_DEM']
+        subfolders = ['HW_SHPs', 'HW_Rasters', 'Catchment_Files']
         for subfolder in subfolders:
             subfolder_path = os.path.join(main_path, subfolder)
             os.makedirs(subfolder_path, exist_ok=True)
