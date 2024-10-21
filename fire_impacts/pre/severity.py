@@ -14,13 +14,16 @@ import logging
 from .project import FireImpactsProject
 logger = logging.getLogger(__name__)
 
-#Connect to the DEA Explorer STAC API to allow searching for data
-catalog = pystac_client.Client.open("https://explorer.dea.ga.gov.au/stac")
-#To load data via STAC, we must configure appropriate access to data stored on DEA’s Amazon S3 buckets. The configuration below must be used when loading any DEA data through the STAC API.
-odc.stac.configure_rio(
-    cloud_defaults=True,
-    aws={"aws_unsigned": True},
-)
+CATALOG=None
+def init_catalog(url:str="https://explorer.dea.ga.gov.au/stac"):
+    #Connect to the DEA Explorer STAC API to allow searching for data
+    global CATALOG
+    if CATALOG is None:
+        CATALOG = pystac_client.Client.open(url)
+        odc.stac.configure_rio(
+            cloud_defaults=True,
+            aws={"aws_unsigned": True}
+        )
 
 def calculate_fire_severity(project:FireImpactsProject, catchment:str, fire_start_date, fire_end_date,
                             start_date_pre=None, end_date_post=None, collection_id=['ga_s2am_ard_3','ga_s2bm_ard_3'],
@@ -43,6 +46,9 @@ def calculate_fire_severity(project:FireImpactsProject, catchment:str, fire_star
     Returns:
     - None. Saves NBR, dNBR, and metadata files to disk.
     '''
+    if CATALOG is None:
+        init_catalog()
+
     shapefile_path = project.boundary_files[catchment]
     def date_rel(date:str, days:int):
         return (datetime.strptime(date, '%Y-%m-%d') + timedelta(days=days)).strftime('%Y-%m-%d')
@@ -78,7 +84,7 @@ def calculate_fire_severity(project:FireImpactsProject, catchment:str, fire_star
     gdf = gpd.read_file(shapefile_path)
 
     def calc_nbr(datetime,label,use_mask=True):
-        query = catalog.search(
+        query = CATALOG.search(
             bbox=bbox,
             collections=collection_id,
             datetime=datetime,
