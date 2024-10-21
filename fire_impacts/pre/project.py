@@ -1,3 +1,7 @@
+'''
+This module contains the classes and functions that are used to manage the data for the fire_impacts module.
+'''
+
 import os
 from glob import glob
 import shutil
@@ -21,6 +25,13 @@ class FireImpactsProject(object):
     def __init__(self,project_path,exist_ok=False,clear=False):
         '''
         Initialise a project object from a given project path based on the file found in the project path.
+
+        Keeps track of data related to one or more catchments. Register catchments using the add_catchment or add_all_catchments methods.
+
+        Parameters:
+        - project_path (str): Path to the project folder.
+        - exist_ok (bool): If True, do not raise an error if the project folder already exists.
+        - clear (bool): If True, clear the project folder if it already exists.
         '''
         self.project_path = project_path
         self.catchments = []
@@ -31,7 +42,7 @@ class FireImpactsProject(object):
           self.initialise_project(project_path,exist_ok=exist_ok,clear=clear)
         else:
           try:
-              self.load_project(project_path)
+              self.load_project()
           except:
               self.initialise_project(project_path,exist_ok=exist_ok,clear=clear)
 
@@ -47,12 +58,23 @@ class FireImpactsProject(object):
             json.dump(self._settings(),f,indent=2)
 
     def catchment_path(self,catchment_name=None,*args):
+        '''
+        Expand a path relative to the project folder to a full path.
+
+        Parameters:
+        - catchment_name (str): Name of the catchment to expand the path for. If not provided, the path will be expanded to the main Catchments folder.
+        - args (list): Additional path components to expand.
+        '''
         base = os.path.join(self.project_path,'Catchments')
         if catchment_name is None:
+            assert len(args) == 0, 'Cannot specify additional arguments without a catchment name.'
             return base
         return os.path.join(base,catchment_name,*args)
 
-    def load_project(self,project_path):
+    def load_project(self):
+        '''
+        (re)Load the project settings from the settings file.
+        '''
         with open(self._settings_fn(),'r') as f:
             settings = json.load(f)
         self.catchments = settings.get('catchments',[])
@@ -60,6 +82,15 @@ class FireImpactsProject(object):
         self.boundary_files = settings.get('boundary_files',{})
 
     def add_catchment(self,catchment_shapefile,name=None,replace_existing=False):
+        '''
+        Register a new catchment in the project.
+
+        Parameters:
+        - catchment_shapefile (str): Path to the shapefile defining the catchment boundary.
+        - name (str): Name to use for the catchment. If not provided, the name will be derived from the shapefile name.
+        - replace_existing (bool): If True, replace an existing catchment with the same name.
+                                   If False, raise an error if a catchment with the same name already exists.
+        '''
         if name is None:
             name = os.path.splitext(os.path.basename(catchment_shapefile))[0]
         if name in self.catchments and not replace_existing:
@@ -72,9 +103,17 @@ class FireImpactsProject(object):
         self._write()
 
     def add_all_catchments(self,catchment_shapefiles):
+        '''
+        Register all catchments in the project from a list of shapefiles.
+
+        Parameters:
+        - catchment_shapefiles (list): List of paths to the shapefiles defining the catchment boundaries.
+
+        Note: This method will replace any existing catchments in the project.
+        '''
         for shapefile in catchment_shapefiles:
             logger.info('Adding catchment from: %s',shapefile)
-            self.add_catchment(shapefile)
+            self.add_catchment(shapefile,replace_existing=True)
 
     def initialise_project(self,project_path,exist_ok=False,clear=False):
         if not clear and os.path.exists(project_path):
@@ -86,6 +125,9 @@ class FireImpactsProject(object):
         self._write()
 
     def catchment_bounds(self,catchment:str, buffer_distance_km:float=10):
+        '''
+        Get the bounding box for a catchment with an (optional) buffer distance in approximate kilometres.
+        '''
         shapefile_path = self.boundary_files[catchment]
         gdf = gpd.read_file(shapefile_path)
         gdf_wgs84 = gdf.to_crs(epsg=4326)
@@ -104,11 +146,24 @@ class FireImpactsProject(object):
         return bbox_with_buffer
 
     def catchment_crs(self,catchment:str):
+        '''
+        Get the CRS for a catchment from the catchment boundary coverage.
+        '''
         shapefile_path = self.boundary_files[catchment]
         gdf = gpd.read_file(shapefile_path)
         return gdf.crs
 
     def for_each_catchment(self,fn:callable):
+        '''
+        Run a function for each catchment in the project.
+
+        Parameters:
+        - fn (callable): Function to run for each catchment. The function should take a single argument (the catchment name) and optionally return a value.
+
+        Returns:
+        - dict: Dictionary containing the results of the function for each catchment.
+        '''
+        logger.info('Processing %d catchments',len(self.catchments))
         return {catchment:fn(catchment) for catchment in self.catchments}
 
 def find_all_shapefiles(base_directory):
@@ -120,10 +175,21 @@ def find_all_shapefiles(base_directory):
     return shapefiles
 
 def summary_stats(project:FireImpactsProject,catchment_name=None):
+    '''
+    Calculate summary statistics for a catchment from pre-processed raster data.
+
+    Parameters:
+    - project (FireImpactsProject): Project object containing the catchment data.
+    - catchment_name (str): Name of the catchment to process. If not provided, process all catchments in the project.
+
+    Returns:
+    - pd.DataFrame: DataFrame containing the summary statistics for the catchment (if catchment_name is provided), OR
+    - dict: Dictionary of DataFrames containing the summary statistics for each catchment.
+    '''
     if isinstance(project,str):
         project = FireImpactsProject(project)
     if catchment_name is None:
-        return {catchment_name:summary_stats(project,catchment_name) for catchment_name in project.catchments}
+        return project.for_each_catchment(lambda c:summary_stats(project,c))
 
     headwaters_path = project.catchment_path(catchment_name,'Topography','Headwaters.shp')
     gdf = gpd.read_file(headwaters_path)

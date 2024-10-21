@@ -1,3 +1,7 @@
+'''
+This module calculates fire severity (NBR, dNBR) before and after the fire.
+'''
+
 import os
 import pandas as pd
 import geopandas as gpd

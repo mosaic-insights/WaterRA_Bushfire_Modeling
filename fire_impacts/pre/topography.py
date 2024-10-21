@@ -113,10 +113,28 @@ def find_closest_to_threshold(acc, row, col, threshold_cells):
     return closest_cell
 
 def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:float=DEFAULT_HW_THRESHOLD):
+    '''
+    Delinate headwaters for a catchment based on a flow accumulation threshold.
+
+    Parameters:
+    - project (dict): Dictionary containing the project folder structure.
+    - name (str): Name of the catchment to process. If None, process all catchments.
+    - threshold_m2 (float): Threshold area in square meters for headwaters. Default is 20,000 m^2.
+
+    Writes:
+    - Headwaters.shp: Shapefile containing the headwaters polygons.
+    - Headwaters.tif: Raster file containing the headwaters polygons.
+    - Headwaters.csv: CSV file containing the headwaters summary
+    - Flow_accumulation.tif: Raster file containing the flow accumulation data.
+    - Stream_Network.tif: Raster file containing the stream network data.
+    - Slope.tif: Raster file containing the slope data.
+
+    Returns:
+    - pd.DataFrame: DataFrame containing the headwaters summary data.
+    '''
     # Extract CRS and transform and copy meta from DEM to write headwaters
     if name is None:
-        project.for_each_catchment(lambda c: extract_headwaters(project,c,threshold_m2))
-        return
+        return project.for_each_catchment(lambda c: extract_headwaters(project,c,threshold_m2))
 
     logger.info(f'Extracting headwaters for catchment: {name}')
     dem_fn = project.catchment_path(name,'Topography','DEM.tif')
@@ -302,6 +320,6 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
     logger.info('Writing summary data to CSV file: %s',csv_path)
     hw_data.to_csv(csv_path, index=False)
 
-    return name, hw_data
+    return hw_data
 
 

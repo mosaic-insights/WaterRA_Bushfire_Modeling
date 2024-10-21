@@ -1,3 +1,7 @@
+'''
+This module contains functions to download soil-related data (Silt, Clay, Sand, Bulk Density) and aridity data
+'''
+
 from owslib.wcs import WebCoverageService
 import rasterio
 import rasterio.mask
@@ -29,9 +33,9 @@ def download_soil_data(project:FireImpactsProject, catchment:str=None, wcs_urls=
     from WCS URLs using bounding boxes, and save the data in the appropriate folder.
 
     Parameters:
-    - shapefile_bboxes (dict): A dictionary of catchment names and their bounding boxes.
-    - project (dict): A dictionary of project folders created for catchments.
-    - wcs_urls (dict): A dictionary of WCS URLs for Silt, Clay, Sand, and Bulk Density data.
+    - project (fire_impacts.FireImpactsProject): A dictionary of project folders created for catchments.
+    - catchment (str): OPTIONAL: Name of the catchment to process. If None, process all catchments.
+    - wcs_urls (dict): A dictionary of WCS URLs for Silt, Clay, Sand, and Bulk Density data. Defaults to CSIRO WCS server.
     - resx (float): The x resolution for the data download.
     - resy (float): The y resolution for the data download.
     """
@@ -105,9 +109,9 @@ def extract_aridity_data(project:FireImpactsProject,aridity_raster:str, catchmen
     Extract aridity data for each catchment bounding box and save the clipped raster in the Aridity folder.
 
     Parameters:
+    - project (fire_impacts.FireImpactsProject): A dictionary of project folders created for catchments.
     - aridity_raster_path (str): Path to the aridity raster layer.
-    - shapefile_bboxes (dict): A dictionary of catchment names and their bounding boxes.
-    - project_folders (dict): A dictionary of project folders created for catchments.
+    - catchment (str): OPTIONAL: Name of the catchment to process. If None, process all catchments.
     """
     if catchment is None:
         project.for_each_catchment(lambda c: extract_aridity_data(project,aridity_raster, c))
