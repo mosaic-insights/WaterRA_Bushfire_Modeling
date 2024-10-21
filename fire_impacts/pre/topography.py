@@ -3,19 +3,22 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 import rasterio as rio
-from rasterio.mask import mask
-from rasterio.warp import calculate_default_transform, reproject, Resampling
-from shapely.geometry import box, mapping, shape, Point, LineString
+from shapely.geometry import shape, Point, LineString
 from shapely.strtree import STRtree
 from rasterio.features import shapes
-from affine import Affine
 from pysheds.grid import Grid
-from scipy.ndimage import label
+from .project import FireImpactsProject
+from .util import clip_and_reproject_raster
 import copy
 import logging
 logger = logging.getLogger(__name__)
 
-def extract_catchment_dems(project,dem_path,target_resolution=None):
+DEFAULT_HW_THRESHOLD=20000
+
+def ftoi(x,dp=5):
+    return int(round(x,dp))
+
+def extract_catchment_dems(project:FireImpactsProject,dem_path,target_resolution=None):
   '''
   Extract DEMs for all catchments in the project from a single regional DEM.
 
@@ -24,83 +27,17 @@ def extract_catchment_dems(project,dem_path,target_resolution=None):
   - dem_path (str): Path to the regional DEM file.
   - target_resolution (tuple): OPTIONAL: Desired resolution for the output rasters. Default to automatic selection of resolution
   '''
-  shapefile_paths = project['Catchment_Shapefiles']
-  logger.info('Extracting %d catchment DEMs',len(shapefile_paths))
-  for shapefile in shapefile_paths:
-      shapefile_filename = os.path.splitext(os.path.basename(shapefile))[0]
-      logger.info('Extracting DEM for catchment: %s',shapefile)
+  catchments = project.catchments
+  logger.info('Extracting %d catchment DEMs',len(catchments))
+  for catchment in catchments:
+      shapefile = project.boundary_files[catchment]
+      logger.info('Extracting DEM for catchment: %s',catchment)
 
       # Construct the output file names
-      output_path1 = os.path.join(project[shapefile_filename], 'Catchment_Files', f'{shapefile_filename}_DEM.tif')
-      output_path2 = os.path.join(project['Catchments_DEM'], f'{shapefile_filename}_DEM.tif')
+      output_path = os.path.join(project.catchment_path(catchment), 'Topography', 'DEM.tif')
 
       # Clip and reproject the raster with the shapefile
-      clip_and_reproject_raster(dem_path, shapefile, [output_path1, output_path2], target_resolution=target_resolution)
-
-def clip_and_reproject_raster(raster_file, shapefile, output_files, target_resolution=None):
-    """
-    Clips a raster file using a shapefile and reprojects the clipped raster to the CRS of the shapefile.
-
-    Parameters:
-    - raster_file (str): Path to the input raster file.
-    - shapefile (str): Path to the shapefile for clipping.
-    - output_files (list): List of paths to the output reprojected raster files.
-    - target_resolution (tuple): OPTIONAL: Desired resolution for the output rasters. Default to automatic selection of resolution.
-    """
-    # Read the raster file to get its CRS and resolution
-    with rio.open(raster_file) as src:
-        raster_crs = src.crs
-        raster_res = src.res  # Get the resolution of the input raster in original CRS
-
-    # Read the shapefile
-    catchment = gpd.read_file(shapefile)
-    # Get the CRS of the shapefile
-    shapefile_crs = catchment.crs.to_string()
-    # Ensure the shapefile is in the same CRS as the raster before clipping
-    catchment = catchment.to_crs(raster_crs)
-    # Read the raster file
-    with rio.open(raster_file) as src:
-        # Clip the raster with the shapefile
-        out_image, out_transform = mask(src, catchment.geometry.apply(mapping), crop=True)
-        out_meta = src.meta.copy()
-        out_meta.update({"driver": "GTiff",
-                         "height": out_image.shape[1],
-                         "width": out_image.shape[2],
-                         "transform": out_transform,
-                         "crs": src.crs})
-
-    # Write the clipped raster to a temporary file
-    temp_file = 'clipped_temp.tif'
-    with rio.open(temp_file, 'w', **out_meta) as dest:
-        dest.write(out_image)
-
-    # Reproject the clipped raster to the CRS of the shapefile with the target resolution
-    with rio.open(temp_file) as src:
-        transform, width, height = calculate_default_transform(
-            src.crs, shapefile_crs, src.width, src.height, *src.bounds, resolution=target_resolution)
-        kwargs = src.meta.copy()
-        kwargs.update({
-            'crs': shapefile_crs,
-            'transform': transform,
-            'width': width,
-            'height': height,
-            'res': target_resolution  # Set the target resolution explicitly
-        })
-
-        for output_file in output_files:
-            with rio.open(output_file, 'w', **kwargs) as dst:
-                for i in range(1, src.count + 1):
-                    reproject(
-                        source=rio.band(src, i),
-                        destination=rio.band(dst, i),
-                        src_transform=src.transform,
-                        src_crs=src.crs,
-                        dst_transform=transform,
-                        dst_crs=shapefile_crs,
-                        resampling=Resampling.nearest)
-
-    # Clean up temporary file
-    os.remove(temp_file)
+      clip_and_reproject_raster(dem_path, shapefile, output_path, target_resolution=target_resolution)
 
 def calculate_movement_distance(point, spatial_index, lines):
     '''
@@ -149,6 +86,7 @@ def calculate_movement_distance(point, spatial_index, lines):
             break  # Exit the loop once the relevant branch is found
     return displacement, movement_distance, start_point, end_point
 
+
 # Find the nearest index in the grid based on coordinates
 def find_nearest_index(x, y, transform):
     col, row = ~transform * (x, y)  # Convert coordinates to grid indices
@@ -174,11 +112,17 @@ def find_closest_to_threshold(acc, row, col, threshold_cells):
 
     return closest_cell
 
-def extract_headwaters(project,name,threshold_m2):
+def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:float=DEFAULT_HW_THRESHOLD):
     # Extract CRS and transform and copy meta from DEM to write headwaters
+    if name is None:
+        for catchment in project.catchments:
+            extract_headwaters(project,catchment,threshold_m2)
+        return
+
     logger.info(f'Extracting headwaters for catchment: {name}')
-    dem_fn = os.path.join(project['Catchments_DEM'],f'{name}_DEM.tif')
+    dem_fn = project.catchment_path(name,'Topography','DEM.tif')
     with rio.open(dem_fn) as src:
+        logging.info('Computing catchment slope')
         crs = src.crs
         transform = src.transform
         meta = src.meta.copy()
@@ -193,10 +137,10 @@ def extract_headwaters(project,name,threshold_m2):
         # Save slope as a new GeoTIFF
         slope_profile = src.profile
         slope_profile.update(dtype=rio.float32, count=1)
-        output_slope_path = os.path.join(project['Topography'], name, 'Catchment_Files', f'{name}_Slope.tif')
+        output_slope_path = project.catchment_path(name,'Topography','Slope.tif')
         with rio.open(output_slope_path, 'w', **slope_profile) as slope_dataset:
-            slope_dataset.write(slope.astype(rio.float32), 1)       
-    
+            slope_dataset.write(slope.astype(rio.float32), 1)
+
     threshold_cells = int(threshold_m2 / res_sq)
     logger.info('Threshold # cells: %d (%f m^2)', threshold_cells, threshold_m2)
 
@@ -218,7 +162,7 @@ def extract_headwaters(project,name,threshold_m2):
     logger.info('Computing flow accumulation')
     acc = grid.accumulation(fdir, dirmap=dirmap)  # Calculate flow accumulation
     # Save flow accumulation as Flow_acc
-    flow_acc_file = os.path.join(project['Topography'], name, 'Catchment_Files', 'Flow_accumulation.tif')
+    flow_acc_file = project.catchment_path(name,'Topography','Flow_accumulation.tif')
     acc_meta = meta.copy()
     acc_meta.update({
         'dtype': 'float32',
@@ -234,30 +178,32 @@ def extract_headwaters(project,name,threshold_m2):
     logger.info('Extracting river network')
     branches = grid.extract_river_network(fdir, mask_above_threshold, dirmap=dirmap) # mask if the flow acc is less than threshold
     # Save the stream network as Stream_Network.tif
-    stream_network_file = os.path.join(project['Topography'], name, 'Catchment_Files', 'Stream_Network.tif')
+    stream_network_file = project.catchment_path(name,'Topography','Stream_Network.tif')
     stream_meta = meta.copy()
     stream_meta.update({
         'dtype': 'int32',
         'count': 1,
         'nodata': -9999
     })
-    
+
     # Create an empty array for stream network output
-    stream_network_array = np.zeros_like(acc, dtype=np.int32)
-    
+    stream_network_array = np.ones_like(acc, dtype=np.int32) * -9999
+
     for feature in branches['features']:
+        # print(feature)
+        # assert False
         coords = np.array(feature['geometry']['coordinates'])
         # Convert coordinates to row/col indices and update stream network array
         for x, y in coords:
             col, row = ~transform * (x, y)
-            col, row = int(col), int(row)
+            col, row = ftoi(col,0),ftoi(row,0) # OR round?
             if 0 <= col < stream_network_array.shape[1] and 0 <= row < stream_network_array.shape[0]:
                 stream_network_array[row, col] = 1  # Mark the stream cells
-    
+
     with rio.open(stream_network_file, 'w', **stream_meta) as dst:
         dst.write(stream_network_array, 1)
     logger.info(f'Saved Stream Network to: {stream_network_file}')
-    
+
     # Build a spatial index for the LineStrings in branches
     logger.info('Building spatial index of %d branches',len(branches['features']))
     lines = [LineString(branch['geometry']['coordinates']) for branch in branches['features']]
@@ -334,7 +280,7 @@ def extract_headwaters(project,name,threshold_m2):
     logger.info('Headwaters extraction completed for catchment: %s',name)
     # Save the data as a DataFrame in a CSV file
     gdf = gpd.GeoDataFrame(records, geometry=geometries, crs=crs)
-    shp_output_path = os.path.join(project['Topography'], name, 'HW_SHPs', f'{name}.shp')
+    shp_output_path = project.catchment_path(name,'Topography','Headwaters.shp')
     logger.info('Writing headwaters data to shapefile: %s',shp_output_path)
     gdf.to_file(shp_output_path, driver='ESRI Shapefile')
 
@@ -348,13 +294,12 @@ def extract_headwaters(project,name,threshold_m2):
         'nodata': -9999
     })
     # Specify the path where the clipped catchment raster file will be saved
-    output_raster_path = os.path.join(project['Topography'], name, 'HW_Rasters', f'{name}.tif')
+    output_raster_path = project.catchment_path(name,'Topography','Headwaters.tif')
     with rio.open(output_raster_path, 'w', **meta) as dst:
         dst.write(subcatchment_raster, 1)
     hw_data = pd.DataFrame.from_records(records)
 
-    # hw_data = pd.concat(WH_df, ignore_index=True)
-    csv_path = os.path.join(project['Topography'], name, f'{name}.csv')
+    csv_path = project.catchment_path(name,'Topography','Headwaters.csv')
     logger.info('Writing summary data to CSV file: %s',csv_path)
     hw_data.to_csv(csv_path, index=False)
 

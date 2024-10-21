@@ -7,6 +7,7 @@ import pystac_client
 import odc.stac
 from dea_tools.bandindices import calculate_indices
 import logging
+from .project import FireImpactsProject
 logger = logging.getLogger(__name__)
 
 #Connect to the DEA Explorer STAC API to allow searching for data
@@ -17,25 +18,7 @@ odc.stac.configure_rio(
     aws={"aws_unsigned": True},
 )
 
-
-def buffered_bounds(shapefile_path, buffer_distance_km=10):
-    gdf = gpd.read_file(shapefile_path)
-    gdf_wgs84 = gdf.to_crs(epsg=4326)
-    bbox = gdf_wgs84.total_bounds
-
-    # Convert 10 km to degrees (approximate conversion, 1 degree = 111 km)
-    buffer_degrees = buffer_distance_km / 111  # This is an approximation for small distances
-
-    # Apply buffer to the bounding box
-    bbox_with_buffer = [
-        bbox[0] - buffer_degrees,  # minx with buffer
-        bbox[1] - buffer_degrees,  # miny with buffer
-        bbox[2] + buffer_degrees,  # maxx with buffer
-        bbox[3] + buffer_degrees   # maxy with buffer
-    ]
-    return bbox_with_buffer
-
-def calculate_fire_severity(project, shapefile_path, fire_start_date, fire_end_date,
+def calculate_fire_severity(project:FireImpactsProject, catchment:str, fire_start_date, fire_end_date,
                             start_date_pre=None, end_date_post=None, collection_id=['ga_s2am_ard_3','ga_s2bm_ard_3'],
                             max_cloud_cover=20, resolution_input=20, bbox=None):
     '''
@@ -43,7 +26,7 @@ def calculate_fire_severity(project, shapefile_path, fire_start_date, fire_end_d
 
     Parameters:
     - project (dict): Dictionary with folder paths initialized for the project.
-    - shapefile_path (str): Path to the shapefile for the catchment.
+    - catchment (str): Name of the registted catchment to process.
     - fire_start_date (str): The date when the fire started.
     - fire_end_date (str): The date when the fire ended.
     - start_date_pre (str): The start date for pre-fire data. (Default is 90 days before fire_start_date)
@@ -56,7 +39,7 @@ def calculate_fire_severity(project, shapefile_path, fire_start_date, fire_end_d
     Returns:
     - None. Saves NBR, dNBR, and metadata files to disk.
     '''
-
+    shapefile_path = project.boundary_files[catchment]
     def date_rel(date:str, days:int):
         return (datetime.strptime(date, '%Y-%m-%d') + timedelta(days=days)).strftime('%Y-%m-%d')
     # Get pre and post fire date ranges
@@ -71,7 +54,7 @@ def calculate_fire_severity(project, shapefile_path, fire_start_date, fire_end_d
 
     if bbox is None:
         logger.info('Bounding box not provided. Calculating bounding box from shapefile with 10km buffer.')
-        bbox = buffered_bounds(shapefile_path)
+        bbox = project.catchment_bounds(catchment,10)
 
     # Get the correct collection type
     # collection_type = ['ga_ls_3', 'ga_s2_3', 'ga_gm_3']
@@ -86,8 +69,7 @@ def calculate_fire_severity(project, shapefile_path, fire_start_date, fire_end_d
     filter_query = f"eo:cloud_cover < {max_cloud_cover}"
 
     # Load the catchment shapefile and prepare folder
-    shapefile_name = os.path.splitext(os.path.basename(shapefile_path))[0]
-    catchment_folder = os.path.join(project['FireSeverity'], shapefile_name)
+    catchment_folder = project.catchment_path(catchment,'FireSeverity')
     os.makedirs(catchment_folder, exist_ok=True)
     gdf = gpd.read_file(shapefile_path)
 
@@ -122,12 +104,12 @@ def calculate_fire_severity(project, shapefile_path, fire_start_date, fire_end_d
         return image_metadata, nbr_ds
 
     # Calculate Pre-fire NBR
-    logger.info(f'Calculating Pre_fire NBR for {shapefile_name}')
+    logger.info(f'Calculating Pre_fire NBR for {catchment}')
     pre_image_metadata, prefire_NBR = calc_nbr(f"{start_date_pre}/{end_date_pre}",'Prefire',use_mask=True)
 
 
     # Calculate Post-fire NBR
-    logger.info(f'Calculating Post_fire NBR for {shapefile_name}')
+    logger.info(f'Calculating Post_fire NBR for {catchment}')
     post_image_metadata, postfire_NBR = calc_nbr(f"{start_date_post}/{end_date_post}",'Postfire',use_mask=False)
 
     # Combine Pre-fire and Post-fire metadata
@@ -137,7 +119,7 @@ def calculate_fire_severity(project, shapefile_path, fire_start_date, fire_end_d
     save_metadata_to_csv(combined_metadata, catchment_folder, "Satellite_image_information_combined.csv")
 
     # Calculate dNBR
-    logger.info(f'Calculating dNBR for {shapefile_name}')
+    logger.info(f'Calculating dNBR for {catchment}')
     delta_NBR = prefire_NBR - postfire_NBR
     delta_NBR.rio.write_crs(gdf.crs).rio.to_raster(os.path.join(catchment_folder, "dNBR.tif"))
     logger.info('Processes are completed')
