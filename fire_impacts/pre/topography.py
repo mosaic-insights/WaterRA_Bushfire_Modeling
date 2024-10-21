@@ -115,8 +115,7 @@ def find_closest_to_threshold(acc, row, col, threshold_cells):
 def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:float=DEFAULT_HW_THRESHOLD):
     # Extract CRS and transform and copy meta from DEM to write headwaters
     if name is None:
-        for catchment in project.catchments:
-            extract_headwaters(project,catchment,threshold_m2)
+        project.for_each_catchment(lambda c: extract_headwaters(project,c,threshold_m2))
         return
 
     logger.info(f'Extracting headwaters for catchment: {name}')

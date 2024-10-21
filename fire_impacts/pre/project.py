@@ -108,6 +108,9 @@ class FireImpactsProject(object):
         gdf = gpd.read_file(shapefile_path)
         return gdf.crs
 
+    def for_each_catchment(self,fn:callable):
+        return {catchment:fn(catchment) for catchment in self.catchments}
+
 def find_all_shapefiles(base_directory):
     '''
     Find all shapefiles in a directory and its subdirectories.

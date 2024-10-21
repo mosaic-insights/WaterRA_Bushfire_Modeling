@@ -36,9 +36,7 @@ def download_soil_data(project:FireImpactsProject, catchment:str=None, wcs_urls=
     - resy (float): The y resolution for the data download.
     """
     if catchment is None:
-        catchment_names = project.catchments
-        for catchment in catchment_names:
-            download_soil_data(project, catchment, wcs_urls, resx, resy)
+        project.for_each_catchment(lambda c: download_soil_data(project,c, wcs_urls, resx, resy))
         return
 
     if wcs_urls is None:
@@ -112,9 +110,7 @@ def extract_aridity_data(project:FireImpactsProject,aridity_raster:str, catchmen
     - project_folders (dict): A dictionary of project folders created for catchments.
     """
     if catchment is None:
-        catchment_names = project.catchments
-        for catchment in catchment_names:
-            extract_aridity_data(project,aridity_raster, catchment)
+        project.for_each_catchment(lambda c: extract_aridity_data(project,aridity_raster, c))
         return
 
     bbox = project.catchment_bounds(catchment,10.0)
