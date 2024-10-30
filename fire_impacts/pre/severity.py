@@ -12,10 +12,11 @@ import odc.stac
 from dea_tools.bandindices import calculate_indices
 import logging
 from .project import FireImpactsProject
+from .data_sources import DEA_STAC
 logger = logging.getLogger(__name__)
 
 CATALOG=None
-def init_catalog(url:str="https://explorer.dea.ga.gov.au/stac"):
+def init_catalog(url:str=DEA_STAC):
     #Connect to the DEA Explorer STAC API to allow searching for data
     global CATALOG
     if CATALOG is None:

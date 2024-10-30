@@ -11,6 +11,7 @@ import logging
 from .project import FireImpactsProject
 from .util import reproject_raster
 from ..util import retry
+from .data_sources import ASRIS_WCS
 logger = logging.getLogger(__name__)
 
 LAYER_NAMES={
@@ -20,7 +21,7 @@ LAYER_NAMES={
     'BULK_DENSITY':'BDW'
 }
 
-DEFAULT_WCS='https://www.asris.csiro.au/arcgis/services/TERN/${LAYER}_ACLEP_AU_NAT_C/MapServer/WCSServer?SERVICE=WCS&REQUEST=GetCapabilities'
+DEFAULT_WCS=ASRIS_WCS
 DEFAULT_RESOLUTION=0.00024955 # 1 arc second (SRTM)
 SOIL_DEPTHS=['_000_005_', '_005_015_']
 

@@ -1,4 +1,3 @@
-
 from fire_impacts.pre.util import clip_and_reproject_raster, read_raster, read_aligned
 import rasterio as rio
 from .project import FireImpactsProject
