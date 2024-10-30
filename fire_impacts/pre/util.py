@@ -31,11 +31,11 @@ def clip_and_reproject_raster(raster_file:str, shapefile:str, output_file:str, t
     # Get the CRS of the shapefile
     shapefile_crs = catchment.crs.to_string()
     # Ensure the shapefile is in the same CRS as the raster before clipping
-    catchment = catchment.to_crs(raster_crs)
+    catchment = catchment.to_crs(raster_crs).buffer(raster_res[0]*2)  # Buffer the shapefile by 2 pixels to ensure it covers the raster
     # Read the raster file
     with rio.open(raster_file) as src:
         # Clip the raster with the shapefile
-        out_image, out_transform = mask(src, catchment.geometry.apply(mapping), crop=True)
+        out_image, out_transform = mask(src, catchment.geometry.apply(mapping), crop=True,all_touched=True,pad=False)
         out_meta = src.meta.copy()
         out_meta.update({"driver": "GTiff",
                          "height": out_image.shape[1],
