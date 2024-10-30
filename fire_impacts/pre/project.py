@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 PER_CATCHMENT_FOLDERS = [
     'Topography',
     'FireSeverity',
-    'Soils'
+    'Soils',
+    'Erodibility'
 ]
 STATS=['mean', 'max', 'min', 'median', 'std']
 
@@ -80,6 +81,7 @@ class FireImpactsProject(object):
         self.catchments = settings.get('catchments',[])
         self.source_data = settings.get('source_data',{})
         self.boundary_files = settings.get('boundary_files',{})
+        self.ensure_catchment_folders()
 
     def add_catchment(self,catchment_shapefile,name=None,replace_existing=False):
         '''
@@ -97,10 +99,17 @@ class FireImpactsProject(object):
             raise ValueError(f'Catchment {name} already exists in project.')
         self.catchments.append(name)
         self.boundary_files[name] = catchment_shapefile
-        catchment_path = self.catchment_path(name)
+        self.ensure_catchment_folders(name)
+        self._write()
+
+    def ensure_catchment_folders(self,catchment_name:str=None):
+        if catchment_name is None:
+            for catchment in self.catchments:
+                self.ensure_catchment_folders(catchment)
+            return
+        catchment_path = self.catchment_path(catchment_name)
         for folder in PER_CATCHMENT_FOLDERS:
             os.makedirs(os.path.join(catchment_path,folder),exist_ok=True)
-        self._write()
 
     def add_all_catchments(self,catchment_shapefiles):
         '''
