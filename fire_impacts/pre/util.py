@@ -1,10 +1,13 @@
 import geopandas as gpd
 import rasterio as rio
+import numpy as np
 from rasterio.mask import mask
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from shapely.geometry import mapping
 import logging
 import os
+import tempfile
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,4 +79,37 @@ def reproject_raster(temp_file:str, target_crs:str, output_file:str, target_reso
                     dst_crs=target_crs,
                     resampling=Resampling.nearest)
 
+def read_raster(fn:str):
+  with rio.open(fn) as src:
+    return src.read(1), src.transform, src.crs
 
+def read_aligned(raster_fn:str, transform, crs,shape):
+    '''
+    Read a raster and reproject it to a given crs and window (transform)
+    '''
+    logger.info(f'Reading raster {raster_fn} and reprojecting to {crs}')
+    with rio.open(raster_fn) as src:
+        kwargs = src.meta.copy()
+        kwargs.update({
+            'crs': crs,
+            'transform': transform,
+            'width': shape[1],
+            'height': shape[0],
+        })
+
+        with rio.MemoryFile() as memfile:
+            with memfile.open(**kwargs) as dst:
+              reproject(
+                  source=rio.band(src, 1),
+                  destination=rio.band(dst, 1),
+                  src_transform=src.transform,
+                  src_crs=src.crs,
+                  dst_transform=transform,
+                  dst_crs=crs,
+                  resampling=Resampling.nearest
+              )
+
+            with memfile.open() as src:
+              data = src.read(1,masked=True)
+              data[data.mask] = np.nan
+              return data
