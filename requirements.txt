@@ -1,0 +1,8 @@
+pytest
+pystac_client
+odc-stac
+dea-tools # requires pg_config to build from source!
+seaborn
+elevation
+pysheds
+dask[distributed]
