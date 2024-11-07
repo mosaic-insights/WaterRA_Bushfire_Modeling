@@ -4,6 +4,7 @@ This module contains the classes and functions that are used to manage the data 
 
 import os
 from glob import glob
+from pathlib import Path
 import shutil
 import rasterio as rio
 import rasterstats as rs
@@ -83,7 +84,7 @@ class FireImpactsProject(object):
         self.boundary_files = settings.get('boundary_files',{})
         self.ensure_catchment_folders()
 
-    def add_catchment(self,catchment_shapefile,name=None,replace_existing=False):
+    def add_catchment(self,catchment_shapefile:str|Path,name=None,replace_existing=False):
         '''
         Register a new catchment in the project.
 
@@ -98,7 +99,7 @@ class FireImpactsProject(object):
         if name in self.catchments and not replace_existing:
             raise ValueError(f'Catchment {name} already exists in project.')
         self.catchments.append(name)
-        self.boundary_files[name] = catchment_shapefile
+        self.boundary_files[name] = str(catchment_shapefile)
         self.ensure_catchment_folders(name)
         self._write()
 
