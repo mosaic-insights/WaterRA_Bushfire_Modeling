@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = 'WaterRA_Bushfire_Modeling'
+name = 'fire_impacts'
 description="Library for modelling impacts of bushfire on water quality in water supply catchments"
 keywords = ["hydrology", "bushfire", "water quality", "catchment"]
 license = {text = "ISC License"}
