@@ -14,6 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 DEFAULT_HW_THRESHOLD=20000
+APPROX_DEGREES_TO_METRES=111000
 
 def ftoi(x,dp=5):
     return int(round(x,dp))
@@ -112,7 +113,7 @@ def find_closest_to_threshold(acc, row, col, threshold_cells):
 
     return closest_cell
 
-def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:float=DEFAULT_HW_THRESHOLD):
+def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:float=DEFAULT_HW_THRESHOLD,crs_unit_to_metres:float=None):
     '''
     Delinate headwaters for a catchment based on a flow accumulation threshold.
 
@@ -158,6 +159,11 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
         with rio.open(output_slope_path, 'w', **slope_profile) as slope_dataset:
             slope_dataset.write(slope.astype(rio.float32), 1)
 
+    if crs.linear_units != 'm':
+      if crs_unit_to_metres is None:
+          crs_unit_to_metres = APPROX_DEGREES_TO_METRES
+      logger.warning('CRS must be in meters, was %s. Applying crs_unit_to_metres conversion (%f)',src.crs.linear_units,crs_unit_to_metres)
+      res_sq *= crs_unit_to_metres**2
     threshold_cells = int(threshold_m2 / res_sq)
     logger.info('Threshold # cells: %d (%f m^2)', threshold_cells, threshold_m2)
 
