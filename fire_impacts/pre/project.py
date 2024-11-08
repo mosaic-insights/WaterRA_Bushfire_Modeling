@@ -176,6 +176,46 @@ class FireImpactsProject(object):
         logger.info('Processing %d catchments',len(self.catchments))
         return {catchment:fn(catchment) for catchment in self.catchments}
 
+    def plot_catchment_raster(self,*args,catchment=None,figure=None):
+        '''
+        '''
+        if figure is None:
+            from matplotlib import pyplot as plt
+            figure = plt.figure()
+
+        if catchment is None:
+            self.for_each_catchment(lambda c:self.plot_catchment_raster(*args,catchment=c,figure=figure))
+            return
+
+        import rasterio as rio
+        import os
+        import numpy as np
+        raster_path = self.catchment_path(catchment,*args)
+        if not raster_path.endswith('.tif'):
+            raster_path += '.tif'
+
+        shapefile_path = self.boundary_files[catchment]
+        gdf = gpd.read_file(shapefile_path)
+
+        with rio.open(raster_path) as src:
+            data = src.read(1)
+            no_data_value = src.nodata
+            if no_data_value is not None:
+                data = np.where(data == no_data_value, np.nan, data)  # Replace NoData values with NaN
+            transform = src.transform
+            file_name = os.path.splitext(os.path.basename(raster_path))[0].replace('_', ' ')
+            ax = figure.add_subplot()
+            img = ax.imshow(data, cmap='viridis', extent=(
+                transform[2], transform[2] + transform[0] * data.shape[1],
+                transform[5] + transform[4] * data.shape[0], transform[5]
+            ))
+            ax.set_title(f'{catchment} {file_name}', fontsize=12)
+            ax.set_xlabel('Longitude')
+            ax.set_ylabel('Latitude')
+            cbar = figure.colorbar(img, label=args[-1].split('.')[0])
+            gdf.plot(ax=ax, facecolor='none', edgecolor='red')
+            return
+
 def find_all_shapefiles(base_directory):
     '''
     Find all shapefiles in a directory and its subdirectories.
