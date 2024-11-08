@@ -149,21 +149,25 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
         # Calculate and save slope
         dem_data = src.read(1)  # Read the first band (DEM values)
         # Calculate gradient in the x and y directions
-        dx, dy = np.gradient(dem_data, transform[0], transform[4])
+        x_res, y_res = src.res
+        if crs.linear_units != 'm':
+          if crs_unit_to_metres is None:
+              crs_unit_to_metres = APPROX_DEGREES_TO_METRES
+          logger.warning('CRS should be in meters, was %s. Applying crs_unit_to_metres conversion (%f)',src.crs.linear_units,crs_unit_to_metres)
+          res_sq *= crs_unit_to_metres**2
+          x_res *= crs_unit_to_metres
+          y_res *= crs_unit_to_metres
+        dx, dy = np.gradient(dem_data, x_res, y_res)
         # Calculate slope in degrees
         slope = np.arctan(np.sqrt(dx**2 + dy**2)) * (180.0 / np.pi)
         # Save slope as a new GeoTIFF
         slope_profile = src.profile
+        slope[dem_data==meta['nodata']] = meta['nodata']
         slope_profile.update(dtype=rio.float32, count=1)
         output_slope_path = project.catchment_path(name,'Topography','Slope.tif')
         with rio.open(output_slope_path, 'w', **slope_profile) as slope_dataset:
             slope_dataset.write(slope.astype(rio.float32), 1)
 
-    if crs.linear_units != 'm':
-      if crs_unit_to_metres is None:
-          crs_unit_to_metres = APPROX_DEGREES_TO_METRES
-      logger.warning('CRS must be in meters, was %s. Applying crs_unit_to_metres conversion (%f)',src.crs.linear_units,crs_unit_to_metres)
-      res_sq *= crs_unit_to_metres**2
     threshold_cells = int(threshold_m2 / res_sq)
     logger.info('Threshold # cells: %d (%f m^2)', threshold_cells, threshold_m2)
 
