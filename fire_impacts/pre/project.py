@@ -176,7 +176,7 @@ class FireImpactsProject(object):
         logger.info('Processing %d catchments',len(self.catchments))
         return {catchment:fn(catchment) for catchment in self.catchments}
 
-    def plot_catchment_raster(self,*args,catchment=None,figure=None):
+    def plot_catchment_raster(self,*args,catchment=None,figure=None,subplot=None):
         '''
         '''
         if figure is None:
@@ -184,7 +184,8 @@ class FireImpactsProject(object):
             figure = plt.figure()
 
         if catchment is None:
-            self.for_each_catchment(lambda c:self.plot_catchment_raster(*args,catchment=c,figure=figure))
+            figure.subplots(len(self.catchments),1)
+            self.for_each_catchment(lambda c:self.plot_catchment_raster(*args,catchment=c,figure=figure,subplot=self.catchments.index(c)+1))
             return
 
         import rasterio as rio
@@ -204,7 +205,7 @@ class FireImpactsProject(object):
                 data = np.where(data == no_data_value, np.nan, data)  # Replace NoData values with NaN
             transform = src.transform
             file_name = os.path.splitext(os.path.basename(raster_path))[0].replace('_', ' ')
-            ax = figure.add_subplot()
+            ax = figure.get_axes()[subplot-1]
             img = ax.imshow(data, cmap='viridis', extent=(
                 transform[2], transform[2] + transform[0] * data.shape[1],
                 transform[5] + transform[4] * data.shape[0], transform[5]
