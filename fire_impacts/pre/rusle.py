@@ -1,6 +1,7 @@
 from fire_impacts.pre.util import clip_and_reproject_raster, read_raster, read_aligned
 import rasterio as rio
 from .project import FireImpactsProject
+from .topography import D8_FLOW_DIRECTIONS
 from pysheds.grid import Grid
 import numpy as np
 import os
@@ -64,6 +65,17 @@ def compute_adjusted_k_c(proj: FireImpactsProject, catchment: str, c_factor_fn: 
     with rio.open(proj.catchment_path(catchment, 'Erodibility', 'K_factor_adjusted.tif'), 'w', **out_meta) as dest:
         dest.write(K, 1)
 
+def _topographic_indices(project: FireImpactsProject,catchment: str):
+    dem_path = project.catchment_path(catchment, 'Topography', 'DEM.tif')
+    grid = Grid.from_raster(dem_path)
+    dem_grid = grid.read_raster(dem_path)
+    dem_filled = grid.fill_pits(dem_grid)
+    dem_filled = grid.fill_depressions(dem_filled)
+    inflated_dem = grid.resolve_flats(dem_filled)
+    # Calculate flow direction and accumulation
+    fdir = grid.flowdir(inflated_dem, dirmap=D8_FLOW_DIRECTIONS)
+    acc = grid.accumulation(fdir, dirmap=D8_FLOW_DIRECTIONS)
+    return grid, fdir, acc
 
 def compute_lsi(project: FireImpactsProject, catchment=None):
     """
@@ -117,23 +129,7 @@ def compute_lsi(project: FireImpactsProject, catchment=None):
         aspect_radians < 0, 2 * np.pi + aspect_radians, aspect_radians)
     # Initialize a Pysheds Grid object and read the DEM data into it                          # π/2 radians (or 90°) indicates an east-facing slope.
     # π radians (or 180°) indicates a south-facing slope.
-    grid = Grid.from_raster(dem_path)
-    # 3π/2 radians (or 270°) indicates a west-facing slope.
-    dem_grid = grid.read_raster(dem_path)
-
-    # Fill pits and depressions in the DEM to ensure correct flow direction
-    dem_filled = grid.fill_pits(dem_grid)
-    dem_filled = grid.fill_depressions(dem_filled)
-    # Ensure that flat areas drain correctly
-    inflated_dem = grid.resolve_flats(dem_filled)
-
-    # Define the flow direction mapping (dirmap) and calculate flow direction
-    # Directional map for flow direction
-    dirmap = (64, 128, 1, 2, 4, 8, 16, 32)
-    fdir = grid.flowdir(inflated_dem, dirmap=dirmap)
-
-    # Calculate flow accumulation (number of upstream cells contributing to each cell)
-    acc = grid.accumulation(fdir, dirmap=dirmap)
+    _, _, acc = _topographic_indices(project,catchment)
     acc_data = np.array(acc, dtype=np.float32)  # Convert to numpy array
     # Estimate specific catchment area (Ai_in) in meter
     specific_area = np.sqrt(acc_data * pixel_area)

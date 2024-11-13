@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HW_THRESHOLD=20000
 APPROX_DEGREES_TO_METRES=111000
+D8_FLOW_DIRECTIONS = (64, 128, 1, 2, 4, 8, 16, 32) # (north, northeast, east, southeast, south, southwest, west, northwest)
 
 def ftoi(x,dp=5):
     return int(round(x,dp))
@@ -183,11 +184,10 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
     inflated_dem = grid.resolve_flats(flooded_dem)  # Resolve flats in DEM
 
     logger.info('Computing flow directions')
-    dirmap = (64, 128, 1, 2, 4, 8, 16, 32)  # Specify directional mapping # Determine D8 flow directions from DEM
-    fdir = grid.flowdir(inflated_dem, dirmap=dirmap)  # Compute flow directions # each cell routes to only one of its nearest neighbors
+    fdir = grid.flowdir(inflated_dem, dirmap=D8_FLOW_DIRECTIONS)  # Compute flow directions # each cell routes to only one of its nearest neighbors
     fdir = fdir.astype(float)
     logger.info('Computing flow accumulation')
-    acc = grid.accumulation(fdir, dirmap=dirmap)  # Calculate flow accumulation
+    acc = grid.accumulation(fdir, dirmap=D8_FLOW_DIRECTIONS)  # Calculate flow accumulation
     # Save flow accumulation as Flow_acc
     flow_acc_file = project.catchment_path(name,'Topography','Flow_accumulation.tif')
     acc_meta = meta.copy()
@@ -203,7 +203,7 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
     mask_above_threshold = acc >= threshold_cells  # need to be equal or greater then threshold
     # Extract river network based on flow accumulation threshold
     logger.info('Extracting river network')
-    branches = grid.extract_river_network(fdir, mask_above_threshold, dirmap=dirmap) # mask if the flow acc is less than threshold
+    branches = grid.extract_river_network(fdir, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS) # mask if the flow acc is less than threshold
     # Save the stream network as Stream_Network.tif
     stream_network_file = project.catchment_path(name,'Topography','Stream_Network.tif')
     stream_meta = meta.copy()
@@ -235,7 +235,7 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
     logger.info('Building spatial index of %d branches',len(branches['features']))
     lines = [LineString(branch['geometry']['coordinates']) for branch in branches['features']]
     spatial_index = STRtree(lines)
-    stream_order = grid.stream_order(fdir, mask_above_threshold, dirmap=dirmap, method='strahler') # get the stream order to filter the headwaters for first stream order
+    stream_order = grid.stream_order(fdir, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS, method='strahler') # get the stream order to filter the headwaters for first stream order
 
     logger.info('Snapping start points to stream heads')
     start_xs = [list(l.coords)[0][0] for l in lines]
@@ -275,7 +275,7 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
         pp_flow_acc = acc[row, col]
         grid_1 = copy.deepcopy(grid)
 
-        catch = grid_1.catchment(x=x, y=y, fdir=fdir, dirmap=dirmap, xytype='coordinate') # snap the
+        catch = grid_1.catchment(x=x, y=y, fdir=fdir, dirmap=D8_FLOW_DIRECTIONS, xytype='coordinate') # snap the
         catchment_view = grid_1.view(catch)
         catchment_cells = catchment_view * catchment_id
         subcatchment_raster += catchment_cells
