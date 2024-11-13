@@ -18,8 +18,10 @@ PER_CATCHMENT_FOLDERS = [
     'Topography',
     'FireSeverity',
     'Soils',
-    'Erodibility'
+    'Erodibility',
+    'Delivery'
 ]
+
 STATS=['mean', 'max', 'min', 'median', 'std']
 
 class FireImpactsProject(object):

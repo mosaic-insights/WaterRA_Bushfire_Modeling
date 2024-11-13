@@ -194,3 +194,208 @@ def compute_lsi(project: FireImpactsProject, catchment=None):
     logger.info("LS factor computed for catchment: %s",catchment)  # Print a message to indicate completion
 
     return slope_degrees, slope_percent, aspect_radians, specific_area, LSi  # specific_area?
+
+
+DEFAULT_MAX_SDR=0.8
+DEFAULT_IC0=0.5
+DEFAULT_K=1
+
+def compute_sediment_delivery_ratio(project: FireImpactsProject, catchment=None,max_sdr=DEFAULT_MAX_SDR,ic0=DEFAULT_IC0,k=DEFAULT_K):
+    """
+    Main function to calculate SDR, slope, flow direction, flow accumulation, and save the SDR raster.
+
+    Parameters:
+    project (fire_impacts.FireImpactsProject): Current project
+    catchment (str): Name of the catchment to process. If None, process all catchments.
+    max_sdr (float): Maximum value for the Sediment Delivery Ratio (SDR). Default is 0.8.
+    ic0 (float): Initial value for the Connectivity Index (IC). Default is 0.5.
+    k (float): Parameter for the SDR calculation. Default is 1.
+
+    Returns:
+    slope_ratio (numpy array): Slope as a ratio (unitless).
+    slope_degrees (numpy array): Slope in degrees.
+    distance_to_stream (numpy array): Distance (downslope length) of each to the nearest stream
+    Dup (numpy array): Upslope area component.
+    Ddn (numpy array): Donslope component.
+    IC (numpy array): Connectivity Index for each pixel.
+    SDR (numpy array): Sediment Delivery Ratio array for each pixel.
+    """
+
+    if catchment is None:
+        return project.for_each_catchment(lambda c: compute_sediment_delivery_ratio(project, c,max_sdr,ic0,k))
+
+    logger.info('Computing Sediment Delivery Ratio for catchment: %s', catchment)
+    dem_path = project.catchment_path(catchment, 'Topography', 'DEM.tif')
+    # Step 1: Read the DEM and calculate flow direction, accumulation, area, and slope ratio
+    with rio.open(dem_path) as src:
+        dem_data = src.read(1)
+        dem_meta = src.meta
+        transform = src.transform
+        nodata = src.nodata
+        dem_profile = src.profile  # Get the metadata profile for saving
+
+    xres = transform[0]  # Width of a pixel (east-west direction)
+    yres = abs(transform[4])  # Height of a pixel (north-south direction)
+    pixel_area = xres * yres  # Area of a single pixel
+
+    # Handle NoData values
+    null_mask = dem_data == nodata
+    dem_data = np.where(null_mask, np.nan, dem_data) # replace -3.4028235e+38 with np.nan
+
+    # Initialize pysheds Grid and calculate flow dir and flow accumulation and area
+    grid, fdir, acc = _topographic_indices(project,catchment)
+    # grid = Grid.from_raster(dem_path)
+    # dem_grid = grid.read_raster(dem_path)
+    # dem_filled = grid.fill_pits(dem_grid)
+    # dem_filled = grid.fill_depressions(dem_filled)
+    # inflated_dem = grid.resolve_flats(dem_filled)
+    # # Calculate flow direction and accumulation
+    # fdir = grid.flowdir(inflated_dem, dirmap=D8_FLOW_DIRECTIONS)
+    # acc = grid.accumulation(fdir, dirmap=D8_FLOW_DIRECTIONS)
+
+    # Calculate the area
+    acc_data = np.array(acc, dtype=np.float32) # get the array data from raster data
+    area = acc_data * pixel_area  # This is area in meter square (Multiply the flow accumulation by the resolution to get the area)
+
+    # Calculate slope using numpy gradient
+    dz_dx, dz_dy = np.gradient(dem_data, xres, yres)
+    slope_ratio = np.sqrt(dz_dx**2 + dz_dy**2)
+    # Apply slope thresholds for connectivity index calculations
+    # Set Sth values less than 0.005 to 0.005
+    Sth = np.where(slope_ratio < 0.005, 0.005, np.where(slope_ratio <= 1, slope_ratio, 1)) # this also sets nan to 1, which we will return them to nan in the next two lines
+    nan_mask = np.isnan(slope_ratio) # Mask the NaN valuesfrom slope_ratio
+    Sth[nan_mask] = np.nan # Restore NaN values by applying the mask
+
+    # Calculate the average thresholded slope gradient of the upslope contributing area (m/m)
+    Sth_path = project.catchment_path(catchment,'Delivery', 'Sth.tif')
+    with rio.open(Sth_path, 'w', **dem_meta) as dest:
+        dest.write(Sth.astype('float32'), 1)
+    # Read the temporary rasters into pysheds as Raster objects
+    Sth_raster = grid.read_raster(Sth_path)
+    acc_Sth = grid.accumulation(fdir=fdir, weights=Sth_raster) # this is accumulated c factor for each cell
+    acc_no0 = np.where(acc == 0, np.nan, acc)  # avoid divide by zero
+    Av_Sth = acc_Sth / acc_no0 # This is avarage of Cth in each cell
+
+    # --------------------------------------------------------------------------------------------------------------------------
+    # Step 2: Read the C-factor raster and calculate Cth
+    c_factor_path = project.catchment_path(catchment,'Erodibility', 'C_factor_adjusted.tif')
+    with rio.open(c_factor_path) as c_factor_src:
+        c_factor = c_factor_src.read(1)
+
+    # Set a C factor thresholded (set values less than 0.001 to 0.001) and calculate verage thresholded C factor of the upslope contributing area
+    Cth = np.where(c_factor < 0.001, 0.001, c_factor) # this is an array, it shoud be converted to a raster to use in pyshed grid analysis
+    Cth_path = project.catchment_path(catchment,'Delivery', 'Cth.tif') # Temporary file paths
+    # Write Cth arrays to temporary raster files
+    dem_meta.update(dtype='float32')
+    with rio.open(Cth_path, 'w', **dem_meta) as dest:
+        dest.write(Cth.astype('float32'), 1)
+    # Read the temporary rasters into pysheds as Raster objects
+    Cth_raster = grid.read_raster(Cth_path)
+    # Calculate the average thresholded C factor of the upslope contributing area
+    acc_Cth = grid.accumulation(fdir=fdir, weights=Cth_raster) # this is accumulated c factor for each cell
+    Av_Cth = acc_Cth / acc_no0  # This is avarage of Cth in each cell
+    #----------------------------------------------------------------------------------------------------------
+    # Step 3: calculate downslope path distance to the nearest stream
+    # Create stream network (channel domain) based on a flow accumulation threshold (e.g., 26 cells)
+    #streams = acc > 26 # defines stream cells based on a flow accumulation threshold (e.g., 26 cells)
+    streams = (area > 1.3e4) # define stream cells (True) based on area
+    stream_cells = np.where(streams)  # returns the indices (row, col) of all cells in the streams array that have a value of True (as a tuple of two arrays)
+    streams_path = project.catchment_path(catchment,'Delivery', 'Streams.tif')
+    with rio.open(streams_path, 'w', **dem_meta) as dest:
+        dest.write(streams.astype(np.uint8),1)
+    # Initialize output array for storing downslope distances
+    distance_to_stream = np.full_like(dem_data, 0)
+    Ddn = np.full_like(dem_data, 0.0, dtype=np.float32)  # Initialize the Ddn array with zeros
+
+    # Initialize a list of stream cells to start from
+    st_indices = list(zip(stream_cells[0], stream_cells[1])) # get list of stream cell coordinates/indexes
+
+    # map neighboring cell for D8 flow directions (north, northeast, east, southeast, south, southwest, west, northwest)
+    dy = np.array([-1, -1, 0, 1, 1, 1, 0, -1])  # row (move to north (-1) or south (1), or the diagonals) so dx=0 and dy=1 is south;  dx=-1 and dy=1 is southwest
+    dx = np.array([0, 1, 1, 1, 0, -1, -1, -1])  # column (move to east (1) or west (-1), or the diagonals) so dx=1 and dy=0 is east;  dx=1 and dy=-1 is northeast
+    # calculate diagonal distance
+    diag_cell_size = (xres**2 + yres**2) ** 0.5  # calculate diagonal distance (approximatly 41 m for resultion 29 m)
+    # Create an array to store the distances between the grid cell and its eight neighboring cells for D8 flow direction
+    grid_lengths = np.array([yres, diag_cell_size, xres, diag_cell_size,
+                             yres, diag_cell_size, xres, diag_cell_size])  # array([28.02902639, 39.63902926, 28.02902639, 39.63902926, 28.02902639,
+                                                                                                 # 39.63902926, 28.02902639, 39.63902926])
+    # Track visited cells (creatw a boolean array to keep track whether each cell in the grid has already been processed during the downslope distance calculation)
+    visited = np.zeros_like(dem_data, dtype=bool) # creates visited array with the same shape and size as the dem array with all cells set to False
+    visited[stream_cells] = True  # where False represents "not visited" and True represents "visited."
+
+    # Start the downslope path traversal to calculate Ddn
+    while st_indices:
+        # Get the current cell from the st_indices
+        row, col = st_indices.pop(0)
+        current_distance = distance_to_stream[row, col] # at initial (first iteration) the current distance is 0, after that gets a new distance in each iteration
+
+        # Check the 8 neighbors
+        for i in range(8):  # D8
+            new_row = row + dy[i]
+            new_col = col + dx[i]
+
+            # Ensure the neighbor is within the grid bounds
+            if 0 <= new_row < dem_data.shape[0] and 0 <= new_col < dem_data.shape[1]:
+                # Check if the flow direction leads to this neighbor cell
+                if fdir[new_row, new_col] == D8_FLOW_DIRECTIONS[(i + 4) % 8]:
+                    # If the neighbor hasn't been visited, calculate its Ddn contribution
+                    if not visited[new_row, new_col]: # check if the neighboring cell (at new_row, new_col) has already been visited (If the cell hasn't been visited, the distance to the stream for this cell will be calculated)
+                        visited[new_row, new_col] = True # mark the neighboring cell as "visited" so that it won't be processed again in future iterations
+                        # Calculate the Ddn component for the cell
+                        if Cth[new_row, new_col] > 0 and Sth[new_row, new_col] > 0:
+                            downslope_component = grid_lengths[i] / (Cth[new_row, new_col] * Sth[new_row, new_col])
+                        else:
+                            downslope_component = 0
+
+                        # Accumulate the Ddn value
+                        Ddn[new_row, new_col] = Ddn[row, col] + downslope_component
+
+                        # Update distance to stream
+                        distance_to_stream[new_row, new_col] = current_distance + grid_lengths[i]
+
+                        # Add the neighbor to the queue
+                        st_indices.append((new_row, new_col))
+
+    # Mask zeros outside the catchment boundary by checking against the nodata values in the DEM
+    distance_to_stream[null_mask] = np.nan
+    # Update the metadata to float32 and set nodata value
+    dem_profile.update(dtype=rio.float32, nodata=np.nan)
+    dist_path = project.catchment_path(catchment,'Delivery', 'Distance_to_stream.tif')
+    with rio.open(dist_path, 'w', **dem_profile) as dst:
+        dst.write(distance_to_stream.astype(rio.float32), 1)
+
+    # Mask zeros outside the catchment boundary by checking against the nodata values in the DEM
+    Ddn[null_mask] = np.nan
+    Ddn_path = project.catchment_path(catchment,'Delivery', 'Ddn.tif')
+    with rio.open(Ddn_path, 'w', **dem_profile) as dst:
+        dst.write(Ddn.astype(rio.float32), 1)
+    # ------------------------------------------------------------------------------------------------------------
+    # Step 4: calculate the upslope component Dup, Connectivity Index (IC) and then SDR
+    # Calculate the upslope component Dup
+    Dup = Av_Cth * Av_Sth * np.sqrt(area)
+    # Mask zeros outside the catchment boundary by checking against the nodata values in the DEM
+    Dup[null_mask] = np.nan
+    Dup_path = project.catchment_path(catchment,'Delivery', 'Dup.tif')
+    with rio.open(Dup_path, 'w', **dem_profile) as dst:
+        dst.write(Dup.astype(rio.float32), 1)
+
+    # Calculate Connectivity Index (IC)
+    IC = np.log10(Dup / Ddn)
+    # Mask zeros outside the catchment boundary by checking against the nodata values in the DEM
+    IC[null_mask] = np.nan
+    IC_path = project.catchment_path(catchment,'Delivery', 'IC.tif')
+    with rio.open(IC_path, 'w', **dem_profile) as dst:
+        dst.write(IC.astype(rio.float32), 1)
+
+    # Calculate Sediment Delivery Ratio (SDR)
+    SDR = max_sdr / (1 + np.exp((ic0 - IC) / k))
+
+    # Save SDR output as a raster
+    output_sdr_path = project.catchment_path(catchment,'Delivery', "SDR.tif")
+    dem_profile.update(dtype=rio.float32)  # Update profile for output
+    with rio.open(output_sdr_path, 'w', **dem_profile) as dst:
+        dst.write(SDR.astype(np.float32), 1)
+
+    logger.info("Sediment Delivery Ratio computed for catchment: %s", catchment)
+
+    return slope_ratio, fdir, acc, distance_to_stream, IC, Dup, Ddn, SDR
