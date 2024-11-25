@@ -283,6 +283,8 @@ def summary_stats(project:FireImpactsProject,catchment_name=None):
     csv_path=project.catchment_path(catchment_name, 'Soil_Slope_Aridity_dNBR.csv')
     extracted_data.to_csv(csv_path, index=False)
 
+    return extracted_data
+
 
 def get_zonal_stats(gdf, raster_path,label):
     '''Function to get stats for a given polygon and raster'''

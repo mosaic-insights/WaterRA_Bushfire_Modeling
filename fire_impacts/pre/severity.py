@@ -47,6 +47,10 @@ def calculate_fire_severity(project:FireImpactsProject, catchment:str, fire_star
     Returns:
     - None. Saves NBR, dNBR, and metadata files to disk.
     '''
+    if catchment is None:
+        return project.for_each_catchment(lambda c: calculate_fire_severity(project, c, fire_start_date, fire_end_date, \
+                                                                         start_date_pre, end_date_post, collection_id, \
+                                                                         max_cloud_cover, resolution_input, bbox))
     if CATALOG is None:
         init_catalog()
 
