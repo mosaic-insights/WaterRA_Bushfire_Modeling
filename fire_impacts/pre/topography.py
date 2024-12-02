@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HW_THRESHOLD=20000
 APPROX_DEGREES_TO_METRES=111000
 D8_FLOW_DIRECTIONS = (64, 128, 1, 2, 4, 8, 16, 32) # (north, northeast, east, southeast, south, southwest, west, northwest)
+CRS_METRE_UNITS={'m','meter','meters','metre','metres'}
 
 def ftoi(x,dp=5):
     return int(round(x,dp))
@@ -151,7 +152,7 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
         dem_data = src.read(1)  # Read the first band (DEM values)
         # Calculate gradient in the x and y directions
         x_res, y_res = src.res
-        if crs.linear_units != 'm':
+        if crs.linear_units not in CRS_METRE_UNITS:
           if crs_unit_to_metres is None:
               crs_unit_to_metres = APPROX_DEGREES_TO_METRES
           logger.warning('CRS should be in meters, was %s. Applying crs_unit_to_metres conversion (%f)',src.crs.linear_units,crs_unit_to_metres)
