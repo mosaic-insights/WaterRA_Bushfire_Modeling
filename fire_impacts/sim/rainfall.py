@@ -33,8 +33,8 @@ def aggregate_rainfall_data(netcdf_path, rain_data_start, rain_data_end, time_re
     subdaily = ds.stack({'time':['day','subday']})
 
     subday_seconds = (subdaily.subday.values*86400).astype(int)
-
-    subdaily = subdaily.assign_coords(time=('time',subdaily['day'].data+pd.to_timedelta(subday_seconds,unit='s')))
+    new_index = subdaily['day'].data+pd.to_timedelta(subday_seconds,unit='s')
+    subdaily = subdaily.drop_vars(['time','day','subday']).assign_coords(time=('time',new_index))
     df = subdaily['rainfall'].to_dataframe()
     rainfall_by_simulation = df.reset_index().pivot(index='time',columns='simulation',values='rainfall')
 
