@@ -83,7 +83,7 @@ def read_raster(fn:str):
   with rio.open(fn) as src:
     return src.read(1), src.transform, src.crs
 
-def read_aligned(raster_fn:str, transform, crs,shape):
+def read_aligned(raster_fn:str, transform, crs,shape,resampling=Resampling.nearest):
     '''
     Read a raster and reproject it to a given crs and window (transform)
     '''
@@ -106,7 +106,7 @@ def read_aligned(raster_fn:str, transform, crs,shape):
                   src_crs=src.crs,
                   dst_transform=transform,
                   dst_crs=crs,
-                  resampling=Resampling.nearest
+                  resampling=resampling
               )
 
             with memfile.open() as src:

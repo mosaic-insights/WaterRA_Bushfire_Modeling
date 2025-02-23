@@ -21,7 +21,7 @@ def aggregate_rainfall_data(netcdf_path, rain_data_start, rain_data_end, time_re
     - time_res (str): Time resolution for the aggregated data. Default is '30min'.
 
     Returns:
-    - r30 (DataFrame): DataFrame with aggregated rainfall
+    - r_agg (DataFrame): DataFrame with aggregated rainfall by simulation.
     '''
 
     ds = xr.open_dataset(netcdf_path)\
@@ -41,3 +41,4 @@ def aggregate_rainfall_data(netcdf_path, rain_data_start, rain_data_end, time_re
     r_agg = rainfall_by_simulation.resample(time_res).sum()
 
     return r_agg
+

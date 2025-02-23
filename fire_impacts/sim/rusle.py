@@ -7,7 +7,7 @@ from rasterio.mask import mask
 from rasterio.warp import reproject, Resampling
 import os
 import logging
-
+from fire_impacts.const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS
 from fire_impacts.pre.util import read_aligned, read_raster
 logger = logging.getLogger(__name__)
 
@@ -15,8 +15,6 @@ from fire_impacts.pre import FireImpactsProject
 
 DNBR_SEVERITY_THRESHOLD = 400
 EMPIRICAL_COEFFICIENT = 0.082
-M2_TO_HA=1e-4
-MG_TO_KG=1e-6
 
 def compute_klscp_layer(proj:FireImpactsProject, catchment:str, support_practice_factor:float=1.0):
     #.....................................................................................................................
@@ -90,7 +88,7 @@ def gridded_total_rusle(project:FireImpactsProject, rainfall, catchment=None):
         day, _, _, _, \
         daily_RUSLE, daily_SDR, \
         _, _, _, _ = day_data
-        logger.info('Processing day %s',day)
+        # logger.info('Processing day %s',day)
         if total_eroded is None:
             total_eroded = daily_RUSLE
             total_delivered = daily_SDR
@@ -245,8 +243,8 @@ def compute_particulates(rusle_df,constituents_df=None):
     # Iterate through each constituent and severity
     for _, row in constituents_df.iterrows():
         particulate = row['Particulate constituent (ash)']
-        low_severity = row['Low severity- mean amount (mgkg-1)'] * MG_TO_KG
-        high_severity = row['High severity- mean amount (mgkg-1)'] * MG_TO_KG
+        low_severity = row['Low severity- mean amount (mgkg-1)'] * MILLIGRAMS_TO_KILOGRAMS
+        high_severity = row['High severity- mean amount (mgkg-1)'] * MILLIGRAMS_TO_KILOGRAMS
 
         # Define new column name
         column_name = f"{particulate} (Tonne)"

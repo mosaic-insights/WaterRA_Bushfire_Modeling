@@ -136,12 +136,30 @@ class FireImpactsProject(object):
         os.makedirs(self.catchment_path(),exist_ok=exist_ok)
         self._write()
 
+    def catchment_boundary(self,catchment:str) -> gpd.GeoDataFrame:
+        '''
+        Get the catchment boundary as a GeoDataFrame.
+        '''
+        shapefile_path = self.boundary_files[catchment]
+        gdf = gpd.read_file(shapefile_path)
+        return gdf
+
+    def subcatchment_boundaries(self,catchment:str) -> gpd.GeoDataFrame:
+        '''
+        Get the subcatchment boundaries as a GeoDataFrame.
+        '''
+        shapefile_path = self.catchment_path(catchment,'Topography','Subcatchments.shp')
+        if os.path.exists(shapefile_path):
+          gdf = gpd.read_file(shapefile_path)
+          return gdf
+
+        return self.catchment_boundary(catchment)
+
     def catchment_bounds(self,catchment:str, buffer_distance_km:float=10):
         '''
         Get the bounding box for a catchment with an (optional) buffer distance in approximate kilometres.
         '''
-        shapefile_path = self.boundary_files[catchment]
-        gdf = gpd.read_file(shapefile_path)
+        gdf = self.catchment_boundary(catchment)
         gdf_wgs84 = gdf.to_crs(epsg=4326)
         bbox = gdf_wgs84.total_bounds
 
@@ -161,9 +179,17 @@ class FireImpactsProject(object):
         '''
         Get the CRS for a catchment from the catchment boundary coverage.
         '''
-        shapefile_path = self.boundary_files[catchment]
-        gdf = gpd.read_file(shapefile_path)
+        gdf = self.catchment_boundary(catchment)
         return gdf.crs
+
+    def cell_area(self,catchment:str=None):
+        if catchment is None:
+            return self.for_each_catchment(lambda c:self.cell_area(catchment=c))
+
+        fn = self.catchment_path(catchment,'Topography','DEM.tif')
+        with rio.open(fn) as src:
+            transform = src.transform
+            return abs(transform.a * transform.e)
 
     def for_each_catchment(self,fn:callable):
         '''
@@ -197,8 +223,7 @@ class FireImpactsProject(object):
         if not raster_path.endswith('.tif'):
             raster_path += '.tif'
 
-        shapefile_path = self.boundary_files[catchment]
-        gdf = gpd.read_file(shapefile_path)
+        gdf = self.catchment_boundary(catchment)
 
         with rio.open(raster_path) as src:
             data = src.read(1)
