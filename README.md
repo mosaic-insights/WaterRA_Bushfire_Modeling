@@ -42,6 +42,8 @@ In environments without conda, install with pip:
 pip install -r requirements.txt
 ```
 
+**Note:** The library uses a number of packages for processing remote sensing data, principally the Digital Earth Australia suite. At present, the installation of these libraries may require the user to install the PostgreSQL database client. This requirement will be relaxed in future versions of the dependencies, which will simplify the installation of the Fire Impacts library.
+
 ## Usage
 
 The library supports two different modes:
