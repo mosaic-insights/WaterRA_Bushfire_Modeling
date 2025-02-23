@@ -204,7 +204,7 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
     mask_above_threshold = acc >= threshold_cells  # need to be equal or greater then threshold
     # Extract river network based on flow accumulation threshold
     logger.info('Extracting river network')
-    branches = grid.extract_river_network(fdir, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS) # mask if the flow acc is less than threshold
+    branches = grid.extract_river_network(fdir, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS,nodata_out=np.int64(0)) # mask if the flow acc is less than threshold
     # Save the stream network as Stream_Network.tif
     stream_network_file = project.catchment_path(name,'Topography','Stream_Network.tif')
     stream_meta = meta.copy()
