@@ -9,6 +9,7 @@ import os
 import logging
 from fire_impacts.const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS
 from fire_impacts.pre.util import read_aligned, read_raster
+from fire_impacts.util import load_package_data
 logger = logging.getLogger(__name__)
 
 from fire_impacts.pre import FireImpactsProject
@@ -237,8 +238,7 @@ def generate_rusle_for_feature(geometry:list, rainfall:pd.DataFrame, klscp:np.ar
 
 def compute_particulates(rusle_df,constituents_df=None):
     if constituents_df is None:
-        constituent_path = os.path.join(os.path.dirname(__file__),'..','..','data','ash_constituents.csv')
-        constituents_df = pd.read_csv(constituent_path)
+        constituents_df = load_package_data('ash_constituents.csv')
 
     # Iterate through each constituent and severity
     for _, row in constituents_df.iterrows():

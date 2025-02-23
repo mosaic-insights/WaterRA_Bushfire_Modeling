@@ -1,4 +1,4 @@
-
+import os
 import logging
 logger = logging.getLogger(__name__)
 
@@ -18,3 +18,23 @@ def retry(fn,retries=5,initial_delay=8,delay_scale=3,specific_exceptions=None):
         logger.warning('Failed with %s. Retrying after %d seconds'%(str(e),initial_delay))
         time.sleep(initial_delay)
         return retry(fn,retries-1,initial_delay*delay_scale,delay_scale,specific_exceptions)
+
+def package_data_path(fn=None):
+    dirname = os.path.join(os.path.dirname(__file__),'..','data')
+    if fn is None:
+        return dirname
+    return os.path.join(dirname,fn)
+
+
+def load_package_data(fn):
+    fn = package_data_path(fn)
+    if fn.endswith('.csv'):
+        logger.info(f"Loading data from {fn}")
+        import pandas as pd
+        return pd.read_csv(fn)
+    logger.error(f"Unsupported file type: {fn}")
+    return None
+
+
+
+
