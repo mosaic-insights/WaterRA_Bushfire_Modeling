@@ -148,9 +148,9 @@ The core library code is stored in `fire_impacts` directory. The code repository
 | `├── examples` | Worked example files |
 | `├── test_data` | Small spatial datasets to support examples and unit tests |
 | `└── fire_impacts` | Library code |
-| `    ├── pre` | |
-| `    │   └── tests` | |
-| `    └── sim` | |
+| `    ├── pre` | Data pre-processing routines |
+| `    │   └── tests` | Unit tests for pre-processing|
+| `    └── sim` | Simulation routines |
 
 
 ## Funding, development and support
