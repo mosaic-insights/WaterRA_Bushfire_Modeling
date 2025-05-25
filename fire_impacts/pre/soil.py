@@ -50,6 +50,7 @@ def download_soil_data(project:FireImpactsProject, catchment:str=None, wcs_urls=
     # Just downlaod soil data for depth 5 and 15 cm
     filter_layers = SOIL_DEPTHS
     bbox = project.catchment_bounds(catchment,10.0)
+    bbox = [float(f) for f in list(bbox)]
     crs = project.catchment_crs(catchment)
     logger.info(f"Processing catchment: {catchment} with bounding box {bbox}")
 
