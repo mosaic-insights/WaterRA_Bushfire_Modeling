@@ -6,12 +6,13 @@ from owslib.wcs import WebCoverageService
 import rasterio
 import rasterio.mask
 import os
-from string import Template
 import logging
 from .project import FireImpactsProject
-from .util import reproject_raster
+from .util import clip_and_reproject_raster, reproject_raster
 from ..util import retry
-from .data_sources import ASRIS_WCS
+from .data_sources import ASRIS_WCS, TERN_SLGA_STAC
+from contextlib import contextmanager
+import tempfile
 logger = logging.getLogger(__name__)
 
 LAYER_NAMES={
@@ -23,15 +24,17 @@ LAYER_NAMES={
 
 DEFAULT_WCS=ASRIS_WCS
 DEFAULT_RESOLUTION=0.00024955 # 1 arc second (SRTM)
-SOIL_DEPTHS=['_000_005_', '_005_015_']
+SOIL_DEPTHS=['000_005', '005_015']
 
 def get_wcs(url):
     return retry(lambda:WebCoverageService(url, version="1.0.0"))
 
-def download_soil_data(project:FireImpactsProject, catchment:str=None, wcs_urls=None, resx=DEFAULT_RESOLUTION, resy=DEFAULT_RESOLUTION):
+def download_soil_data_wcs(project:FireImpactsProject, catchment:str=None, wcs_urls=None, resx=DEFAULT_RESOLUTION, resy=DEFAULT_RESOLUTION):
     """
     Download soil-related data (Silt, Clay, Sand, Bulk Density) for each catchment
     from WCS URLs using bounding boxes, and save the data in the appropriate folder.
+
+    Intended for use with original ASRIS WCS, which may not be available.
 
     Parameters:
     - project (fire_impacts.FireImpactsProject): A dictionary of project folders created for catchments.
@@ -41,7 +44,7 @@ def download_soil_data(project:FireImpactsProject, catchment:str=None, wcs_urls=
     - resy (float): The y resolution for the data download.
     """
     if catchment is None:
-        project.for_each_catchment(lambda c: download_soil_data(project,c, wcs_urls, resx, resy))
+        project.for_each_catchment(lambda c: download_soil_data_wcs(project,c, wcs_urls, resx, resy))
         return
 
     if wcs_urls is None:
@@ -159,3 +162,87 @@ def extract_aridity_data(project:FireImpactsProject,aridity_raster:str, catchmen
             raise
 
     logger.info("Aridity extraction completed.")
+
+
+def get_stac(base_uri):
+    from pystac import Catalog, Collection
+    from pystac.stac_io import RetryStacIO
+    from urllib3.util import Retry
+
+    retries = Retry(total=5, backoff_factor=1)
+    stac_io = RetryStacIO()
+    if base_uri.endswith("catalog.json"):
+        return Catalog.from_file(base_uri, stac_io=stac_io)
+    return Collection.from_file(base_uri, stac_io=stac_io)
+
+def find_slga_grids(base_catalog=TERN_SLGA_STAC,variables=None,depths=None,version='v2'):
+    if variables is None:
+        variables = ['SLT','CLY','SND','BDW']
+    if depths is None:
+        depths = SOIL_DEPTHS
+
+    catalog = get_stac(base_catalog)
+    entries = list(catalog.get_children())
+    relevant = [e for e in entries if e.id in variables]
+    assets = []
+    for cat in relevant:
+        variable = cat.id
+        version_catalog = cat.get_child(version)
+        assets += [(variable,k,v.get_absolute_href()) \
+                   for k,v in version_catalog.get_assets().items() \
+                    if any(d for d in depths if d in k) and '_EV_' in k]
+    return assets
+
+@contextmanager
+def gdal_api_key(key):
+    # Create an environment with temporary file containing api key
+    # Remove the temporary file after use
+    fn = tempfile.mktemp('gdal_api_key.txt')
+    env_var = 'GDAL_HTTP_HEADER_FILE'
+    old_env_var = os.environ.get(env_var)
+    os.environ[env_var] = fn
+    with open(fn,'w') as f:
+        f.write(f"x-api-key: {key}\n")
+    logger.info(f"Using GDAL API key from temporary file {fn}")
+    try:
+        yield
+    finally:
+        if old_env_var is None:
+            del os.environ[env_var]
+        else:
+            os.environ[env_var] = old_env_var
+        logger.info(f"Removing temporary GDAL API key file {fn}")
+        os.remove(fn)
+
+def download_soil_data_stac(project:FireImpactsProject, catchment:str=None, api_key:str=None,
+                            base_stac_catalog=TERN_SLGA_STAC,version='v2'):
+    """
+    Download soil-related data (Silt, Clay, Sand, Bulk Density) for each catchment
+    from STAC URLs using catchment boundary, and save the data in the appropriate folder.
+
+    Intended for use with original TERN's STAC, which requires an API key.
+    Create a TERN account and obtain an API key from the TERN website (https://account.tern.org.au/)
+
+    Parameters:
+    - project (fire_impacts.FireImpactsProject): A dictionary of project folders created for catchments.
+    - catchment (str): OPTIONAL: Name of the catchment to process. If None, process all catchments.
+    - tern_api_key (str): API key for accessing the TERN STAC API.
+    - base_stac_catalog (str): Base URL for the TERN STAC catalog.
+    """
+    if catchment is None:
+        project.for_each_catchment(lambda c: download_soil_data_stac(project,c, api_key,base_stac_catalog,version))
+        return
+
+    if api_key is None:
+        logger.error("API key is required for STAC access.")
+        raise ValueError("API key is required for STAC access.")
+
+    grids = find_slga_grids(base_stac_catalog, version=version)
+    logger.info(f"Processing catchment: {catchment} with {len(grids)} grids found")
+    with gdal_api_key(api_key):
+        for var,fn,url in grids:
+            logger.info('Downloading %s',fn)
+            dest_dir = project.catchment_path(catchment,'Soils',var)
+            os.makedirs(dest_dir, exist_ok=True)
+            dest_fn = os.path.join(dest_dir, fn)
+            clip_and_reproject_raster(url,project.boundary_files[catchment],dest_fn)
