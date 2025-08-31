@@ -1,8 +1,10 @@
 pytest
-pystac_client
+pystac-client
 odc-stac
 dea-tools # requires pg_config to build from source!
 seaborn
 elevation
 pysheds
 dask[distributed]
+boto3
+cql2 # Required by calculate_fire_severity() method
