@@ -36,19 +36,27 @@ class FireImpactsProject(object):
         - project_path (str): Path to the project folder.
         - exist_ok (bool): If True, do not raise an error if the project folder already exists.
         - clear (bool): If True, clear the project folder if it already exists.
+        
+        TODO:
+        - make this more resilient to different formats of paths used by
+        the OS and by the user's input.
         '''
-        self.project_path = project_path
+        norm_path = os.path.normpath(project_path)
+        self.project_path = norm_path
         self.catchments = []
         self.boundary_files = {}
         self.source_data = {}
-
+        
+        # If the user has said to clear the existing folder OR they have
+        #said to proceed with loading a new project even if there is
+        #already a folder there:
         if clear or not exist_ok:
-          self.initialise_project(project_path,exist_ok=exist_ok,clear=clear)
+          self.initialise_project(norm_path,exist_ok=exist_ok,clear=clear)
         else:
           try:
               self.load_project()
           except:
-              self.initialise_project(project_path,exist_ok=exist_ok,clear=clear)
+              self.initialise_project(norm_path,exist_ok=exist_ok,clear=clear)
 
 
     def _settings_fn(self):
@@ -128,10 +136,18 @@ class FireImpactsProject(object):
             self.add_catchment(shapefile,replace_existing=True)
 
     def initialise_project(self,project_path,exist_ok=False,clear=False):
+        """
+        Docstring placeholder
+        """
+        # If there is already a folder and the user has said NOT to 
+        #clear it:
         if not clear and os.path.exists(project_path):
             raise FileExistsError(f'Project folder already exists: {project_path}')
+        # If there is already a folder and the user as said it's ok to 
+        #clear its contents:
         if clear and os.path.exists(project_path):
             logger.info('Clearing existing project folder: %s',project_path)
+            # Remove the directory and all of its contents:
             shutil.rmtree(project_path)
         os.makedirs(self.catchment_path(),exist_ok=exist_ok)
         self._write()
