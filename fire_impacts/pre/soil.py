@@ -46,7 +46,7 @@ def download_soil_data(project:FireImpactsProject, catchment:str=None, wcs_urls=
 
     if wcs_urls is None:
         wcs_urls = {key: Template(DEFAULT_WCS).substitute(LAYER=value) for key, value in LAYER_NAMES.items()}
-
+    
     # Just downlaod soil data for depth 5 and 15 cm
     filter_layers = SOIL_DEPTHS
     bbox = project.catchment_bounds(catchment,10.0)
