@@ -2,9 +2,14 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Dummy testing versions of example notebooks
 jupyter
 PrepareData.ipynb
 Severity.ipynb
+
+# Unnecessary sidecar files
+test_data/*.aux.xml
 
 # C extensions
 *.so
