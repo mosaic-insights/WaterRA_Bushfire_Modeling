@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 jupyter
 PrepareData.ipynb
+Severity.ipynb
 
 # C extensions
 *.so
