@@ -13,6 +13,7 @@ from dea_tools.bandindices import calculate_indices
 import logging
 from .project import FireImpactsProject
 from .data_sources import DEA_STAC
+from .util import metres_to_approx_degrees
 logger = logging.getLogger(__name__)
 
 CATALOG=None
@@ -54,7 +55,6 @@ def calculate_fire_severity(project:FireImpactsProject, catchment:str, fire_star
     if CATALOG is None:
         init_catalog()
 
-    shapefile_path = project.boundary_files[catchment]
     def date_rel(date:str, days:int):
         return (datetime.strptime(date, '%Y-%m-%d') + timedelta(days=days)).strftime('%Y-%m-%d')
     # Get pre and post fire date ranges
@@ -86,7 +86,13 @@ def calculate_fire_severity(project:FireImpactsProject, catchment:str, fire_star
     # Load the catchment shapefile and prepare folder
     catchment_folder = project.catchment_path(catchment,'FireSeverity')
     os.makedirs(catchment_folder, exist_ok=True)
+    shapefile_path = project.boundary_files[catchment]
     gdf = gpd.read_file(shapefile_path)
+
+    if gdf.crs.axis_info[0].unit_name == 'degree':
+        alt_resolution_input = metres_to_approx_degrees(resolution_input)
+        logger.info('Alternative resolution (degrees): %f (was %fm)', alt_resolution_input, resolution_input)
+        resolution_input = alt_resolution_input
 
     def calc_nbr(datetime,label,use_mask=True):
         query = CATALOG.search(

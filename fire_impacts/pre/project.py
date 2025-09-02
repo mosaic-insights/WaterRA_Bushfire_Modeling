@@ -23,6 +23,7 @@ PER_CATCHMENT_FOLDERS = [
 ]
 
 STATS=['mean', 'max', 'min', 'median', 'std']
+APPROX_KM_PER_DEGREE = 111  # Approximate conversion factor from degrees to kilometers
 
 class FireImpactsProject(object):
     '''Objects representing the project folder structure for a fire impacts study.'''
@@ -173,14 +174,14 @@ class FireImpactsProject(object):
 
     def catchment_bounds(self,catchment:str, buffer_distance_km:float=10):
         '''
-        Get the bounding box for a catchment with an (optional) buffer distance in approximate kilometres.
+        Get the bounding box for a catchment in WGS84 with an (optional) buffer distance in approximate kilometres.
         '''
         gdf = self.catchment_boundary(catchment)
         gdf_wgs84 = gdf.to_crs(epsg=4326)
         bbox = gdf_wgs84.total_bounds
 
         # Convert 10 km to degrees (approximate conversion, 1 degree = 111 km)
-        buffer_degrees = buffer_distance_km / 111  # This is an approximation for small distances
+        buffer_degrees = buffer_distance_km / APPROX_KM_PER_DEGREE
 
         # Apply buffer to the bounding box
         bbox_with_buffer = [
