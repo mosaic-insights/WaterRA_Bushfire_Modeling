@@ -7,6 +7,7 @@ __pycache__/
 jupyter
 PrepareData.ipynb
 Severity.ipynb
+Simulation.ipynb
 
 # Unnecessary sidecar files
 test_data/*.aux.xml
