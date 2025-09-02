@@ -1,4 +1,5 @@
 
+M_TO_KM=1e-3
 
 M2_TO_HA=1e-4
 

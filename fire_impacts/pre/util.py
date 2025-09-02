@@ -1,4 +1,6 @@
 import geopandas as gpd
+from .project import APPROX_KM_PER_DEGREE
+from .. import const as c
 import rasterio as rio
 import numpy as np
 from rasterio.mask import mask
@@ -113,3 +115,6 @@ def read_aligned(raster_fn:str, transform, crs,shape,resampling=Resampling.neare
               data = src.read(1,masked=True)
               data[data.mask] = np.nan
               return data
+
+def metres_to_approx_degrees(m:float):
+   return m * c.M_TO_KM / APPROX_KM_PER_DEGREE
