@@ -51,9 +51,10 @@ def get_slope(dem_path):
     return slope_ratio, acc_data, fdir, dem_data, transform, crs, dem_meta
 
 def get_clay_fraction(proj: FireImpactsProject, catchment:str, depth:str,transform,crs,shape):
-    clay_directory = proj.catchment_path(catchment, 'Soils','CLAY')
+    clay_directory = proj.catchment_path(catchment, 'Soils','CLY')
     fn = unique_file_matching(clay_directory,'CLY',depth,'EV')
-    return read_aligned(fn,transform,crs,shape)*PERCENT_TO_FRACTION
+    path_fn = os.path.join(clay_directory, fn)
+    return read_aligned(path_fn,transform,crs,shape)*PERCENT_TO_FRACTION
 
 def prep_debris_flow_simulation(proj: FireImpactsProject, catchment:str):
     dem_path = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
