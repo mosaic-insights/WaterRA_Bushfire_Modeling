@@ -35,6 +35,19 @@ def load_package_data(fn):
     logger.error(f"Unsupported file type: {fn}")
     return None
 
+def file_matching_all(path,*substrings):
+    """Check if a file contains all substrings and return a list of matches"""
+    files = os.listdir(path)
+    return [fn for fn in files if all(p in fn for p in substrings)]
+
+def unique_file_matching(path,*substrings):
+    """Check if a single file contains all substrings and return the unique match"""
+    matches = file_matching_all(path,*substrings)
+    if len(matches) == 0:
+        raise FileNotFoundError(f"No file found in {path} matching patterns: {substrings}")
+    elif len(matches) > 1:
+        raise FileExistsError(f"Multiple files found in {path} matching patterns: {substrings}")
+    return matches[0]
 
 
 

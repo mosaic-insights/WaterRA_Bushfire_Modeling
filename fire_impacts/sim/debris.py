@@ -11,7 +11,7 @@ from rasterio.transform import from_origin, Affine, rowcol
 from ..const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS, PERCENT_TO_FRACTION
 from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.pre.util import read_aligned, read_raster
-from fire_impacts.util import load_package_data
+from fire_impacts.util import load_package_data, unique_file_matching
 from pysheds.grid import Grid
 import os
 import logging
@@ -51,7 +51,8 @@ def get_slope(dem_path):
     return slope_ratio, acc_data, fdir, dem_data, transform, crs, dem_meta
 
 def get_clay_fraction(proj: FireImpactsProject, catchment:str, depth:str,transform,crs,shape):
-    fn = proj.catchment_path(catchment, 'Soils','CLAY',f'CLY_{depth}_EV_N_P_AU_NAT_C.tif')
+    clay_directory = proj.catchment_path(catchment, 'Soils','CLAY')
+    fn = unique_file_matching(clay_directory,'CLY',depth,'EV')
     return read_aligned(fn,transform,crs,shape)*PERCENT_TO_FRACTION
 
 def prep_debris_flow_simulation(proj: FireImpactsProject, catchment:str):
