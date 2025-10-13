@@ -209,30 +209,93 @@ class FireImpactsProject(object):
             return abs(transform.a * transform.e)
 
     def for_each_catchment(self,fn:callable):
-        '''
+        """
         Run a function for each catchment in the project.
 
         Parameters:
-        - fn (callable): Function to run for each catchment. The function should take a single argument (the catchment name) and optionally return a value.
+        - fn (callable): Function to run for each catchment. The
+        function should take a single argument (the catchment name)
+        and optionally return a value.
 
         Returns:
-        - dict: Dictionary containing the results of the function for each catchment.
-        '''
+        - dict: Dictionary containing the results of the function for
+        each catchment.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
         logger.info('Processing %d catchments',len(self.catchments))
         return {catchment:fn(catchment) for catchment in self.catchments}
 
-    def plot_catchment_raster(self,*args,catchment=None,figure=None,subplot=None):
-        '''
-        '''
-        if figure is None:
+    ###########################################################################
+    def plot_catchment_raster(
+        self,
+        *args,
+        catchment=None,
+        existing_figure=None,
+        axes_index=None,
+        new_subplot:bool=True
+        ):
+        """
+        Plot the requested raster for catchment(s)
+
+        Parameters:
+        - *args: 
+        - catchment (string): name of the catchment to
+        plot. If none, each catchment in the current project will be
+        plotted.
+        - figure (matplotlib figure): matplotlib figure object within 
+        which all the plots will be created. This function will create
+        one if not provided.
+        - axes_index (integer): Of the axes objects that belong to this
+        figure (if provided), the index of the one to draw on.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # If a figure object is not provided, create an empty one:
+        if existing_figure is None:
             from matplotlib import pyplot as plt
             figure = plt.figure()
+            # Case where neither figure nor subplot are provided:
+            if axes_index is None:
+                # If no figure was provided, we also need a subplot index
+                #to provide later:
+                axes_index = 0
+        else:
+            # Use the existing figure if it's been provided:
+            figure = existing_figure
+            if axes_index is None:
+                # If an axes index isn't provided, use the end one:
+                axes_index = len(figure.axes)
 
+        # If a catchment has not been specified, create a subplot for
+        #each catchment in the current project:
         if catchment is None:
-            figure.subplots(len(self.catchments),1)
-            self.for_each_catchment(lambda c:self.plot_catchment_raster(*args,catchment=c,figure=figure,subplot=self.catchments.index(c)+1))
+            figure.subplots(
+                nrows=len(self.catchments), #One subplot per catchment
+                ncols=1 #Stack vertically
+                )
+            # Get a -something- for each catchment in the project
+            self.for_each_catchment(
+                lambda c:self.plot_catchment_raster(
+                    *args,
+                    catchment=c,
+                    existing_figure=figure,
+                    axes_index=self.catchments.index(c),
+                    new_subplot=False
+                    )
+                )
             return
-
+        # If catchment is not none we need to add a subplot:
+        else:
+            if new_subplot:
+                # Get the number of subplots already:
+                num_subs_already = len(figure.axes)
+                figure.add_subplot(
+                    num_subs_already + 1, #Num rows, add one to existing
+                    1, #Num cols
+                    num_subs_already + 1 #index, last row
+                    )
+            
         import rasterio as rio
         import os
         import numpy as np
@@ -249,7 +312,7 @@ class FireImpactsProject(object):
                 data = np.where(data == no_data_value, np.nan, data)  # Replace NoData values with NaN
             transform = src.transform
             file_name = os.path.splitext(os.path.basename(raster_path))[0].replace('_', ' ')
-            ax = figure.get_axes()[subplot-1]
+            ax = figure.axes[axes_index] # Subplots are 1-based
             img = ax.imshow(data, cmap='viridis', extent=(
                 transform[2], transform[2] + transform[0] * data.shape[1],
                 transform[5] + transform[4] * data.shape[0], transform[5]
