@@ -299,6 +299,7 @@ class FireImpactsProject(object):
         import rasterio as rio
         import os
         import numpy as np
+        import matplotlib.lines as mlines
         raster_path = self.catchment_path(catchment,*args)
         if not raster_path.endswith('.tif'):
             raster_path += '.tif'
@@ -312,7 +313,7 @@ class FireImpactsProject(object):
                 data = np.where(data == no_data_value, np.nan, data)  # Replace NoData values with NaN
             transform = src.transform
             file_name = os.path.splitext(os.path.basename(raster_path))[0].replace('_', ' ')
-            ax = figure.axes[axes_index] # Subplots are 1-based
+            ax = figure.axes[axes_index] 
             img = ax.imshow(data, cmap='viridis', extent=(
                 transform[2], transform[2] + transform[0] * data.shape[1],
                 transform[5] + transform[4] * data.shape[0], transform[5]
@@ -321,7 +322,18 @@ class FireImpactsProject(object):
             ax.set_xlabel('Longitude')
             ax.set_ylabel('Latitude')
             cbar = figure.colorbar(img, label=args[-1].split('.')[0])
-            gdf.plot(ax=ax, facecolor='none', edgecolor='red')
+            catch_bound_colour = 'red'
+            gdf.plot(ax=ax, facecolor='none', edgecolor=catch_bound_colour)
+            dummy_line = [mlines.Line2D(
+                [], #Empty x-data
+                [], #Empty y-data
+                color=catch_bound_colour
+                )]
+            this_leg = ax.legend(
+                dummy_line,
+                ['Catchment Boundary'], #Legend label
+                fontsize='xx-small'
+                )
             return
 
 def find_all_shapefiles(base_directory):
