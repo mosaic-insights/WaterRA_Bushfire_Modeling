@@ -59,6 +59,8 @@ class FireImpactsProject(object):
           except:
               self.initialise_project(norm_path,exist_ok=exist_ok,clear=clear)
 
+        self.load_vis_defaults()
+
 
     def _settings_fn(self):
         return os.path.join(self.project_path,'settings.json')
@@ -227,6 +229,20 @@ class FireImpactsProject(object):
         return {catchment:fn(catchment) for catchment in self.catchments}
 
     ###########################################################################
+    def load_vis_defaults(self):
+        """
+        Helper function to load certain values for default 
+        visualisations
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        self.vis_DEM = {
+            'cmap': 'viridis',
+            'measure': 'Elevation',
+            'units': 'm'
+        }
+
+    ###########################################################################
     def plot_catchment_raster(
         self,
         *args,
@@ -306,6 +322,15 @@ class FireImpactsProject(object):
 
         gdf = self.catchment_boundary(catchment)
 
+        if args[-1].split('.')[0] == 'DEM':
+            vis_params = self.vis_DEM
+        else:
+            vis_params = {
+                'cmap': 'viridis',
+                'measure': 'Undefined',
+                'units': 'n/a'
+                }
+
         with rio.open(raster_path) as src:
             data = src.read(1)
             no_data_value = src.nodata
@@ -314,14 +339,17 @@ class FireImpactsProject(object):
             transform = src.transform
             file_name = os.path.splitext(os.path.basename(raster_path))[0].replace('_', ' ')
             ax = figure.axes[axes_index] 
-            img = ax.imshow(data, cmap='viridis', extent=(
+            img = ax.imshow(data, cmap=vis_params['cmap'], extent=(
                 transform[2], transform[2] + transform[0] * data.shape[1],
                 transform[5] + transform[4] * data.shape[0], transform[5]
             ))
             ax.set_title(f'{catchment} {file_name}', fontsize=12)
             ax.set_xlabel('Longitude')
             ax.set_ylabel('Latitude')
-            cbar = figure.colorbar(img, label=args[-1].split('.')[0])
+            cbar = figure.colorbar(
+                img,
+                label=f'{vis_params['measure']} ({vis_params['units']})'
+                )
             catch_bound_colour = 'red'
             gdf.plot(ax=ax, facecolor='none', edgecolor=catch_bound_colour)
             dummy_line = [mlines.Line2D(
