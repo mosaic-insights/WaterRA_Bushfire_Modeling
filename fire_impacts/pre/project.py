@@ -3,6 +3,7 @@ This module contains the classes and functions that are used to manage the data 
 '''
 
 import os
+import re
 from glob import glob
 from pathlib import Path
 import shutil
@@ -337,15 +338,59 @@ class FireImpactsProject(object):
             if no_data_value is not None:
                 data = np.where(data == no_data_value, np.nan, data)  # Replace NoData values with NaN
             transform = src.transform
+
+            
+            
             file_name = os.path.splitext(os.path.basename(raster_path))[0].replace('_', ' ')
             ax = figure.axes[axes_index] 
             img = ax.imshow(data, cmap=vis_params['cmap'], extent=(
                 transform[2], transform[2] + transform[0] * data.shape[1],
                 transform[5] + transform[4] * data.shape[0], transform[5]
             ))
-            ax.set_title(f'{catchment} {file_name}', fontsize=12)
-            ax.set_xlabel('Longitude')
-            ax.set_ylabel('Latitude')
+
+            # Get the coordinate reference of the raster so we can
+            #extract relevant info
+            this_crs = src.crs
+            if this_crs.is_projected:
+                
+                these_units = this_crs.linear_units + 's'
+
+                # No ticks for a projects CS, we'll use a scalebar
+                #instead:
+                ax.set_xticks([])
+                ax.set_yticks([])
+                from matplotlib_scalebar.scalebar import ScaleBar
+
+                # Set the font size for the scalebar text
+                sb_fontprops = {
+                    'size': 'xx-small'
+                    }
+
+                # Create the scalebar object:
+                this_scalebar = ScaleBar(
+                    dx=src.transform.a, #size of one pixel
+                    units=these_units[0], #units of the pixel size
+                    loc='lower left',
+                    font_properties=sb_fontprops,
+                    box_alpha=0.5
+                    )
+                # Plot the scalebar onto the map:
+                ax.add_artist(this_scalebar)
+
+            elif this_crs.is_geographic:
+                these_units = this_crs.angular_units + 's'
+                ax.set_xlabel('Longitude')
+                ax.set_ylabel('Latitude')
+            
+            # Remove trailing underscores etc. (EPSG code):
+            int_title = re.sub(r'_\d+$', '', catchment)
+            # Expand camel case to spaced words:
+            int_title = re.sub(r'(?<!^)(?=[A-Z])', ' ', int_title)
+
+            title = int_title.replace('_', ' ').strip()
+
+            ax.set_title(f'{title}: {file_name}', fontsize=12)
+            
             cbar = figure.colorbar(
                 img,
                 label=f'{vis_params['measure']} ({vis_params['units']})'
