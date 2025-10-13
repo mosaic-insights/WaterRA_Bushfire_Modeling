@@ -161,6 +161,10 @@ def import_measured_rainfall(
     #records for the same day/subday/simulation, this will convert to
     #just one record with the mean rainfall value of the inputs:
     df3 = df2.groupby(level=df2.index.names, sort=False).mean()
+
+    # Rename rainfall column to what the module is expecting:
+    expected_rain_col = 'rainfall'
+    df3 = df3.rename(columns={rain_col: expected_rain_col})
     
     if attributes is not None:
         attribute_dict = attributes
