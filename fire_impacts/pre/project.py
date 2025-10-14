@@ -13,6 +13,7 @@ import geopandas as gpd
 import pandas as pd
 import json
 import logging
+import matplotlib as mpl
 import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
@@ -264,6 +265,12 @@ class FireImpactsProject(object):
             'cbar_extend': 'min'
         }
 
+        self.vis_dNBR = {
+            'cmap': 'inferno',
+            'measure': 'ΔNBR',
+            'units': 'n/a',
+        }
+
     ###########################################################################
     def plot_catchment_raster(
         self,
@@ -383,15 +390,9 @@ class FireImpactsProject(object):
                     transform[5]
                     )
                 )
-            
-            # Remove trailing underscores etc. (EPSG code):
-            int_title = re.sub(r'_\d+$', '', catchment)
-            # Expand camel case to spaced words:
-            int_title = re.sub(r'(?<!^)(?=[A-Z])', ' ', int_title)
 
-            title = int_title.replace('_', ' ').strip()
-
-            ax.set_title(f'{title}: {file_name}', fontsize=12)
+            title = clean_chart_title(catchment)
+            ax.set_title(f'{title}: {file_name}', fontsize='large')
             
             cbar = figure.colorbar(
                 img,
@@ -477,8 +478,6 @@ class FireImpactsProject(object):
             on='ID'
             )
         
-
-        
         # Handle existing figures and/or subplots in a similar way to
         #plot_catchment_rasters():
         if existing_figure is None and existing_axes is None:
@@ -493,28 +492,57 @@ class FireImpactsProject(object):
 
         #
 
-
         # Handle whether a catchment is specified and if not, plot for all
         #catchments just like plot_catchment_rasters():
+
+        if colour_col[:4].lower() == 'dnbr':
+            vis_params = self.vis_dNBR
+        else:
+            vis_params = {
+                'cmap': 'inferno',
+                'measure': 'Undefined',
+                'units': 'n/a',
+                'norm': None,
+                'cbar_extend': 'neither'
+            }
 
         # Then actually plot the headwaters based on the specified value.
         geom_with_data.plot(
             ax=ax,
             column=colour_col,
-            cmap='inferno'
+            cmap=vis_params['cmap']
             )
         
-        # Add a colourbar here BEFORE scalebar etc.
+        # Set the axis limits and aspects so the scalebar works:
+        
+        # Normalise colormap applicator for the current data column:
+        normer = plt.Normalize(
+            vmin=geom_with_data[colour_col].min(),
+            vmax=geom_with_data[colour_col].max()
+        )
+        # Add a mapper to create our colorbar with:
+        mapper = mpl.cm.ScalarMappable(
+            cmap=vis_params['cmap'],
+            norm=normer
+        )
+        
+        cbar = fig.colorbar(
+            mapper,
+            ax=ax,
+            label=vis_params['measure'],
+            extend='neither'
+            )
         
         # Aesthetics:
         ax.set_facecolor('#D3D3D3')
+        title = clean_chart_title(catchment)
+        ax.set_title(f'{title} Headwaters: {colour_col}', fontsize='large')
+
+        # Add scalebar or ticks as appropriate:
         this_crs = geom_with_data.crs
         these_units = this_crs.axis_info[0].unit_name
-        
         mapify_axes(ax, this_crs, these_units)
-
-        
-
+        # Add the catchment boundary:
         plot_catchment_boundary(self, catchment, ax)
 
 ###########################################################################
@@ -622,6 +650,21 @@ def mapify_axes(
     if crs.is_geographic:
         ax.set_xlabel('Longitude')
         ax.set_ylabel('Latitude')
+
+###############################################################################
+def clean_chart_title(text):
+    """
+    Removes underscores, ending-EPSG codes, camel-case
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Remove trailing underscores etc. (EPSG code):
+    int_title = re.sub(r'_\d+$', '', text)
+    # Expand camel case to spaced words:
+    int_title = re.sub(r'(?<!^)(?=[A-Z])', ' ', int_title)
+
+    title = int_title.replace('_', ' ').strip()
+    return title
 
 def find_all_shapefiles(base_directory):
     '''
