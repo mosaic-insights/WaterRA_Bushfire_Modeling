@@ -327,10 +327,18 @@ def debris_flow_load(
 # * Not duplicating code we already have (ie pysheds)
 
 
-def debris_flow(proj: FireImpactsProject,rainfall,catchment:str=None):
+def debris_flow(
+    proj:FireImpactsProject,
+    rainfall,
+    catchment:str=None,
+    save:bool=True
+    ):
     # Iterate through simulations and calculate the number of events, rainfall values, and event dates for both Year 1 and Year 2
+    
     if catchment is None:
         return proj.for_each_catchment(lambda c: debris_flow(proj,rainfall,c))
+    
+    out_path = proj.catchment_path(catchment, 'DebrisFlow')
 
     result = prep_debris_flow_simulation(proj, catchment)
 
@@ -396,8 +404,11 @@ def debris_flow(proj: FireImpactsProject,rainfall,catchment:str=None):
             result[col_name] = col_values
     # Write the outputs as a new dataframe (debris flow)
     Debris_Flow_Data = result.copy()
-    # Debris_Flow_Data_path = os.path.join(out_path, "Debris_Flow_Data.csv")
-    # Debris_Flow_Data.to_csv(Debris_Flow_Data_path, index=False)
+
+    res_file_name = 'DebrisFlowData.csv'
+    if save:
+        Debris_Flow_Data_path = os.path.join(out_path, res_file_name)
+        Debris_Flow_Data.to_csv(Debris_Flow_Data_path, index=False)
 
     logger.info('Done!')
     return Debris_Flow_Data

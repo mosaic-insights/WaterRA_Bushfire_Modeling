@@ -13,6 +13,8 @@ import geopandas as gpd
 import pandas as pd
 import json
 import logging
+import matplotlib.lines as mlines
+import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
 
 PER_CATCHMENT_FOLDERS = [
@@ -337,7 +339,7 @@ class FireImpactsProject(object):
         import rasterio as rio
         import os
         import numpy as np
-        import matplotlib.lines as mlines
+        
         raster_path = self.catchment_path(catchment,*args)
         if not raster_path.endswith('.tif'):
             raster_path += '.tif'
@@ -381,40 +383,6 @@ class FireImpactsProject(object):
                     transform[5]
                     )
                 )
-
-            # Get the coordinate reference of the raster so we can
-            #extract relevant info
-            this_crs = src.crs
-            if this_crs.is_projected:
-                
-                these_units = this_crs.linear_units + 's'
-
-                # No ticks for a projects CS, we'll use a scalebar
-                #instead:
-                ax.set_xticks([])
-                ax.set_yticks([])
-                from matplotlib_scalebar.scalebar import ScaleBar
-
-                # Set the font size for the scalebar text
-                sb_fontprops = {
-                    'size': 'xx-small'
-                    }
-
-                # Create the scalebar object:
-                this_scalebar = ScaleBar(
-                    dx=src.transform.a, #size of one pixel
-                    units=these_units[0], #units of the pixel size
-                    loc='lower left',
-                    font_properties=sb_fontprops,
-                    box_alpha=0.5
-                    )
-                # Plot the scalebar onto the map:
-                ax.add_artist(this_scalebar)
-
-            elif this_crs.is_geographic:
-                these_units = this_crs.angular_units + 's'
-                ax.set_xlabel('Longitude')
-                ax.set_ylabel('Latitude')
             
             # Remove trailing underscores etc. (EPSG code):
             int_title = re.sub(r'_\d+$', '', catchment)
@@ -430,19 +398,230 @@ class FireImpactsProject(object):
                 label=f'{vis_params['measure']} ({vis_params['units']})',
                 extend=vis_params['cbar_extend']
                 )
-            catch_bound_colour = 'red'
-            gdf.plot(ax=ax, facecolor='none', edgecolor=catch_bound_colour)
-            dummy_line = [mlines.Line2D(
-                [], #Empty x-data
-                [], #Empty y-data
-                color=catch_bound_colour
-                )]
-            this_leg = ax.legend(
-                dummy_line,
-                ['Catchment Boundary'], #Legend label
-                fontsize='xx-small'
-                )
+            
+            # Add the catchment boundary:
+            plot_catchment_boundary(self, catchment, ax)
+
+            # Get the coordinate reference of the raster so we can
+            #extract relevant info
+            this_crs = src.crs
+            if this_crs.is_projected:
+                these_units = this_crs.linear_units + 's'
+            elif this_crs.is_geographic:
+                these_units = this_crs.angular_units + 's'
+            
+            # Aesthetics:
+            mapify_axes(ax, this_crs, these_units)
+
+            
+            
             return
+
+    ###########################################################################
+    def plot_headwaters(
+            self,
+            catchment:str,
+            colour_col:str,
+            data_type:str='DebrisFlow',
+            data_format:str='csv',
+            existing_figure=None,
+            existing_axes=None,
+            ):
+        """
+        Plot the headwaters coloured by a specified data value
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # Check that headwaters have been computed. If not, raise error:
+        hw_shape_loc = self.catchment_path(
+            catchment,
+            'Topography',
+            )
+        hw_shape_path = os.path.join(hw_shape_loc, 'Headwaters.shp')
+        if not os.path.isfile(hw_shape_path):
+            raise FileNotFoundError(
+                'project.plot_headwaters() was called but Headwaters.shp '
+                f'does not exist in the Topography folder for {catchment}. '
+                'Run topography.extract_headwaters() first for the current '
+                'catchment.'
+            )
+        
+        # Check that the data table that has been passed already exists:
+        data_table_loc = self.catchment_path(catchment, data_type)
+        data_table_path = os.path.join(
+            data_table_loc,
+            data_type
+            ) + 'Data.' + data_format
+        if not os.path.isfile(data_table_path):
+            raise FileNotFoundError(
+                'project.plot_headwaters() was called requeting to '
+                f'plot data from {data_type} as the variable. Full '
+                f'path checked for was {data_table_path}.'
+            )
+        
+        # Get the data table path and check that the requested column
+        #exists:
+        non_geo_data = pd.read_csv(data_table_path)
+        if colour_col not in non_geo_data.columns:
+            raise ValueError(
+                'project.plot_headwaters() was asked to colour the map '
+                f'based on {colour_col}, but data table only had the '
+                f'following:\n {non_geo_data.columns}'
+            )
+        ng_for_join = non_geo_data[['ID', colour_col]]
+        
+        headwater_shapes = gpd.read_file(hw_shape_path)
+        geom_with_data = pd.merge(
+            headwater_shapes,
+            ng_for_join,
+            on='ID'
+            )
+        
+
+        
+        # Handle existing figures and/or subplots in a similar way to
+        #plot_catchment_rasters():
+        if existing_figure is None and existing_axes is None:
+            fig, ax = plt.subplots()
+        # Handle if figure is provided but no axes (check subplots):
+
+        # If axes is provided with no figure that is fine.
+        # If both a figure and an axes are provided, just use those:
+        else:
+            fig = existing_figure
+            ax = existing_axes
+
+        #
+
+
+        # Handle whether a catchment is specified and if not, plot for all
+        #catchments just like plot_catchment_rasters():
+
+        # Then actually plot the headwaters based on the specified value.
+        geom_with_data.plot(
+            ax=ax,
+            column=colour_col,
+            cmap='inferno'
+            )
+        
+        # Add a colourbar here BEFORE scalebar etc.
+        
+        # Aesthetics:
+        ax.set_facecolor('#D3D3D3')
+        this_crs = geom_with_data.crs
+        these_units = this_crs.axis_info[0].unit_name
+        
+        mapify_axes(ax, this_crs, these_units)
+
+        
+
+        plot_catchment_boundary(self, catchment, ax)
+
+###########################################################################
+def plot_catchment_boundary(
+    project:FireImpactsProject,
+    catchment:str,
+    axes,
+    new_legend=True
+    ):
+    """
+    Plot the the catchment boundary on an axes object and add a 
+    a legend
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Set the colour for the line:
+    catch_bound_colour = 'red'
+    # Get the actual boundary:
+    gdf = project.catchment_boundary(catchment)
+    # Plot on the provided axes:
+    gdf.plot(ax=axes, facecolor='none', edgecolor=catch_bound_colour)
+    # Dummy line for legend:
+    dummy_line = [
+        mlines.Line2D(
+            [], #Empty x-data
+            [], #Empty y-data
+            color=catch_bound_colour
+            )
+        ]
+    if new_legend:
+        this_leg = axes.legend(
+            dummy_line,
+            ['Catchment Boundary'], #Legend label
+            fontsize='xx-small'
+            )
+
+###############################################################################
+def get_vis_dx(ax, crs):
+    """
+    Return an appropriate visualisation dx value (map units per pixel)
+    to help in making a scalebar
+    --------------------------------------------------------------------
+    Notes:
+    - Probably only required if for some reason extent property hasn't
+    already been set either by matplotlib or geopandas.
+    --------------------------------------------------------------------
+    """
+    if not crs.is_projected:
+        logger.warning(
+            'get_vis_dx only accepts projected crs objects currently. '
+            'dx not returned.'
+            )
+        return None
+    # Get the width of the current axes in the map's units:
+    x_range = ax.get_xlim()
+    x_min = x_range[0]
+    x_max = x_range[1]
+    ax_width_map_units = x_max - x_min
+
+    # Get the width of the current axes in pixels:
+    ax_bbox_pixels = ax.get_window_extent()
+    ax_width_px = ax_bbox_pixels.width
+
+    # Calculate map units per pixel:
+    map_units_per_pixel = ax_width_map_units / ax_width_px
+    return map_units_per_pixel
+
+###############################################################################
+def mapify_axes(
+    ax,
+    crs,
+    units:str,
+    ):
+    """
+    Settings for maps based on whether the data is in a projected or
+    geographic coordinate system
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    
+    if crs.is_projected:
+        # No ticks for a projects CS, we'll use a scalebar
+        #instead:
+        ax.set_xticks([])
+        ax.set_yticks([])
+        from matplotlib_scalebar.scalebar import ScaleBar
+
+        # Set the font size for the scalebar text
+        sb_fontprops = {
+            'size': 'xx-small'
+            }
+
+        these_units = units[0]
+        # Create the scalebar object:
+        this_scalebar = ScaleBar(
+            dx=1, #size of one pixel
+            units=these_units, #units of the pixel size
+            loc='lower left',
+            font_properties=sb_fontprops,
+            box_alpha=0.5
+            )
+        # Plot the scalebar onto the map:
+        ax.add_artist(this_scalebar)
+
+    if crs.is_geographic:
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude')
 
 def find_all_shapefiles(base_directory):
     '''
