@@ -237,10 +237,29 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
+        from matplotlib.colors import LogNorm
         self.vis_DEM = {
             'cmap': 'viridis',
             'measure': 'Elevation',
-            'units': 'm'
+            'units': 'm',
+            'norm': None,
+            'cbar_extend': 'neither'
+        }
+
+        self.vis_slope = {
+            'cmap': 'viridis',
+            'measure': 'Slope',
+            'units': '°',
+            'norm': None,
+            'cbar_extend': 'neither'
+        }
+
+        self.vis_flow_accum = {
+            'cmap': 'viridis',
+            'measure': 'Contributing areas',
+            'units': 'count',
+            'norm': LogNorm(vmin=10),
+            'cbar_extend': 'min'
         }
 
     ###########################################################################
@@ -257,14 +276,16 @@ class FireImpactsProject(object):
 
         Parameters:
         - *args: 
-        - catchment (string): name of the catchment to
+        - catchment (str): name of the catchment to
         plot. If none, each catchment in the current project will be
         plotted.
-        - figure (matplotlib figure): matplotlib figure object within 
+        - figure (mpl.figure): matplotlib figure object within 
         which all the plots will be created. This function will create
         one if not provided.
-        - axes_index (integer): Of the axes objects that belong to this
+        - axes_index (int): Of the axes objects that belong to this
         figure (if provided), the index of the one to draw on.
+        - new_subplot (bool): whether a new subplot needs to be created
+        as part of this call
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
@@ -325,11 +346,17 @@ class FireImpactsProject(object):
 
         if args[-1].split('.')[0] == 'DEM':
             vis_params = self.vis_DEM
+        elif args[-1].split('.')[0].lower() == 'slope':
+            vis_params = self.vis_slope
+        elif args[-1].split('.')[0].lower() == 'flow_accumulation':
+            vis_params = self.vis_flow_accum
         else:
             vis_params = {
                 'cmap': 'viridis',
                 'measure': 'Undefined',
-                'units': 'n/a'
+                'units': 'n/a',
+                'norm': None,
+                'cbar_extend': 'neither'
                 }
 
         with rio.open(raster_path) as src:
@@ -343,10 +370,17 @@ class FireImpactsProject(object):
             
             file_name = os.path.splitext(os.path.basename(raster_path))[0].replace('_', ' ')
             ax = figure.axes[axes_index] 
-            img = ax.imshow(data, cmap=vis_params['cmap'], extent=(
-                transform[2], transform[2] + transform[0] * data.shape[1],
-                transform[5] + transform[4] * data.shape[0], transform[5]
-            ))
+            img = ax.imshow(
+                data,
+                cmap=vis_params['cmap'],
+                norm=vis_params['norm'],
+                extent=(
+                    transform[2],
+                    transform[2] + transform[0] * data.shape[1],
+                    transform[5] + transform[4] * data.shape[0],
+                    transform[5]
+                    )
+                )
 
             # Get the coordinate reference of the raster so we can
             #extract relevant info
@@ -393,7 +427,8 @@ class FireImpactsProject(object):
             
             cbar = figure.colorbar(
                 img,
-                label=f'{vis_params['measure']} ({vis_params['units']})'
+                label=f'{vis_params['measure']} ({vis_params['units']})',
+                extend=vis_params['cbar_extend']
                 )
             catch_bound_colour = 'red'
             gdf.plot(ax=ax, facecolor='none', edgecolor=catch_bound_colour)

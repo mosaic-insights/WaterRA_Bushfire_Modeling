@@ -8,6 +8,7 @@ jupyter
 PrepareData.ipynb
 Severity.ipynb
 Simulation.ipynb
+Visualisation.ipynb
 
 # Unnecessary sidecar files
 test_data/*.aux.xml
