@@ -17,7 +17,13 @@ import os
 import logging
 logger = logging.getLogger(__name__)
 
+###############################################################################
 def get_slope(dem_path):
+    """
+    
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
     with rasterio.open(dem_path) as src:
         dem_data = src.read(1)  # Read the first band (DEM data)
         dem_meta = src.meta.copy()
@@ -50,13 +56,35 @@ def get_slope(dem_path):
 
     return slope_ratio, acc_data, fdir, dem_data, transform, crs, dem_meta
 
-def get_clay_fraction(proj: FireImpactsProject, catchment:str, depth:str,transform,crs,shape):
+###############################################################################
+def get_clay_fraction(
+    proj: FireImpactsProject,
+    catchment:str,
+    depth:str,
+    transform,
+    crs,
+    shape
+    ):
+    """
+    
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
     clay_directory = proj.catchment_path(catchment, 'Soils','CLY')
     fn = unique_file_matching(clay_directory,'CLY',depth,'EV')
     path_fn = os.path.join(clay_directory, fn)
     return read_aligned(path_fn,transform,crs,shape)*PERCENT_TO_FRACTION
 
-def prep_debris_flow_simulation(proj: FireImpactsProject, catchment:str):
+###############################################################################
+def prep_debris_flow_simulation(
+    proj: FireImpactsProject,
+    catchment:str
+    ):
+    """
+    
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
     dem_path = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
     slope_ratio, acc_data, flowdir, dem_data, transform, crs, raster_meta = get_slope(dem_path)
     shape = slope_ratio.shape
@@ -68,7 +96,13 @@ def prep_debris_flow_simulation(proj: FireImpactsProject, catchment:str):
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
     os.makedirs(out_path, exist_ok=True)
 
-    condition_data = pd.read_csv(proj.catchment_path(catchment,'Soil_Slope_Aridity_dNBR.csv'))
+    condition_data = pd.read_csv(
+        proj.catchment_path(
+            catchment,
+            'Soil_Slope_Aridity_dNBR.csv'
+            )
+        )
+    
     condition_data = condition_data.fillna(0.0) # TODO Check - is this correct? Example is getting nulls in dNBR columns
     topo_data = pd.read_csv(proj.catchment_path(catchment,'Topography','Headwaters.csv'))
     fire_impact_data = pd.merge(condition_data, topo_data, on='ID',how='outer')
@@ -81,13 +115,15 @@ def prep_debris_flow_simulation(proj: FireImpactsProject, catchment:str):
                             load_package_data('debris-constituents.csv'),
                             raster_meta)
 
+###############################################################################
 def debris_flow_load(
     dem_data,slope_ratio, slope_transform, flow_accumulation, flowdir,
     clay0_5_fraction, clay5_15_fraction, out_path,
     fire_impact_data:pd.DataFrame, hf_lookup:pd.DataFrame,
     debris_flow_constituents:pd.DataFrame,raster_meta):
     """
-    Function to calculate debris flow load for each pixel and integrate fire impact analysis.
+    Function to calculate debris flow load for each pixel and integrate
+    fire impact analysis.
 
     Parameters:
     slope_ratio (array): Slope ratio
@@ -98,7 +134,10 @@ def debris_flow_load(
     hflookup_i12_path (pd.DataFrame): Path to the HF lookup file.
 
     Returns:
-    tuple: Cumulative erosion and clay data arrays, erosion mass per hectare array, updated Fire Impact DataFrame.
+    tuple: Cumulative erosion and clay data arrays, erosion mass per
+    hectare array, updated Fire Impact DataFrame.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
     """
     # Step 1: calculate debris flow
 
@@ -275,9 +314,17 @@ def debris_flow_load(
         fire_impact_data[column_name] = (fire_impact_data['Sediment mass accumulation (kg)'] * (Average_Amount*MILLIGRAMS_TO_KILOGRAMS))
     # --------------------------------------------------------------------------------------------------------------------------------------
     # Step 4: Read HFlookup_i12 data and merge it with fire_impact_data and debris flow data
-    fire_impact_data["Aridity_mean_adjusted"] = np.ceil(fire_impact_data["Aridity_mean"].round(2) / 0.25) * 0.25 # adjust (round up mean aridity to nesrest 0.25 to match it with AI in HFlookup_I12 data)
-    fire_impact_data["dNBR_mean_adjusted"] = (((fire_impact_data["dNBR_mean"] * 1000 + 50) // 100) * 100).astype("int64")  # adjust (round up mean dNBR to nearest 100 to match it with dNBR in HFlookup_I12 data)
-    fire_impact_data["Slope_mean_adjusted"] = (fire_impact_data["Slope_mean"] / 100).round(1)  # # adjust (get ratio and round up slope to match it with slope in HFlookup_I12 data)
+    fire_impact_data["Aridity_mean_adjusted"] = np.ceil(
+        fire_impact_data["Aridity_mean"].round(2) / 0.25
+        ) * 0.25 # adjust (round up mean aridity to nesrest 0.25 to match it with AI in HFlookup_I12 data)
+    fire_impact_data["dNBR_mean_adjusted"] = (((
+                fire_impact_data["dNBR_mean"] * 1000 + 50
+                ) // 100
+            ) * 100
+        ).astype("int64")  # adjust (round up mean dNBR to nearest 100 to match it with dNBR in HFlookup_I12 data)
+    fire_impact_data["Slope_mean_adjusted"] = (
+        fire_impact_data["Slope_mean"] / 100
+        ).round(1)  # # adjust (get ratio and round up slope to match it with slope in HFlookup_I12 data)
 
     # Split HFlookup_I12 into two subsets based on 'years'
 
@@ -326,19 +373,26 @@ def debris_flow_load(
 # * Results on different spatial / temporal aggregations
 # * Not duplicating code we already have (ie pysheds)
 
-
+###############################################################################
 def debris_flow(
     proj:FireImpactsProject,
     rainfall,
     catchment:str=None,
     save:bool=True
     ):
+    """
+    
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
     # Iterate through simulations and calculate the number of events, rainfall values, and event dates for both Year 1 and Year 2
     
     if catchment is None:
         return proj.for_each_catchment(lambda c: debris_flow(proj,rainfall,c))
     
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
+    
+    
 
     result = prep_debris_flow_simulation(proj, catchment)
 
@@ -409,6 +463,10 @@ def debris_flow(
     if save:
         Debris_Flow_Data_path = os.path.join(out_path, res_file_name)
         Debris_Flow_Data.to_csv(Debris_Flow_Data_path, index=False)
+        logger.info(
+            'Saved debris flow by headweater results table to '
+            f'{Debris_Flow_Data_path}'
+            )
 
     logger.info('Done!')
     return Debris_Flow_Data

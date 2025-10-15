@@ -21,7 +21,11 @@ CRS_METRE_UNITS={'m','meter','meters','metre','metres'}
 def ftoi(x,dp=5):
     return int(round(x,dp))
 
-def extract_catchment_dems(project:FireImpactsProject,dem_path,target_resolution=None):
+def extract_catchment_dems(
+        project:FireImpactsProject,
+        dem_path,
+        target_resolution=None
+        ):
   '''
   Extract DEMs for all catchments in the project from a single regional DEM.
 

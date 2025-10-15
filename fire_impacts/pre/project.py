@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import rasterio as rio
 import rasterstats as rs
+import numpy as np
 import geopandas as gpd
 import pandas as pd
 import json
@@ -269,6 +270,7 @@ class FireImpactsProject(object):
             'cmap': 'inferno',
             'measure': 'ΔNBR',
             'units': 'n/a',
+            'title_varname': 'ΔNBR'
         }
 
     ###########################################################################
@@ -503,7 +505,8 @@ class FireImpactsProject(object):
                 'measure': 'Undefined',
                 'units': 'n/a',
                 'norm': None,
-                'cbar_extend': 'neither'
+                'cbar_extend': 'neither',
+                'title_varname': '-'
             }
 
         # Then actually plot the headwaters based on the specified value.
@@ -534,9 +537,14 @@ class FireImpactsProject(object):
             )
         
         # Aesthetics:
+        varname = (
+            vis_params['title_varname'] 
+            + ' ' 
+            + colour_col.split('_')[1].title()
+            )
         ax.set_facecolor('#D3D3D3')
         title = clean_chart_title(catchment)
-        ax.set_title(f'{title} Headwaters: {colour_col}', fontsize='large')
+        ax.set_title(f'{title} Headwaters: {varname}', fontsize='large')
 
         # Add scalebar or ticks as appropriate:
         this_crs = geom_with_data.crs
@@ -727,6 +735,13 @@ def summary_stats(project:FireImpactsProject,catchment_name=None):
 
     extracted_data = pd.DataFrame(result)
 
+    # Convert dNBR values to a set of standardised numbers [0, 1000]:
+    for stat in STATS:
+        this_col_name = 'dNBR_' + stat
+        new_col_name = this_col_name + '_fmtd'
+        extracted_data[new_col_name] = format_dNBR(extracted_data[this_col_name])
+
+
     csv_path=project.catchment_path(catchment_name, 'Soil_Slope_Aridity_dNBR.csv')
     extracted_data.to_csv(csv_path, index=False)
 
@@ -744,3 +759,15 @@ def get_zonal_stats(gdf, raster_path,label):
             nodata=src.nodata or -9999
         )
     return stats
+
+###############################################################################
+def format_dNBR(series:pd.Series):
+    """
+    Convert dNBR values between -1 and 1, to standardised values 
+    between 0 and 1000. Values below 0 are set to 0.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    return series.clip(lower=0).mul(1000)
+
+
