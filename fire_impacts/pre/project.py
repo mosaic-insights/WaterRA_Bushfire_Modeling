@@ -15,6 +15,7 @@ import pandas as pd
 import json
 import logging
 import matplotlib as mpl
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
@@ -396,8 +397,13 @@ class FireImpactsProject(object):
             title = clean_chart_title(catchment)
             ax.set_title(f'{title}: {file_name}', fontsize='large')
             
+            # Create a divider to manage spacing of axis and colourbar:
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes('right', size='5%', pad=0.05)
+
             cbar = figure.colorbar(
                 img,
+                cax=cax,
                 label=f'{vis_params['measure']} ({vis_params['units']})',
                 extend=vis_params['cbar_extend']
                 )
@@ -529,9 +535,15 @@ class FireImpactsProject(object):
             norm=normer
         )
         
+        # Create a divider object linked to the main axes to manage 
+        #colorbar spacing:
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes('right', size='5%', pad=0.05)
+
+
         cbar = fig.colorbar(
             mapper,
-            ax=ax,
+            cax=cax,
             label=vis_params['measure'],
             extend='neither'
             )
