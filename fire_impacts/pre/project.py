@@ -274,6 +274,13 @@ class FireImpactsProject(object):
             'title_varname': 'ΔNBR'
         }
 
+        self.vis_i12_crit = {
+            'cmap': 'plasma_r',
+            'measure': '12-minute intensity threshold',
+            'units': 'mm/hr',
+            'title_varname': 'Rain Intensity'
+        }
+
     ###########################################################################
     def plot_catchment_raster(
         self,
@@ -505,6 +512,8 @@ class FireImpactsProject(object):
 
         if colour_col[:4].lower() == 'dnbr':
             vis_params = self.vis_dNBR
+        elif colour_col[:8].lower() == 'i12_crit':
+            vis_params = self.vis_i12_crit
         else:
             vis_params = {
                 'cmap': 'inferno',
