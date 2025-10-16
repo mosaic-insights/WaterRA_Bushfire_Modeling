@@ -565,6 +565,121 @@ class FireImpactsProject(object):
         # Add the catchment boundary:
         plot_catchment_boundary(self, catchment, ax)
 
+    ###########################################################################
+    def thresh_sev_scatter(
+        self,
+        catchment:str,
+        existing_figure = None,
+        existing_axes = None,
+        width=12,
+        height=8,
+        dpi=600
+        ):
+        """
+        Produce a scatter plot of year 1 and year 2 critical rainfall
+        intensity thresholds (x-axis) vs. mean dNBR (y-axis) for each
+        headwater.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # Get the location of the debris flow data for the current
+        #catchment:
+        folder = self.catchment_path(catchment, 'DebrisFlow')
+        file = 'DebrisFlowData.csv'
+        path = os.path.join(folder, file)
+        
+        # Make sure it actually existsa and if not, throw an error:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                'project.thresh_sev_scatter() requires debris flow data '
+                'to be loaded. Run debris.debris_flow() which will save '
+                f'the required data in a csv here:\n{path}'
+            )
+        non_geo_data = pd.read_csv(path)
+        
+        # Prepare the data for plotting:
+        x1_col = 'I12_crit_mean_Year_1'
+        x2_col = 'I12_crit_mean_Year_2'
+        y_col = 'dNBR_mean_fmtd'
+        data_for_scatter = non_geo_data[[x1_col, x2_col, y_col]].dropna()
+
+        # Get median values for axes lines:
+        median_x1_col = data_for_scatter[x1_col].median()
+        median_x2_col = data_for_scatter[x2_col].median()
+        median_y_col = data_for_scatter[y_col].median()
+
+        # Colours for each years' data:
+        col_year_1 = '#800080' #purple
+        col_year_2 = '#696969' #grey
+
+        # Create a figure and axes if we haven't been provided with them:
+        if existing_figure is None and existing_axes is None:
+            sfig, sax = plt.subplots()
+        elif existing_axes is None:
+            # If we're given a figure but no axes, add a subplot:
+            sfig = existing_figure
+            sax = existing_figure.add_subplot()
+        elif existing_figure is None:
+            # If axes but no figure, get the parent figure of the axes:
+            sfig = existing_axes.figure
+            sax = existing_axes
+        else:
+            # Otherwise, create new of both:
+            sfig, sax = plt.subplots()
+        
+        # Set size and resolution parameters for figure:
+        sfig.set_size_inches(width, height)
+        sfig.set_dpi(dpi)
+
+        # Plot year 1 and then year 2 values:
+        splot1 = sax.scatter(
+            x=data_for_scatter[x1_col],
+            y=data_for_scatter[y_col],
+            marker='x',
+            color=col_year_1,
+            label='Year 1'
+            )
+        splot2 = sax.scatter(
+            x=data_for_scatter[x2_col],
+            y=data_for_scatter[y_col],
+            marker='o',
+            color=col_year_2,
+            label='Year 2'
+        )
+        # Vertical lines for critical rainfall threshold medians for 
+        #each year:
+        x1_col_med = sax.axvline(
+            x=median_x1_col,
+            label='I12 crit. rain threshold: y1 median',
+            ls='--',
+            c=col_year_1
+            )
+        x2_col_med = sax.axvline(
+            x=median_x2_col,
+            label='I12 crit. rain threshold: y2 median',
+            ls='--',
+            c=col_year_2
+            )
+        # Horizontal line for dNBR median (will be 0 inles)
+        y_col_med = sax.axhline(
+            y=median_y_col, label=f'dNBR median', ls=':', c='grey'
+            )
+        
+        sax.set_title(
+            'Scatter plot of mean dNBR vs year 1 critical rainfall '
+            f'for {clean_chart_title(catchment)} headwaters'
+            )
+        sax.set_xlabel(
+            'I12 critical threshold for debris flow'
+            )
+        sax.set_ylabel('Mean dNBR')
+
+        this_leg = sax.legend(
+            loc='upper left',
+            bbox_to_anchor=(1.0, 1.0)
+            )
+        return sfig
+
 ###########################################################################
 def plot_catchment_boundary(
     project:FireImpactsProject,
@@ -781,5 +896,9 @@ def format_dNBR(series:pd.Series):
     --------------------------------------------------------------------
     """
     return series.clip(lower=0).mul(1000)
+
+
+    
+
 
 
