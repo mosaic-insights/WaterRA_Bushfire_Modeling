@@ -59,17 +59,67 @@ def convert_to_julian(dates_array):
     
     return jd
 
+def flatten_pyraingen_rainfall(source, rain_data_start=None, rain_data_end=None):
+    '''
+    Flattens subdaily stochastic rainfall data from the pyraingen conventions (day x subday x simulation) to a single
+    long time series per simulation.
 
-def aggregate_rainfall_data(netcdf_path, rain_data_start, rain_data_end, time_res='30min'):
+    Returned dataframe is simulation (columns) x time (rows), with rainfall values at subdaily resolution.
+ 
+    Parameters:
+    - source (str or xarray.Dataset): Path to the netCDF file containing rainfall data or an xarray Dataset.
+    - rain_data_start (datetime): Start date for the rainfall data.
+    - rain_data_end (datetime): End date for the rainfall data.
+
+    Returns:
+    - r_flat (DataFrame): DataFrame with flattened rainfall by simulation.
+    '''
+    if isinstance(source, str):
+        ds = xr.open_dataset(source)\
+          .rio.write_grid_mapping(inplace=True)\
+          .rio.write_crs("EPSG:4326", inplace=True)
+    else:
+        ds = source
+
+    if 'time' in ds.dims:
+        return ds
+
+    ds['day'] = convert_from_julian(ds['day'].values)
+    if rain_data_start is not None or rain_data_end is not None:
+        ds = ds.sel(day=slice(rain_data_start,rain_data_end))
+    subdaily = ds.stack({'time':['day','subday']})
+    subday_seconds = (subdaily.subday.values*86400).astype(int)
+    new_index = subdaily['day'].data+pd.to_timedelta(subday_seconds,unit='s')
+    subdaily = subdaily.drop_vars(['time','day','subday']).assign_coords(time=('time',new_index))
+    return subdaily
+
+def convert_rainfall_depth_to_intensity(rainfall_depth_mm:xr.Dataset):
+    '''
+    Converts rainfall depth (in mm) to intensity (in mm/h) by dividing by the duration (in hours).
+    '''
+    TIMESTEP_SAMPLE_COUNT=10
+    timestamps = rainfall_depth_mm['time'].values
+    timestep_hours = (timestamps[TIMESTEP_SAMPLE_COUNT] - timestamps[0]) / (np.timedelta64(1, 'h') * TIMESTEP_SAMPLE_COUNT)
+    timestep_hours = float(timestep_hours)
+
+    result = rainfall_depth_mm / timestep_hours
+    result['rainfall'].attrs['units'] = 'mm/h'
+    return result
+
+def aggregate_rainfall_data(source, rain_data_start=None, rain_data_end=None, time_res='30min'):
     '''
     Aggregates subdaily stochastic rainfall data from a netCDF file to a specified time resolution.
 
-    Input data is expected to be from pyraingen, with data stored by simulation x day x subday.
+    Input data is expected to be rainfall replicates (eg from pyraingen), with data stored by simulation x day x subday,
+     or simulation x time. If the input data is in day x subday format, it is first flattened to a long time series per simulation.
 
     Returned dataframe is simulation (columns) x time (rows), with rainfall values aggregated to the specified time resolution.
 
+    If the rainfall units are in mm, the aggregation is done by summing the rainfall over the time period.
+    If the rainfall units are in mm/h, the aggregation is done by averaging the rainfall over the time period.
+
     Parameters:
-    - netcdf_path (str): Path to the netCDF file containing rainfall data.
+    - source (str or xarray.Dataset): Path to the netCDF file containing rainfall data or an xarray Dataset.
     - rain_data_start (datetime): Start date for the rainfall data.
     - rain_data_end (datetime): End date for the rainfall data.
     - time_res (str): Time resolution for the aggregated data. Default is '30min'.
@@ -77,24 +127,23 @@ def aggregate_rainfall_data(netcdf_path, rain_data_start, rain_data_end, time_re
     Returns:
     - r_agg (DataFrame): DataFrame with aggregated rainfall by simulation.
     '''
+    r_flat = flatten_pyraingen_rainfall(source, rain_data_start, rain_data_end)
+    r_agg = r_flat.resample({'time': time_res})
 
-    ds = xr.open_dataset(netcdf_path)\
-      .rio.write_grid_mapping(inplace=True)\
-      .rio.write_crs("EPSG:4326", inplace=True)
-    ds['day'] = convert_from_julian(ds['day'].values)
-    ds = ds.sel(day=slice(rain_data_start,rain_data_end))
-
-    subdaily = ds.stack({'time':['day','subday']})
-
-    subday_seconds = (subdaily.subday.values*86400).astype(int)
-    new_index = subdaily['day'].data+pd.to_timedelta(subday_seconds,unit='s')
-    subdaily = subdaily.drop_vars(['time','day','subday']).assign_coords(time=('time',new_index))
-    df = subdaily['rainfall'].to_dataframe()
-    rainfall_by_simulation = df.reset_index().pivot(index='time',columns='simulation',values='rainfall')
-
-    r_agg = rainfall_by_simulation.resample(time_res).sum()
+    units = r_flat['rainfall'].attrs['units']
+    if units == 'mm':
+        r_agg = r_agg.sum()
+    elif units == 'mm/h':
+        r_agg = r_agg.mean()
+    else:
+        raise ValueError(f"Unrecognized rainfall units: {units}")
 
     return r_agg
+
+def convert_rainfall_to_dataframe(source):
+    df = source['rainfall'].to_dataframe().reset_index().pivot(index='time',columns='simulation',values='rainfall')
+    df.attrs['units'] = source['rainfall'].attrs.get('units','unknown')
+    return df
 
 def import_measured_rainfall(
     excel_path:str,
