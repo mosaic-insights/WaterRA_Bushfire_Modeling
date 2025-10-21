@@ -136,7 +136,7 @@ def lumped_daily_rusle(project:FireImpactsProject, rainfall, catchment=None):
 
     Parameters:
     - project (fire_impacts.FireImpactsProject): Current project
-    - rainfall (Series-like): 30 minute rainfall data
+    - rainfall (Series-like): 30 minute rainfall data (mm)
     - catchment (str): Name of the catchment to process. If None, process all catchments.
 
     Returns:
@@ -145,6 +145,11 @@ def lumped_daily_rusle(project:FireImpactsProject, rainfall, catchment=None):
     if catchment is None:
         return project.for_each_catchment(lambda c: lumped_daily_rusle(project,rainfall,c))
 
+    if 'units' not in rainfall.attrs:
+        logger.warning("Rainfall data has no units attribute, assuming units are correct (mm)")
+    elif rainfall.attrs['units'] != 'mm':
+        logger.error("Rainfall data has units '%s', expected 'mm'", rainfall.attrs['units'])
+        raise ValueError("Rainfall data has units '%s', expected 'mm'"%rainfall.attrs['units'])
     RUSLE_df = calculate_lumped_rusle(project.subcatchment_boundaries(catchment), rainfall, *_rusle_parameter_grids(project,catchment))
 
     logger.info('Done')
