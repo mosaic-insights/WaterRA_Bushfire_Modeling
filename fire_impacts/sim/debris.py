@@ -381,7 +381,13 @@ def debris_flow(
     save:bool=True
     ):
     """
-    
+    Run debris flow simulation for a given catchment or all catchments in the project.
+
+    Parameters:
+    proj (FireImpactsProject): The FireImpactsProject instance.
+    rainfall (pd.Series): A pandas Series containing rainfall intensities (mm/hr) with a DateTime index.
+    catchment (str, optional): The catchment to run the simulation for. If None, run for all catchments.
+    save (bool, optional): Whether to save the results. Defaults to True.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
@@ -392,7 +398,11 @@ def debris_flow(
     
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
     
-    
+    if 'units' not in rainfall.attrs:
+        logger.warning("Rainfall data has no units attribute, assuming units are correct (mm/hr)")
+    elif rainfall.attrs['units'] != 'mm/h':
+        logger.error("Rainfall data has units '%s', expected 'mm/h'", rainfall.attrs['units'])
+        raise ValueError("Rainfall data has units '%s', expected 'mm/h'"%rainfall.attrs['units'])
 
     result = prep_debris_flow_simulation(proj, catchment)
 
