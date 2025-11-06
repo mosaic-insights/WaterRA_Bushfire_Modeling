@@ -175,7 +175,8 @@ def import_measured_rainfall(
     """
     df = pd.read_excel(excel_path)
     df['day'] = df[datetime_col].dt.strftime('%Y-%m-%d')
-    df['subday'] = df[datetime_col].dt.strftime('%H:%M')
+    subday_fmt = '%H:%M'
+    df['subday'] = df[datetime_col].dt.strftime(subday_fmt)
     df['simulation'] = 0
 
     # Convert day to numpy, then to Julian date:
