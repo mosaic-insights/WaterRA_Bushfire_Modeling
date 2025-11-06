@@ -606,6 +606,18 @@ class FireImpactsProject(object):
         Produce a scatter plot of year 1 and year 2 critical rainfall
         intensity thresholds (x-axis) vs. mean dNBR (y-axis) for each
         headwater.
+
+        Parameters:
+        - catchment (str): name of the catchment within the current 
+        project
+        - existing figure (mpl.figure): matplotlib figure object to 
+        include the new chart on, if desired. One will be created if
+        not.
+        - existing axes (mpl.axes): matplotlib axes object to plot the
+        new data onto, if desired. One will be created if not.
+        - width (numeric): desired width of the figure in inches
+        - height (numeric): desired height of the figure in inches
+        - dpi (int): desired resolution of the figure in dots per inch
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
@@ -692,6 +704,7 @@ class FireImpactsProject(object):
             y=median_y_col, label=f'dNBR median', ls=':', c='grey'
             )
         
+        # Aesthetics:
         sax.set_title(
             'Scatter plot of mean dNBR vs year 1 critical rainfall '
             f'for {clean_chart_title(catchment)} headwaters'
@@ -701,6 +714,7 @@ class FireImpactsProject(object):
             )
         sax.set_ylabel('Mean dNBR')
 
+        # Add legend:
         this_leg = sax.legend(
             loc='upper left',
             bbox_to_anchor=(1.0, 1.0)
