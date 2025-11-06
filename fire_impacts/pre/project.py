@@ -445,6 +445,21 @@ class FireImpactsProject(object):
             ):
         """
         Plot the headwaters coloured by a specified data value
+
+        Parameters:
+        - catchment (str): name of the catchment within the current 
+        project
+        - colour_col (str): name of the column in the .csv file which
+        is to be used to colour the headwaters
+        - data_type (str): name of the output type, which will generally
+        be DebrisFlow but could be RUSLE or similar later
+        - data_format (str): three-letter extension relevant to the file
+        type being read for the non-spatial data.
+        - existing figure (mpl.figure): matplotlib figure object to 
+        include the new chart on, if desired. One will be created if
+        not.
+        - existing axes (mpl.axes): matplotlib axes object to plot the
+        new data onto, if desired. One will be created if not.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
@@ -484,8 +499,10 @@ class FireImpactsProject(object):
                 f'based on {colour_col}, but data table only had the '
                 f'following:\n {non_geo_data.columns}'
             )
-        ng_for_join = non_geo_data[['ID', colour_col]]
         
+        # Get a subset of the non-spatial data and join it to the 
+        #headwaters shapefile:
+        ng_for_join = non_geo_data[['ID', colour_col]]
         headwater_shapes = gpd.read_file(hw_shape_path)
         geom_with_data = pd.merge(
             headwater_shapes,
@@ -498,7 +515,7 @@ class FireImpactsProject(object):
         if existing_figure is None and existing_axes is None:
             fig, ax = plt.subplots()
         # Handle if figure is provided but no axes (check subplots):
-
+        # TODO
         # If axes is provided with no figure that is fine.
         # If both a figure and an axes are provided, just use those:
         else:
@@ -509,11 +526,14 @@ class FireImpactsProject(object):
 
         # Handle whether a catchment is specified and if not, plot for all
         #catchments just like plot_catchment_rasters():
+        # TODO
 
+        # Choose visualisation parameters based on the colour column:
         if colour_col[:4].lower() == 'dnbr':
             vis_params = self.vis_dNBR
         elif colour_col[:8].lower() == 'i12_crit':
             vis_params = self.vis_i12_crit
+        # Default parameters fallback:
         else:
             vis_params = {
                 'cmap': 'inferno',
@@ -531,8 +551,6 @@ class FireImpactsProject(object):
             cmap=vis_params['cmap']
             )
         
-        # Set the axis limits and aspects so the scalebar works:
-        
         # Normalise colormap applicator for the current data column:
         normer = plt.Normalize(
             vmin=geom_with_data[colour_col].min(),
@@ -549,7 +567,7 @@ class FireImpactsProject(object):
         divider = make_axes_locatable(ax)
         cax = divider.append_axes('right', size='5%', pad=0.05)
 
-
+        # Create the colourbar:
         cbar = fig.colorbar(
             mapper,
             cax=cax,
@@ -562,9 +580,9 @@ class FireImpactsProject(object):
             vis_params['title_varname'] 
             + ' ' 
             + colour_col.split('_')[1].title()
-            )
-        ax.set_facecolor('#D3D3D3')
-        title = clean_chart_title(catchment)
+            ) # Variable name part of title
+        ax.set_facecolor('#D3D3D3') 
+        title = clean_chart_title(catchment) 
         ax.set_title(f'{title} Headwaters: {varname}', fontsize='large')
 
         # Add scalebar or ticks as appropriate:
