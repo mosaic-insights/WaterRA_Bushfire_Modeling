@@ -49,5 +49,26 @@ def unique_file_matching(path,*substrings):
         raise FileExistsError(f"Multiple files found in {path} matching patterns: {substrings}")
     return matches[0]
 
+###############################################################################
+def fig_ax_admin():
+    """
+    For visualisations, determine plotting behaviour based on whether 
+    the use provides an existing figure and/or axes
+
+    Parameters:
+    - figure (mpl.figure): existing matplotlib figure object if 
+    provided to the calling function
+    - axes (mpl.axes): existing matplotlib axes object if provided to 
+    the calling function
+
+    Returns:
+    - The existing matplotlib figure if provided by the user, otherwise
+    a brand new one
+    - The existing matplotlib axes if provided by the user, otherwise a
+    brand new one
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    pass
 
 
