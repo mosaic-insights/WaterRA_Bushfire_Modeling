@@ -428,7 +428,7 @@ class FireImpactsProject(object):
                 these_units = this_crs.angular_units + 's'
             
             # Aesthetics:
-            mapify_axes(ax, this_crs, these_units)
+            toputil.mapify_axes(ax, this_crs, these_units)
 
             
             
@@ -578,7 +578,7 @@ class FireImpactsProject(object):
         # Add scalebar or ticks as appropriate:
         this_crs = geom_with_data.crs
         these_units = this_crs.axis_info[0].unit_name
-        mapify_axes(ax, this_crs, these_units)
+        toputil.mapify_axes(ax, this_crs, these_units)
         # Add the catchment boundary:
         plot_catchment_boundary(self, catchment, ax)
 
@@ -762,47 +762,6 @@ def get_vis_dx(ax, crs):
     # Calculate map units per pixel:
     map_units_per_pixel = ax_width_map_units / ax_width_px
     return map_units_per_pixel
-
-###############################################################################
-def mapify_axes(
-    ax,
-    crs,
-    units:str,
-    ):
-    """
-    Settings for maps based on whether the data is in a projected or
-    geographic coordinate system
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
-    """
-    
-    if crs.is_projected:
-        # No ticks for a projects CS, we'll use a scalebar
-        #instead:
-        ax.set_xticks([])
-        ax.set_yticks([])
-        from matplotlib_scalebar.scalebar import ScaleBar
-
-        # Set the font size for the scalebar text
-        sb_fontprops = {
-            'size': 'xx-small'
-            }
-
-        these_units = units[0]
-        # Create the scalebar object:
-        this_scalebar = ScaleBar(
-            dx=1, #size of one pixel
-            units=these_units, #units of the pixel size
-            loc='lower left',
-            font_properties=sb_fontprops,
-            box_alpha=0.5
-            )
-        # Plot the scalebar onto the map:
-        ax.add_artist(this_scalebar)
-
-    if crs.is_geographic:
-        ax.set_xlabel('Longitude')
-        ax.set_ylabel('Latitude')
 
 ###############################################################################
 def clean_chart_title(text):

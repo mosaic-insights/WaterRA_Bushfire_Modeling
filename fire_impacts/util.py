@@ -97,4 +97,59 @@ def fig_ax_admin(ex_figure=None, ex_axes=None):
     
     return out_fig, out_ax
 
+###############################################################################
+def mapify_axes(
+    ax,
+    crs,
+    units:str,
+    ):
+    """
+    Settings for maps based on whether the data is in a projected or
+    geographic coordinate system
+
+    Parameters:
+    - ax (mpl.axes): matplotlib axes object being uses as a map
+    - crs: crs object which can be a GeoDataFrame.crs (for vectors) or
+    rasterio's pyplot crs object. 
+    - units (str): text describing the units use by the axes object
+    --------------------------------------------------------------------
+    Notes:
+    - The crs object can be more flexible; all it needs is a boolean
+    is_projected attribute which equals True for projected CRS and False
+    for geographic.
+    - For projected CRS, units is assumed to be 'metres', and 'm' will
+    be passed to the scalebar indicating metres. If your PCS is not in 
+    metres, this may cause the scalebar to fail altogether or have an
+    incorrect label.
+    --------------------------------------------------------------------
+    """
+    
+    if crs.is_projected:
+        # No ticks for a projects CS, we'll use a scalebar
+        #instead:
+        ax.set_xticks([])
+        ax.set_yticks([])
+        from matplotlib_scalebar.scalebar import ScaleBar
+
+        # Set the font size for the scalebar text
+        sb_fontprops = {
+            'size': 'xx-small'
+            }
+
+        these_units = units[0]
+        # Create the scalebar object:
+        this_scalebar = ScaleBar(
+            dx=1, #size of one pixel
+            units=these_units, #units of the pixel size
+            loc='lower left',
+            font_properties=sb_fontprops,
+            box_alpha=0.5
+            )
+        # Plot the scalebar onto the map:
+        ax.add_artist(this_scalebar)
+
+    if crs.is_geographic:
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude')
+
 
