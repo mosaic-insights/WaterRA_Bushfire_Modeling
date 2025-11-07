@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -152,4 +153,17 @@ def mapify_axes(
         ax.set_xlabel('Longitude')
         ax.set_ylabel('Latitude')
 
+###############################################################################
+def clean_chart_title(text):
+    """
+    Removes underscores, ending-EPSG codes, camel-case
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Remove trailing underscores etc. (EPSG code):
+    int_title = re.sub(r'_\d+$', '', text)
+    # Expand camel case to spaced words:
+    int_title = re.sub(r'(?<!^)(?=[A-Z])', ' ', int_title)
 
+    title = int_title.replace('_', ' ').strip()
+    return title

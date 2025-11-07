@@ -3,7 +3,6 @@ This module contains the classes and functions that are used to manage the data 
 '''
 
 import os
-import re
 from glob import glob
 from pathlib import Path
 import shutil
@@ -402,7 +401,7 @@ class FireImpactsProject(object):
                     )
                 )
 
-            title = clean_chart_title(catchment)
+            title = toputil.clean_chart_title(catchment)
             ax.set_title(f'{title}: {file_name}', fontsize='large')
             
             # Create a divider to manage spacing of axis and colourbar:
@@ -572,7 +571,7 @@ class FireImpactsProject(object):
             + colour_col.split('_')[1].title()
             ) # Variable name part of title
         ax.set_facecolor('#D3D3D3') 
-        title = clean_chart_title(catchment) 
+        title = toputil.clean_chart_title(catchment) 
         ax.set_title(f'{title} Headwaters: {varname}', fontsize='large')
 
         # Add scalebar or ticks as appropriate:
@@ -684,7 +683,7 @@ class FireImpactsProject(object):
         # Aesthetics:
         sax.set_title(
             'Scatter plot of mean dNBR vs year 1 critical rainfall '
-            f'for {clean_chart_title(catchment)} headwaters'
+            f'for {toputil.clean_chart_title(catchment)} headwaters'
             )
         sax.set_xlabel(
             'I12 critical threshold for debris flow'
@@ -762,21 +761,6 @@ def get_vis_dx(ax, crs):
     # Calculate map units per pixel:
     map_units_per_pixel = ax_width_map_units / ax_width_px
     return map_units_per_pixel
-
-###############################################################################
-def clean_chart_title(text):
-    """
-    Removes underscores, ending-EPSG codes, camel-case
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
-    """
-    # Remove trailing underscores etc. (EPSG code):
-    int_title = re.sub(r'_\d+$', '', text)
-    # Expand camel case to spaced words:
-    int_title = re.sub(r'(?<!^)(?=[A-Z])', ' ', int_title)
-
-    title = int_title.replace('_', ' ').strip()
-    return title
 
 def find_all_shapefiles(base_directory):
     '''
