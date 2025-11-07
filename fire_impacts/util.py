@@ -1,5 +1,7 @@
 import os
 import logging
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
 
 def retry(fn,retries=5,initial_delay=8,delay_scale=3,specific_exceptions=None):
@@ -50,10 +52,10 @@ def unique_file_matching(path,*substrings):
     return matches[0]
 
 ###############################################################################
-def fig_ax_admin():
+def fig_ax_admin(ex_figure=None, ex_axes=None):
     """
     For visualisations, determine plotting behaviour based on whether 
-    the use provides an existing figure and/or axes
+    the user provides an existing figure and/or axes
 
     Parameters:
     - figure (mpl.figure): existing matplotlib figure object if 
@@ -67,8 +69,32 @@ def fig_ax_admin():
     - The existing matplotlib axes if provided by the user, otherwise a
     brand new one
     --------------------------------------------------------------------
+    Notes:
+    - Assumes that if the user provides an axes, that it is not
+    figureless.
+    - If a figure is provided but no axes, will add a new axes object.
+    This may result in an empty axes if the figure already has one but
+    the user doesn't specify it.
     --------------------------------------------------------------------
     """
-    pass
+    # Create both figure and axes if we haven't been provided with them:
+    if ex_figure is None and ex_axes is None:
+        out_fig, out_ax = plt.subplots()
+
+    # If we're given a figure but no axes, add a subplot:
+    elif ex_axes is None:
+        out_fig = ex_figure
+        out_ax = out_fig.add_subplot()
+    
+    # If axes but no figure, get the parent figure of the axes:
+    elif ex_figure is None:
+        out_fig = ex_axes.figure
+        out_ax = ex_axes
+    # If we've been provided with both, just use those:
+    else:
+        out_fig = ex_figure
+        out_ax = ex_axes
+    
+    return out_fig, out_ax
 
 

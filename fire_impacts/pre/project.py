@@ -652,20 +652,7 @@ class FireImpactsProject(object):
         col_year_1 = '#800080' #purple
         col_year_2 = '#696969' #grey
 
-        # Create a figure and axes if we haven't been provided with them:
-        if existing_figure is None and existing_axes is None:
-            sfig, sax = plt.subplots()
-        elif existing_axes is None:
-            # If we're given a figure but no axes, add a subplot:
-            sfig = existing_figure
-            sax = existing_figure.add_subplot()
-        elif existing_figure is None:
-            # If axes but no figure, get the parent figure of the axes:
-            sfig = existing_axes.figure
-            sax = existing_axes
-        else:
-            # Otherwise, create new of both:
-            sfig, sax = plt.subplots()
+        sfig, sax = toputil.fig_ax_admin(existing_figure, existing_axes)
         
         # Set size and resolution parameters for figure:
         sfig.set_size_inches(width, height)
