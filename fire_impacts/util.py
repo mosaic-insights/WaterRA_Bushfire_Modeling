@@ -73,8 +73,8 @@ def fig_ax_admin(ex_figure=None, ex_axes=None):
     - Assumes that if the user provides an axes, that it is not
     figureless.
     - If a figure is provided but no axes, will add a new axes object.
-    This may result in an empty axes if the figure already has one but
-    the user doesn't specify it.
+    This may result in undesired behaviour. TODO: add functionality to
+    try filling the last emtpy subplot before creating a new axes.
     --------------------------------------------------------------------
     """
     # Create both figure and axes if we haven't been provided with them:

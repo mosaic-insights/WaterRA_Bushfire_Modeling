@@ -511,19 +511,8 @@ class FireImpactsProject(object):
             on='ID'
             )
         
-        # Handle existing figures and/or subplots in a similar way to
-        #plot_catchment_rasters():
-        if existing_figure is None and existing_axes is None:
-            fig, ax = plt.subplots()
-        # Handle if figure is provided but no axes (check subplots):
-        # TODO
-        # If axes is provided with no figure that is fine.
-        # If both a figure and an axes are provided, just use those:
-        else:
-            fig = existing_figure
-            ax = existing_axes
-
-        #
+        # Work out which figure/axes to use:
+        fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
 
         # Handle whether a catchment is specified and if not, plot for all
         #catchments just like plot_catchment_rasters():
