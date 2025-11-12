@@ -263,7 +263,7 @@ class FireImpactsProject(object):
             'cmap': 'viridis',
             'measure': 'Contributing areas',
             'units': 'count',
-            'norm': LogNorm(vmin=10),
+            'norm': 'log',
             'cbar_extend': 'min'
         }
 
@@ -280,6 +280,8 @@ class FireImpactsProject(object):
             'units': 'mm/hr',
             'title_varname': 'Rain Intensity'
         }
+
+    
 
     ###########################################################################
     def plot_catchment_raster(
@@ -378,60 +380,29 @@ class FireImpactsProject(object):
                 'cbar_extend': 'neither'
                 }
 
-        with rio.open(raster_path) as src:
-            data = src.read(1)
-            no_data_value = src.nodata
-            if no_data_value is not None:
-                data = np.where(data == no_data_value, np.nan, data)  # Replace NoData values with NaN
-            transform = src.transform
+        ax = figure.axes[axes_index] 
+        img, this_crs, cbar = toputil.plot_spatial_raster(
+            ax,
+            raster_path,
+            vis_params,
+            colourbar=True
+            )
 
-            
-            
-            file_name = os.path.splitext(os.path.basename(raster_path))[0].replace('_', ' ')
-            ax = figure.axes[axes_index] 
-            img = ax.imshow(
-                data,
-                cmap=vis_params['cmap'],
-                norm=vis_params['norm'],
-                extent=(
-                    transform[2],
-                    transform[2] + transform[0] * data.shape[1],
-                    transform[5] + transform[4] * data.shape[0],
-                    transform[5]
-                    )
-                )
+        # Get the coordinate reference of the raster so we can
+        #extract relevant info
+        if this_crs.is_projected:
+            these_units = this_crs.linear_units + 's'
+        elif this_crs.is_geographic:
+            these_units = this_crs.angular_units + 's'
+        
+        # Aesthetics:
+        toputil.mapify_axes(ax, this_crs, these_units)
 
-            title = toputil.clean_chart_title(catchment)
-            ax.set_title(f'{title}: {file_name}', fontsize='large')
-            
-            # Create a divider to manage spacing of axis and colourbar:
-            divider = make_axes_locatable(ax)
-            cax = divider.append_axes('right', size='5%', pad=0.05)
-
-            cbar = figure.colorbar(
-                img,
-                cax=cax,
-                label=f'{vis_params['measure']} ({vis_params['units']})',
-                extend=vis_params['cbar_extend']
-                )
-            
-            # Add the catchment boundary:
-            plot_catchment_boundary(self, catchment, ax)
-
-            # Get the coordinate reference of the raster so we can
-            #extract relevant info
-            this_crs = src.crs
-            if this_crs.is_projected:
-                these_units = this_crs.linear_units + 's'
-            elif this_crs.is_geographic:
-                these_units = this_crs.angular_units + 's'
-            
-            # Aesthetics:
-            toputil.mapify_axes(ax, this_crs, these_units)
-
-            
-            
-            return
+        # Add the catchment boundary:
+        plot_catchment_boundary(self, catchment, ax)
+        
+        
+        return
 
     ###########################################################################
     def plot_headwaters(
