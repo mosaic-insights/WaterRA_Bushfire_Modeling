@@ -302,16 +302,32 @@ def get_cmap_normer(
 def insert_colourbar(axes, normaliser, vis_params):
     """
     Insert a relevant colourbar that fits nicely with a raster plot
+
+    Parameters:
+    - axes: matplotlib axes object which the colourbar is for
+    - normaliser: matplotlib Normalize object for the data
+    - vis_params: dictionary of relevant visualisation settings
     --------------------------------------------------------------------
     Notes:
     - Requires matplotlib toolkits (mpl_toolkits)
+    - use util.get_cmap_normer() first to ensure the colourbar scale
+    matches that of the plot
     --------------------------------------------------------------------
     """
+    # Get the width and height of the figure:
+    width = abs(axes.get_xlim()[1] - axes.get_xlim()[0])
+    height = abs(axes.get_ylim()[1] - axes.get_ylim()[0])
+    # Put the colourbar on the right unless the plot is notably
+    #landscape in proportions:
+    if width / height >= 1.5:
+        position = 'bottom'
+    else:
+        position = 'right'
     
 
     # Create a divider to manage spacing of axis and colourbar:
     divider = make_axes_locatable(axes)
-    cax = divider.append_axes('right', size='5%', pad=0.05)
+    cax = divider.append_axes(position, size='5%', pad=0.05)
 
     # Create a mappable object using the previously-created normaliser:
     mappable = ScalarMappable(norm=normaliser, cmap=vis_params['cmap'])
@@ -320,6 +336,7 @@ def insert_colourbar(axes, normaliser, vis_params):
     cbar = axes.figure.colorbar(
         mappable,
         cax=cax,
+        location=position,
         label=f'{vis_params['measure']} ({vis_params['units']})',
         extend=vis_params['cbar_extend']
         )
