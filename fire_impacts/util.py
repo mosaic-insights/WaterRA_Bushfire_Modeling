@@ -377,8 +377,24 @@ def plot_spatial_raster(
             data = np.where(data == no_data_value, np.nan, data)
         transform = src.transform
         
+        # Get the minimum value from vis_params if there is one:
+        try:
+            req_min = vis_params['vmin']
+        except KeyError:
+            req_min = None
+        # Same for the maximum value:
+        try:
+            req_max = vis_params['vmax']
+        except KeyError:
+            req_max = None
+
         # Get a Normalize object to handle colourmapping:
-        this_normaliser = get_cmap_normer(data, vis_params['norm'])
+        this_normaliser = get_cmap_normer(
+            data,
+            vis_params['norm'],
+            min_val=req_min,
+            max_val=req_max
+            )
 
         # Plot the raster values onto the axes:
         img = ax.imshow(

@@ -264,6 +264,7 @@ class FireImpactsProject(object):
             'measure': 'Contributing areas',
             'units': 'count',
             'norm': 'log',
+            'vmin': 10,
             'cbar_extend': 'min'
         }
 
