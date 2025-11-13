@@ -2,12 +2,15 @@ import os
 import re
 import logging
 import numpy as np
+import pandas as pd
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize, LogNorm
 from matplotlib.cm import ScalarMappable
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import geopandas as gpd
 import rasterio as rio
+
 logger = logging.getLogger(__name__)
 
 def retry(fn,retries=5,initial_delay=8,delay_scale=3,specific_exceptions=None):
@@ -434,13 +437,89 @@ def plot_spatial_raster(
 
 ###########################################################################
 def plot_spatial_vector(
-    
+    existing_axes,
+    full_vector_path:str,
+    vis_params:dict,
+    title:str, #title for this axes
+    legend:bool=False,
+    label:str=None, #Label to go in the legend
+    colourbar:bool=True,
+    symbol_data=None,
+    id_col_name:str='ID',
+    data_col_name=None
     ):
     """
     Plot a vector in a standardised way
     ----------------------------------------------------------------
+    Notes:
+    - We should assume for now that we're getting two things. A 
+    polygon file with areas, and (optionally) a DataFrame with 
+    values for symbolising the polygons.
+    - TODO: update proj.plot_catchment_boundary() to use this as
+    well? Incorporate whether there's a fill or not into visparams
+    - If a data-based fill is required, this function should
+    receive a two-column dataframe. It will have an ID in the first
+    column and the value in the second. Will be joined to the 
+    spatial file by the ID.
     ----------------------------------------------------------------
     """
-    pass
+    # Read in the spatial data file:
+    shapes = gpd.read_file(full_vector_path)
+    # Get useful metadata:
+    this_crs = shapes.crs
+
+    # If a symbolisation DataFrame is provided:
+    if symbol_data is not None:
+        # Merge in id_col_name so we have the value for each vector
+        #feature to use for symbolising:
+        geom_with_data = pd.merge(
+            shapes,
+            symbol_data,
+            on=id_col_name
+            )
+        colour_col = data_col_name
+
+        # Get a normaliser to use for both plot and colourbar:
+        normer = get_cmap_normer(
+            data=symbol_data[colour_col],
+            scale=vis_params['norm']
+            )
+        min_plot_val = normer.vmin
+        max_plot_val = normer.vmax
+
+        cmap = vis_params['cmap']
+        thing_to_plot=geom_with_data
+    # Populate empty values for symbolisations
+    else:
+        colour_col = None
+        cmap=None
+        normer=None
+        min_plot_val=None
+        max_plot_val=None
+        thing_to_plot = shapes
+
+    # Use Geopandas' built-in plot method:
+    thing_to_plot.plot(
+        ax=existing_axes,
+        column=colour_col,
+        cmap=cmap,
+        vmin=min_plot_val,
+        vmax=max_plot_val
+        )
+    
+    # If we're symbolising by column and a colourbar is requested,
+    #add one:
+    if symbol_data is not None and colourbar:
+        this_cbar = insert_colourbar(
+            axes=existing_axes,
+            normaliser=normer,
+            vis_params=vis_params
+            )
+    else:
+        this_cbar = None
+    
+    existing_axes.set_title(title)
+
+    return this_crs, this_cbar
 
 

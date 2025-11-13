@@ -272,14 +272,18 @@ class FireImpactsProject(object):
             'cmap': 'inferno',
             'measure': 'ΔNBR',
             'units': 'n/a',
-            'title_varname': 'ΔNBR'
+            'title_varname': 'ΔNBR',
+            'norm': 'linear',
+            'cbar_extend': 'neither'
         }
 
         self.vis_i12_crit = {
             'cmap': 'plasma_r',
             'measure': '12-minute intensity threshold',
             'units': 'mm/hr',
-            'title_varname': 'Rain Intensity'
+            'title_varname': 'Rain Intensity',
+            'norm': 'linear',
+            'cbar_extend': 'neither'
         }
 
     
@@ -407,14 +411,14 @@ class FireImpactsProject(object):
 
     ###########################################################################
     def plot_headwaters(
-            self,
-            catchment:str,
-            colour_col:str,
-            data_type:str='DebrisFlow',
-            data_format:str='csv',
-            existing_figure=None,
-            existing_axes=None,
-            ):
+        self,
+        catchment:str,
+        colour_col:str,
+        data_type:str='DebrisFlow',
+        data_format:str='csv',
+        existing_figure=None,
+        existing_axes=None,
+        ):
         """
         Plot the headwaters coloured by a specified data value
 
@@ -455,6 +459,7 @@ class FireImpactsProject(object):
             data_table_loc,
             data_type
             ) + 'Data.' + data_format
+        
         if not os.path.isfile(data_table_path):
             raise FileNotFoundError(
                 'project.plot_headwaters() was called requeting to '
@@ -471,23 +476,9 @@ class FireImpactsProject(object):
                 f'based on {colour_col}, but data table only had the '
                 f'following:\n {non_geo_data.columns}'
             )
-        
-        # Get a subset of the non-spatial data and join it to the 
-        #headwaters shapefile:
-        ng_for_join = non_geo_data[['ID', colour_col]]
-        headwater_shapes = gpd.read_file(hw_shape_path)
-        geom_with_data = pd.merge(
-            headwater_shapes,
-            ng_for_join,
-            on='ID'
-            )
-        
-        # Work out which figure/axes to use:
-        fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
-
-        # Handle whether a catchment is specified and if not, plot for all
-        #catchments just like plot_catchment_rasters():
-        # TODO
+        # Get a subset of just the ID coloumn and the colour column:
+        id_col = 'ID'
+        ng_for_join = non_geo_data[[id_col, colour_col]]
 
         # Choose visualisation parameters based on the colour column:
         if colour_col[:4].lower() == 'dnbr':
@@ -505,49 +496,40 @@ class FireImpactsProject(object):
                 'title_varname': '-'
             }
 
-        # Then actually plot the headwaters based on the specified value.
-        geom_with_data.plot(
-            ax=ax,
-            column=colour_col,
-            cmap=vis_params['cmap']
-            )
-        
-        # Normalise colormap applicator for the current data column:
-        normer = plt.Normalize(
-            vmin=geom_with_data[colour_col].min(),
-            vmax=geom_with_data[colour_col].max()
-        )
-        # Add a mapper to create our colorbar with:
-        mapper = mpl.cm.ScalarMappable(
-            cmap=vis_params['cmap'],
-            norm=normer
-        )
-        
-        # Create a divider object linked to the main axes to manage 
-        #colorbar spacing:
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes('right', size='5%', pad=0.05)
-
-        # Create the colourbar:
-        cbar = fig.colorbar(
-            mapper,
-            cax=cax,
-            label=vis_params['measure'],
-            extend='neither'
-            )
-        
-        # Aesthetics:
+        # Generate a relevant title:
         varname = (
             vis_params['title_varname'] 
             + ' ' 
             + colour_col.split('_')[1].title()
             ) # Variable name part of title
+        catch_title = toputil.clean_chart_title(catchment) 
+        ax_title = (
+            f'{catch_title} Headwaters: {varname}'
+            )
+
+        # Call the vector plotting function:
+        this_crs, cbar = toputil.plot_spatial_vector(
+            existing_axes,
+            hw_shape_path,
+            vis_params,
+            ax_title,
+            symbol_data=ng_for_join,
+            id_col_name=id_col,
+            data_col_name=colour_col
+            )
+        
+        # Work out which figure/axes to use:
+        fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
+
+        # Handle whether a catchment is specified and if not, plot for all
+        #catchments just like plot_catchment_rasters():
+        # TODO: add this code
+
+        # Set a grey background for headwater plots to aid readbility:
         ax.set_facecolor('#D3D3D3') 
-        title = toputil.clean_chart_title(catchment) 
-        ax.set_title(f'{title} Headwaters: {varname}', fontsize='large')
+        
 
         # Add scalebar or ticks as appropriate:
-        this_crs = geom_with_data.crs
         these_units = this_crs.axis_info[0].unit_name
         toputil.mapify_axes(ax, this_crs, these_units)
         # Add the catchment boundary:
@@ -680,6 +662,8 @@ def plot_catchment_boundary(
     Plot the the catchment boundary on an axes object and add a 
     a legend
     --------------------------------------------------------------------
+    TODO: Move this to top util and use plot_spatial_vector() for most
+    steps
     --------------------------------------------------------------------
     """
     # Set the colour for the line:
