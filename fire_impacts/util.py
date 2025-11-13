@@ -182,6 +182,15 @@ def mapify_axes(
         ax.set_ylabel('Latitude')
 
 ###############################################################################
+def fit_multi_figs(fig):
+    """
+    Adjusts size of figure to fit its axes nicely.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    pass
+
+###############################################################################
 def clean_chart_title(text):
     """
     Removes underscores, ending-EPSG codes, camel-case
