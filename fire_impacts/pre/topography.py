@@ -8,7 +8,7 @@ from shapely.strtree import STRtree
 from rasterio.features import shapes
 from pysheds.grid import Grid
 from .project import FireImpactsProject
-from .util import clip_and_reproject_raster
+from .util import clip_and_reproject_raster, retrieve_grid_from_wcs_for_bounds
 import copy
 import logging
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ def ftoi(x,dp=5):
 
 def extract_catchment_dems(
         project:FireImpactsProject,
-        dem_path,
+        dem_path=None,
         target_resolution=None
         ):
   '''
@@ -43,8 +43,14 @@ def extract_catchment_dems(
       # Construct the output file names
       output_path = os.path.join(project.catchment_path(catchment), 'Topography', 'DEM.tif')
 
+      if dem_path is None:
+          logger.info('No DEM path provided, downloading DEMH data from AWS for catchment: %s',catchment)
+          from .data_sources import DEMH_WCS, DEMH
+          fn = DEMH
+      else:
+          fn = dem_path
       # Clip and reproject the raster with the shapefile
-      clip_and_reproject_raster(dem_path, shapefile, output_path, target_resolution=target_resolution)
+      clip_and_reproject_raster(fn, shapefile, output_path, target_resolution=target_resolution)
 
 def calculate_movement_distance(point, spatial_index, lines):
     '''
