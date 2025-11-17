@@ -1,6 +1,7 @@
 import os
 import re
 import logging
+from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
@@ -59,6 +60,19 @@ def unique_file_matching(path,*substrings):
     elif len(matches) > 1:
         raise FileExistsError(f"Multiple files found in {path} matching patterns: {substrings}")
     return matches[0]
+
+###############################################################################
+def date_rel(date:str, days:int):
+    """
+    Helper function to calculate date differences by number of days
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    new_date = (
+        datetime.strptime(date, '%Y-%m-%d')
+        + timedelta(days=days)
+        ).strftime('%Y-%m-%d')
+    return new_date
 
 ###############################################################################
 def fig_ax_admin(

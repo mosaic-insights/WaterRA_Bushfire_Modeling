@@ -12,6 +12,58 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
+def clip_raster(
+    raster_file:str,
+    shapefile:str
+    ):
+    """
+    Clip a raster to a shapefile, keeping the raster CRS.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Read the raster file to get its CRS and resolution
+    with rio.open(raster_file) as src:
+        raster_crs = src.crs
+        raster_res = src.res  
+
+    # Read the shapefile
+    catchment = gpd.read_file(shapefile)
+    # Get the CRS of the shapefile
+    shapefile_crs = catchment.crs.to_string()
+    # Ensure the shapefile is in the same CRS as the raster before
+    #clipping, buffering the shapefile by 2 pixels to ensure it covers 
+    #the raster:
+    catchment = catchment.to_crs(raster_crs).buffer(raster_res[0]*2)
+
+    # Read the raster file
+    with rio.open(raster_file) as src:
+        # Clip the raster with the shapefile
+        out_image, out_transform = mask(
+            src,
+            catchment.geometry.apply(mapping),
+            crop=True,
+            all_touched=True,
+            nodata=np.nan,
+            pad=False
+            )
+        out_meta = src.meta.copy()
+        out_meta.update({
+            "driver": "GTiff",
+            "height": out_image.shape[1],
+            "width": out_image.shape[2],
+            "transform": out_transform,
+            "crs": src.crs,
+            'nodata': np.nan
+            })
+
+    # Write the clipped raster to a temporary file
+    temp_file = 'clipped_temp.tif'
+    with rio.open(temp_file, 'w', **out_meta) as dest:
+        dest.write(out_image)
+
+    return temp_file, shapefile_crs
+
+
 ###############################################################################
 def clip_and_reproject_raster(
     raster_file:str,
@@ -33,44 +85,19 @@ def clip_and_reproject_raster(
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    # Read the raster file to get its CRS and resolution
-    with rio.open(raster_file) as src:
-        raster_crs = src.crs
-        raster_res = src.res  
+    # Clip the raster to the slightly-buffered extent of the shapefile:
+    temp_file, shapefile_crs = clip_raster(
+        raster_file,
+        shapefile
+        )
 
-    # Read the shapefile
-    catchment = gpd.read_file(shapefile)
-    # Get the CRS of the shapefile
-    shapefile_crs = catchment.crs.to_string()
-    # Ensure the shapefile is in the same CRS as the raster before
-    #clipping, buffering the shapefile by 2 pixels to ensure it covers 
-    #the raster:
-    catchment = catchment.to_crs(raster_crs).buffer(raster_res[0]*2)  
-    # Read the raster file
-    with rio.open(raster_file) as src:
-        # Clip the raster with the shapefile
-        out_image, out_transform = mask(
-            src,
-            catchment.geometry.apply(mapping),
-            crop=True,
-            all_touched=True,
-            pad=False
-            )
-        out_meta = src.meta.copy()
-        out_meta.update({
-            "driver": "GTiff",
-            "height": out_image.shape[1],
-            "width": out_image.shape[2],
-            "transform": out_transform,
-            "crs": src.crs
-            })
-
-    # Write the clipped raster to a temporary file
-    temp_file = 'clipped_temp.tif'
-    with rio.open(temp_file, 'w', **out_meta) as dest:
-        dest.write(out_image)
-
-    reproject_raster(temp_file, shapefile_crs, output_file, target_resolution)
+    # Reproject the raster to the shapefile's CRS:
+    reproject_raster(
+        temp_file,
+        shapefile_crs,
+        output_file,
+        target_resolution
+        )
     # Clean up temporary file
     os.remove(temp_file)
 
@@ -161,8 +188,11 @@ def read_aligned(raster_fn:str, transform, crs,shape,resampling=Resampling.neare
               data[data.mask] = np.nan
               return data
 
+###############################################################################
 def metres_to_approx_degrees(m:float):
    return m * c.M_TO_KM / APPROX_KM_PER_DEGREE
+
+
 
 
     
