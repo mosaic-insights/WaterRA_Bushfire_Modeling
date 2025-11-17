@@ -12,38 +12,58 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
-
-def clip_and_reproject_raster(raster_file:str, shapefile:str, output_file:str, target_resolution:float=None):
+###############################################################################
+def clip_and_reproject_raster(
+    raster_file:str,
+    shapefile:str,
+    output_file:str,
+    target_resolution:float=None
+    ):
     """
-    Clips a raster file using a shapefile and reprojects the clipped raster to the CRS of the shapefile.
+    Clips a raster file using a shapefile and reprojects the clipped 
+    raster to the CRS of the shapefile.
 
     Parameters:
     - raster_file (str): Path to the input raster file.
     - shapefile (str): Path to the shapefile for clipping.
-    - output_files (list): List of paths to the output reprojected raster files.
-    - target_resolution (tuple): OPTIONAL: Desired resolution for the output rasters. Default to automatic selection of resolution.
+    - output_files (list): List of paths to the output reprojected 
+    raster files.
+    - target_resolution (tuple): OPTIONAL: Desired resolution for the 
+    output rasters. Default to automatic selection of resolution.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
     """
     # Read the raster file to get its CRS and resolution
     with rio.open(raster_file) as src:
         raster_crs = src.crs
-        raster_res = src.res  # Get the resolution of the input raster in original CRS
+        raster_res = src.res  
 
     # Read the shapefile
     catchment = gpd.read_file(shapefile)
     # Get the CRS of the shapefile
     shapefile_crs = catchment.crs.to_string()
-    # Ensure the shapefile is in the same CRS as the raster before clipping
-    catchment = catchment.to_crs(raster_crs).buffer(raster_res[0]*2)  # Buffer the shapefile by 2 pixels to ensure it covers the raster
+    # Ensure the shapefile is in the same CRS as the raster before
+    #clipping, buffering the shapefile by 2 pixels to ensure it covers 
+    #the raster:
+    catchment = catchment.to_crs(raster_crs).buffer(raster_res[0]*2)  
     # Read the raster file
     with rio.open(raster_file) as src:
         # Clip the raster with the shapefile
-        out_image, out_transform = mask(src, catchment.geometry.apply(mapping), crop=True,all_touched=True,pad=False)
+        out_image, out_transform = mask(
+            src,
+            catchment.geometry.apply(mapping),
+            crop=True,
+            all_touched=True,
+            pad=False
+            )
         out_meta = src.meta.copy()
-        out_meta.update({"driver": "GTiff",
-                         "height": out_image.shape[1],
-                         "width": out_image.shape[2],
-                         "transform": out_transform,
-                         "crs": src.crs})
+        out_meta.update({
+            "driver": "GTiff",
+            "height": out_image.shape[1],
+            "width": out_image.shape[2],
+            "transform": out_transform,
+            "crs": src.crs
+            })
 
     # Write the clipped raster to a temporary file
     temp_file = 'clipped_temp.tif'
@@ -54,12 +74,32 @@ def clip_and_reproject_raster(raster_file:str, shapefile:str, output_file:str, t
     # Clean up temporary file
     os.remove(temp_file)
 
-def reproject_raster(temp_file:str, target_crs:str, output_file:str, target_resolution:float=None):
-    # Reproject the clipped raster to the CRS of the shapefile with the target resolution
+###############################################################################
+def reproject_raster(
+    temp_file:str,
+    target_crs:str,
+    output_file:str,
+    target_resolution:float=None
+    ):
+    """
+    
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Reproject the clipped raster to the CRS of the shapefile with the 
+    #target resolution
     with rio.open(temp_file) as src:
-        logger.info(f'Reprojecting raster from %s to %s', src.crs, target_crs)
+        logger.info(
+           f'Reprojecting raster from %s to %s', src.crs, target_crs
+           )
         transform, width, height = calculate_default_transform(
-            src.crs, target_crs, src.width, src.height, *src.bounds, resolution=target_resolution)
+            src.crs,
+            target_crs,
+            src.width,
+            src.height,
+            *src.bounds,
+            resolution=target_resolution
+            )
         kwargs = src.meta.copy()
         kwargs.update({
             'crs': target_crs,
@@ -70,7 +110,9 @@ def reproject_raster(temp_file:str, target_crs:str, output_file:str, target_reso
         })
 
         with rio.open(output_file, 'w', **kwargs) as dst:
-            logger.info(f'Reprojecting clipped raster to: {output_file}')
+            logger.info(
+               f'Reprojecting clipped raster to: {output_file}'
+               )
             for i in range(1, src.count + 1):
                 reproject(
                     source=rio.band(src, i),
@@ -79,12 +121,15 @@ def reproject_raster(temp_file:str, target_crs:str, output_file:str, target_reso
                     src_crs=src.crs,
                     dst_transform=transform,
                     dst_crs=target_crs,
-                    resampling=Resampling.nearest)
+                    resampling=Resampling.nearest
+                    )
 
+###############################################################################
 def read_raster(fn:str):
   with rio.open(fn) as src:
     return src.read(1), src.transform, src.crs
 
+###############################################################################
 def read_aligned(raster_fn:str, transform, crs,shape,resampling=Resampling.nearest):
     '''
     Read a raster and reproject it to a given crs and window (transform)

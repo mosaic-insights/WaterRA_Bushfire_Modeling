@@ -108,58 +108,43 @@ def download_soil_data_wcs(project:FireImpactsProject, catchment:str=None, wcs_u
 
     logger.info("Process Done!.")
 
-
-def extract_aridity_data(project:FireImpactsProject,aridity_raster:str, catchment=None):
+###############################################################################
+def extract_aridity_data(
+    project:FireImpactsProject,
+    aridity_raster:str,
+    catchment=None
+    ):
     """
-    Extract aridity data for each catchment bounding box and save the clipped raster in the Aridity folder.
+    Extract aridity data for each catchment and save the clipped raster 
+    in the Aridity folder.
 
     Parameters:
-    - project (fire_impacts.FireImpactsProject): A dictionary of project folders created for catchments.
+    - project (fire_impacts.FireImpactsProject): A dictionary of 
+    project folders created for catchments.
     - aridity_raster_path (str): Path to the aridity raster layer.
-    - catchment (str): OPTIONAL: Name of the catchment to process. If None, process all catchments.
+    - catchment (str): OPTIONAL: Name of the catchment to process. If 
+    None, process all catchments.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
     """
     if catchment is None:
-        project.for_each_catchment(lambda c: extract_aridity_data(project,aridity_raster, c))
+        project.for_each_catchment(
+            lambda c: extract_aridity_data(project,aridity_raster, c)
+            )
         return
 
-    bbox = project.catchment_bounds(catchment,10.0)
-    crs = project.catchment_crs(catchment)
+    # Extract the catchment boundary from the project:
+    shapefile = project.boundary_files[catchment]
 
-    with rasterio.open(aridity_raster) as src:
-        logger.info(f"Processing Aridity data for catchment: {catchment}")
-        try:
-            # Define the bounding box geometry
-            geometry = {
-                'type': 'Polygon',
-                'coordinates': [[
-                    [bbox[0], bbox[1]],
-                    [bbox[0], bbox[3]],
-                    [bbox[2], bbox[3]],
-                    [bbox[2], bbox[1]],
-                    [bbox[0], bbox[1]]
-                ]]
-            }
-            # Mask the raster data using the bounding box
-            out_image, out_transform = rasterio.mask.mask(src, [geometry], crop=True)
-            out_meta = src.meta.copy()
-            out_meta.update({
-                "driver": "GTiff",
-                "height": out_image.shape[1],
-                "width": out_image.shape[2],
-                "transform": out_transform
-            })
-            # Save the clipped aridity data to the appropriate folder
-            output_path = project.catchment_path(catchment,'Soils','Aridity.tif')
-            tmp_path = project.catchment_path(catchment,'Soils','Aridity_tmp.tif')
+    # Save the clipped aridity data to the appropriate folder
+    output_path = project.catchment_path(catchment,'Soils','Aridity.tif')
 
-            with rasterio.open(tmp_path, "w", **out_meta) as dest:
-                dest.write(out_image)
+    clip_and_reproject_raster(
+        aridity_raster,
+        shapefile,
+        output_path
+        )
 
-            reproject_raster(tmp_path, crs, output_path)
-            os.remove(tmp_path)
-        except Exception as e:
-            logger.error(f"Error processing {catchment}", exc_info=True)
-            raise
 
     logger.info("Aridity extraction completed.")
 
