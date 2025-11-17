@@ -12,7 +12,7 @@ import odc.stac
 from dea_tools.bandindices import calculate_indices
 import logging
 from .project import FireImpactsProject
-from .data_sources import DEA_STAC
+from .data_sources import DEA_STAC, SENTINEL_2_COLLECTIONS
 from .util import metres_to_approx_degrees
 logger = logging.getLogger(__name__)
 
@@ -28,7 +28,7 @@ def init_catalog(url:str=DEA_STAC):
         )
 
 def calculate_fire_severity(project:FireImpactsProject, catchment:str, fire_start_date, fire_end_date,
-                            start_date_pre=None, end_date_post=None, collection_id=('ga_s2am_ard_3','ga_s2bm_ard_3'),
+                            start_date_pre=None, end_date_post=None, collection_id=SENTINEL_2_COLLECTIONS,
                             max_cloud_cover=20, resolution_input=20, bbox=None):
     '''
     This function calculates fire severity (NBR, dNBR) before and after the fire.
