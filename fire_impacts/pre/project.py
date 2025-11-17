@@ -286,6 +286,15 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither'
         }
 
+        self.vis_aridity = {
+            'cmap': 'cividis',
+            'measure': 'Aridity Factor',
+            'units': 'wet → dry',
+            'title_varname': '',
+            'norm': 'linear',
+            'cbar_extend': 'neither'
+        }
+
     
 
     ###########################################################################
@@ -388,6 +397,8 @@ class FireImpactsProject(object):
             vis_params = self.vis_slope
         elif args[-1].split('.')[0].lower() == 'flow_accumulation':
             vis_params = self.vis_flow_accum
+        elif args[-1].split('.')[0].lower() == 'aridity':
+            vis_params = self.vis_aridity
         else:
             vis_params = {
                 'cmap': 'viridis',
