@@ -329,7 +329,20 @@ class FireImpactsProject(object):
             figure = existing_figure
             if axes_index is None:
                 # If an axes index isn't provided, use the end one:
-                axes_index = len(figure.axes)
+                axes_index = len(figure.axes) - 1
+            # If they have provided an axes index but have also 
+            #requested a new subplot, display a warning:
+            else:
+                if new_subplot:
+                    logger.warning(
+                        'project.plot_catchment_raster() received axes '
+                        f'{axes_index} but a new subplot was also '
+                        'requested via new_subplot=True. This is '
+                        'contradictory and will most likely produce '
+                        'an undseired result, like plots partially '
+                        'overlapping each other.'
+                        )
+
 
         # If a catchment has not been specified, create a subplot for
         #each catchment in the current project:
@@ -359,7 +372,6 @@ class FireImpactsProject(object):
                     1, #Num cols
                     num_subs_already + 1 #index, last row
                     )
-            
         import rasterio as rio
         import os
         import numpy as np
