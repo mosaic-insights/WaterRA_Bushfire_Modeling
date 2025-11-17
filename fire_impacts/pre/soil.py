@@ -2,14 +2,13 @@
 This module contains functions to download soil-related data (Silt, Clay, Sand, Bulk Density) and aridity data
 '''
 
-from owslib.wcs import WebCoverageService
+from string import Template
 import rasterio
 import rasterio.mask
 import os
 import logging
 from .project import FireImpactsProject
-from .util import clip_and_reproject_raster, reproject_raster
-from ..util import retry
+from .util import clip_and_reproject_raster, reproject_raster, retrieve_grid_from_wcs_for_bounds
 from .data_sources import ASRIS_WCS, TERN_SLGA_STAC
 from contextlib import contextmanager
 import tempfile
@@ -25,9 +24,6 @@ LAYER_NAMES={
 DEFAULT_WCS=ASRIS_WCS
 DEFAULT_RESOLUTION=0.00024955 # 1 arc second (SRTM)
 SOIL_DEPTHS=['000_005', '005_015']
-
-def get_wcs(url):
-    return retry(lambda:WebCoverageService(url, version="1.0.0"))
 
 def download_soil_data_wcs(project:FireImpactsProject, catchment:str=None, wcs_urls=None, resx=DEFAULT_RESOLUTION, resy=DEFAULT_RESOLUTION):
     """
@@ -59,49 +55,11 @@ def download_soil_data_wcs(project:FireImpactsProject, catchment:str=None, wcs_u
 
     # Iterate through each dataset type (SILT, CLAY, SAND, BULK DENSITY)
     for data_type, wcs_url in wcs_urls.items():
+        # Get the correct subfolder for the dataset type (Silt, Sand, Clay, Bulk Density)
+        dataset_folder = project.catchment_path(catchment,'Soils',data_type)
+
         try:
-            # Connect to the WCS server for each dataset
-            wcs = get_wcs(wcs_url)
-
-            # Iterate through all coverages available in the WCS contents
-            for coverage_id in wcs.contents:
-                # Get the metadata for the current coverage
-                coverage_metadata = wcs.contents[coverage_id]
-
-                # Get the title of the coverage for file naming
-                coverage_title = coverage_metadata.title
-
-                # Filter coverages based on the presence of specific substrings
-                if not any(layer in coverage_title for layer in filter_layers):
-                    continue
-
-                # Request the coverage data using the GetCoverage operation
-                response = wcs.getCoverage(
-                    identifier=coverage_id,
-                    bbox=bbox,
-                    format="GeoTIFF",  # Use GeoTIFF format
-                    crs="EPSG:4326",  # Coordinate reference system
-                    resx=resx,  # Set the resolution for x
-                    resy=resy   # Set the resolution for y
-                )
-
-                # Get the correct subfolder for the dataset type (Silt, Sand, Clay, Bulk Density)
-                dataset_folder = project.catchment_path(catchment,'Soils',data_type)
-                os.makedirs(dataset_folder, exist_ok=True)
-
-                # Define the output filename based on the coverage title and data type
-                output_filename = os.path.join(dataset_folder, f"{coverage_title}.tif")
-                tmp_filename = os.path.join(dataset_folder, f"{coverage_title}_tmp.tif")
-                # Save the downloaded data as a GeoTIFF
-                with open(tmp_filename, "wb") as file:
-                    file.write(response.read())
-
-                # Reproject the raster to the catchment CRS and resolution
-                reproject_raster(tmp_filename, crs, output_filename)
-                os.remove(tmp_filename)
-
-                logger.info(f"Downloaded {data_type} data saved as {coverage_title}.tif")
-
+            retrieve_grid_from_wcs_for_bounds(data_type, wcs_url, bbox, resx, resy, crs, dataset_folder, filter_layers)
         except Exception as e:
             logger.info(f"Error processing {data_type} for {catchment}", exc_info=True)
             raise

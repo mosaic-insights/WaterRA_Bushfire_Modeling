@@ -8,3 +8,8 @@ pysheds
 dask[distributed]
 boto3
 cql2 # Required by calculate_fire_severity() method
+
+
+typer # cli support
+jupytext
+

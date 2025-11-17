@@ -1,6 +1,8 @@
 import geopandas as gpd
 from .project import APPROX_KM_PER_DEGREE
+from owslib.wcs import WebCoverageService
 from .. import const as c
+from ..util import retry
 import rasterio as rio
 import numpy as np
 from rasterio.mask import mask
@@ -193,6 +195,47 @@ def metres_to_approx_degrees(m:float):
    return m * c.M_TO_KM / APPROX_KM_PER_DEGREE
 
 
+def retrieve_grid_from_wcs_for_bounds(label, wcs_url, bbox, resx, resy, crs, output_folder, filter_layers=None):
+    # Connect to the WCS server for each dataset
+    wcs = get_wcs(wcs_url)
 
+    # Iterate through all coverages available in the WCS contents
+    for coverage_id in wcs.contents:
+        # Get the metadata for the current coverage
+        coverage_metadata = wcs.contents[coverage_id]
 
-    
+        # Get the title of the coverage for file naming
+        coverage_title = coverage_metadata.title
+
+        # Filter coverages based on the presence of specific substrings
+        if (filter_layers is not None) and not any(layer in coverage_title for layer in filter_layers):
+            continue
+
+        # Request the coverage data using the GetCoverage operation
+        response = wcs.getCoverage(
+            identifier=coverage_id,
+            bbox=bbox,
+            format="GeoTIFF",  # Use GeoTIFF format
+            crs="EPSG:4326",  # Coordinate reference system
+            resx=resx,  # Set the resolution for x
+            resy=resy   # Set the resolution for y
+        )
+
+        os.makedirs(output_folder, exist_ok=True)
+
+        # Define the output filename based on the coverage title and data type
+        output_filename = os.path.join(output_folder, f"{coverage_title}.tif")
+        tmp_filename = os.path.join(output_folder, f"{coverage_title}_tmp.tif")
+        # Save the downloaded data as a GeoTIFF
+        with open(tmp_filename, "wb") as file:
+            file.write(response.read())
+
+        # Reproject the raster to the catchment CRS and resolution
+        reproject_raster(tmp_filename, crs, output_filename)
+        os.remove(tmp_filename)
+
+        logger.info(f"Downloaded {label} data saved as {coverage_title}.tif")
+
+def get_wcs(url):
+    return retry(lambda:WebCoverageService(url, version="1.0.0"))
+

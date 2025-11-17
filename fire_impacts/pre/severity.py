@@ -11,9 +11,9 @@ import odc.stac
 from dea_tools.bandindices import calculate_indices
 import logging
 from .project import FireImpactsProject
-from .data_sources import DEA_STAC
 from .util import metres_to_approx_degrees, clip_raster
 from fire_impacts import util as toputil # points to fire_impacts.util
+from .data_sources import DEA_STAC, SENTINEL_2_COLLECTIONS
 logger = logging.getLogger(__name__)
 
 CATALOG=None
@@ -140,10 +140,6 @@ def write_raster_xarray(
     # Rename the raster created by util.clip_raster() to the name we
     #actually want:
     os.rename(final_path, out_path)
-    
-    
-
-    
 
 ###############################################################################
 def calculate_fire_severity(
@@ -152,7 +148,7 @@ def calculate_fire_severity(
     fire_end_date,
     start_date_pre=None,
     end_date_post=None,
-    collection_id=('ga_s2am_ard_3','ga_s2bm_ard_3'),
+    collection_id=SENTINEL_2_COLLECTIONS,
     max_cloud_cover=20,
     resolution_input=20,
     bbox=None,

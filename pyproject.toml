@@ -38,3 +38,6 @@ include-package-data = true
 zip-safe = true
 packages = ["fire_impacts"]
 py_modules=['fire_impacts']
+
+[project.scripts]
+fire-impacts = "fire_impacts.cli:app"
