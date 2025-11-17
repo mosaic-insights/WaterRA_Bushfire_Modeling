@@ -288,7 +288,7 @@ def get_cmap_normer(
 
     # For now we're going to make everything linear unless the user
     #specifies logarithmic:
-    if scale.lower().strip() != 'log':
+    if scale is None or scale.lower().strip() != 'log':
         return Normalize(vmin=vmin, vmax=vmax)
     # Handle logarithmic scale in a safe way;
     else:
@@ -455,8 +455,6 @@ def plot_spatial_vector(
     - We should assume for now that we're getting two things. A 
     polygon file with areas, and (optionally) a DataFrame with 
     values for symbolising the polygons.
-    - TODO: update proj.plot_catchment_boundary() to use this as
-    well? Incorporate whether there's a fill or not into visparams
     - If a data-based fill is required, this function should
     receive a two-column dataframe. It will have an ID in the first
     column and the value in the second. Will be joined to the 

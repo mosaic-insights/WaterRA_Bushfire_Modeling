@@ -663,7 +663,9 @@ def plot_catchment_boundary(
     a legend
     --------------------------------------------------------------------
     TODO: Move this to top util and use plot_spatial_vector() for most
-    steps
+    steps. 
+    For now, We'll keep this separate as the way it plots and the way
+    it gets the data are both somewhat different.
     --------------------------------------------------------------------
     """
     # Set the colour for the line:
