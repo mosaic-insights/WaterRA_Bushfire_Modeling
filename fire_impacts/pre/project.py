@@ -115,9 +115,12 @@ class FireImpactsProject(object):
         '''
         if name is None:
             name = os.path.splitext(os.path.basename(catchment_shapefile))[0]
-        if name in self.catchments and not replace_existing:
+        have_already = name in self.catchments
+        if have_already and not replace_existing:
             raise ValueError(f'Catchment {name} already exists in project.')
-        self.catchments.append(name)
+
+        if not have_already:
+            self.catchments.append(name)
         self.boundary_files[name] = str(catchment_shapefile)
         self.ensure_catchment_folders(name)
         self._write()
