@@ -2,6 +2,7 @@ from fire_impacts.pre.util import clip_and_reproject_raster, read_raster, read_a
 import rasterio as rio
 from .project import FireImpactsProject
 from .topography import D8_FLOW_DIRECTIONS
+from .data_sources import CSIRO_C_FACTOR_GRID, CSIRO_K_FACTOR_GRID
 from pysheds.grid import Grid
 import numpy as np
 import os
@@ -9,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def compute_adjusted_k_c(proj: FireImpactsProject, catchment: str, c_factor_fn: str, k_factor_fn: str):
+def compute_adjusted_k_c(proj: FireImpactsProject, catchment: str, c_factor_fn: str = None, k_factor_fn: str = None):
     if catchment is None:
         proj.for_each_catchment(lambda c: compute_adjusted_k_c(
             proj, c, c_factor_fn, k_factor_fn))
@@ -17,8 +18,14 @@ def compute_adjusted_k_c(proj: FireImpactsProject, catchment: str, c_factor_fn: 
 
     # bounds = proj.catchment_bounds(catchment)
     shp = proj.boundary_files[catchment]
+
+    if c_factor_fn is None:
+        c_factor_fn = CSIRO_C_FACTOR_GRID
     clip_and_reproject_raster(c_factor_fn, shp, proj.catchment_path(
         catchment, 'Erodibility', 'C_factor.tif'))
+
+    if k_factor_fn is None:
+        k_factor_fn = CSIRO_K_FACTOR_GRID
     clip_and_reproject_raster(k_factor_fn, shp, proj.catchment_path(
         catchment, 'Erodibility', 'K_factor.tif'))
 
