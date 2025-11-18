@@ -363,7 +363,7 @@ def insert_colourbar(axes, normaliser, vis_params):
         mappable,
         cax=cax,
         location=position,
-        label=f'{vis_params['measure']} ({vis_params['units']})',
+        label=f"{vis_params['measure']} ({vis_params['units']})",
         extend=vis_params['cbar_extend']
         )
     return cbar
