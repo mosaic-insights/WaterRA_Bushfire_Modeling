@@ -341,7 +341,8 @@ def run_usle_simulation(project:FireImpactsProject, rainfall, catchment=None, re
 
     for key, recorder in recorders.items():
         results[key] = recorder.finalize()
-    return results, params
+    results['params'] = params
+    return results
 
 def gridded_total_rusle(project:FireImpactsProject, rainfall, catchment=None):
     if catchment is None:
