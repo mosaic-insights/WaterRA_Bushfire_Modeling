@@ -17,3 +17,4 @@ ARIDITY_GRID_COARSE='https://bushfire.blob.core.windows.net/bushfire/Aridity_PT_
 
 SENTINEL_2_COLLECTIONS=('ga_s2am_ard_3','ga_s2bm_ard_3')
 LANDSAT_COLLECTIONS=('ga_ls5t_ard_3', 'ga_ls7e_ard_3', 'ga_ls8c_ard_3', 'ga_ls9c_ard_3')
+# DEA ARD Landsat collections; you can tweak this if you want fewer sensors

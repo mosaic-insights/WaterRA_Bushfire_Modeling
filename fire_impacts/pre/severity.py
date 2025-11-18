@@ -15,7 +15,7 @@ from .project import FireImpactsProject
 from .util import metres_to_approx_degrees, clip_raster
 from fire_impacts import util as toputil # points to fire_impacts.util
 from fire_impacts.util import date_rel
-from .data_sources import DEA_STAC, SENTINEL_2_COLLECTIONS
+from .data_sources import DEA_STAC, SENTINEL_2_COLLECTIONS, LANDSAT_COLLECTIONS
 logger = logging.getLogger(__name__)
 
 CATALOG=None
@@ -23,13 +23,6 @@ CATALOG=None
 # Sensor split and Landsat collections
 SPLIT_DATE = pd.Timestamp("2016-01-01")
 
-# DEA ARD Landsat collections; you can tweak this if you want fewer sensors
-LANDSAT_COLLECTIONS = [
-    "ga_ls5t_ard_3",
-    "ga_ls7e_ard_3",
-    "ga_ls8c_ard_3",
-    "ga_ls9c_ard_3",
-]
 ###############################################################################
 def init_catalog(url:str=DEA_STAC):
     """
@@ -50,12 +43,9 @@ def calc_nbr(
     datetime,
     label,
     bbox,
-    collection_id,
-    selected_collection,
     filter_query,
     desired_crs,
     desired_resolution,
-    output_path,
     use_mask=True
 ):
     """
@@ -269,7 +259,6 @@ def calculate_fire_severity(
     fire_end_date,
     start_date_pre=None,
     end_date_post=None,
-    collection_id=SENTINEL_2_COLLECTIONS,
     max_cloud_cover=20,
     resolution_input=20,
     bbox=None,
@@ -308,7 +297,6 @@ def calculate_fire_severity(
                 fire_end_date,
                 start_date_pre,
                 end_date_post,
-                collection_id,
                 max_cloud_cover,
                 resolution_input,
                 bbox,
@@ -347,17 +335,6 @@ def calculate_fire_severity(
             )
         bbox = project.catchment_bounds(catchment,10)
 
-    # Get the correct collection type
-    # collection_type = ['ga_ls_3', 'ga_s2_3', 'ga_gm_3']
-    if 'ga_s2' in collection_id[0]:
-        selected_collection_type = 'ga_s2_3'
-    elif 'ga_ls' in collection_id[0]:
-        selected_collection_type = 'ga_ls_3'
-    else:
-        raise ValueError(
-            f"Unsupported collection type: {collection_id[0]}"
-            )
-
     # Define the filter for cloud cover
     filter_query = f"eo:cloud_cover < {max_cloud_cover}"
 
@@ -381,12 +358,9 @@ def calculate_fire_severity(
     # Arguments that are the same for both pre- and post-fire NBR calls:
     common_args = {
         'bbox': bbox,
-        'collection_id': collection_id,
-        'selected_collection': selected_collection_type,
         'filter_query': filter_query,
         'desired_crs': gdf.crs,
-        'desired_resolution': resolution_input,
-        'output_path': catchment_folder
+        'desired_resolution': resolution_input
         }
     nbr_label = 'NBR'
     dnbr_label = 'd' + 'NBR'
