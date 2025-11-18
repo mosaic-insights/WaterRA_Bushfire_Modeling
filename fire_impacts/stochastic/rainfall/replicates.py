@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import numpy as np
+import xarray as xr
 from ...pre.data_sources import STOCHASTIC_RAINFALL_API
 
 def decode_rle(rle):
@@ -35,7 +36,7 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
     - api_url (str): URL of the stochastic rainfall API. Default is STOCHASTIC_RAINFALL_API.
 
     Returns:
-    - DataFrame: DataFrame with datetime index and simulations as columns.
+    - Dataset: XArray dataset with datetime index and simulations as columns.
     '''
     api_response = requests.get(
         api_url,
@@ -50,4 +51,9 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
         timeout=600 # 10 minutes
     )
     assert api_response.status_code==200
-    return hg_to_data_frame(api_response.json())
+    result = hg_to_data_frame(api_response.json())
+    result_x = result.to_xarray().to_array()
+    result_x.attrs['units']='mm'
+    result_x = result_x.rename({'variable':'replicate','index':'time'})
+    result_x = xr.Dataset({'rainfall':result_x})
+    return result_x
