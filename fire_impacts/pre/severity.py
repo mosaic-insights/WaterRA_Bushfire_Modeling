@@ -6,6 +6,7 @@ import os
 import pandas as pd
 import geopandas as gpd
 import rioxarray as rxr
+import xarray as xr
 import pystac_client
 import odc.stac
 from dea_tools.bandindices import calculate_indices
@@ -13,11 +14,22 @@ import logging
 from .project import FireImpactsProject
 from .util import metres_to_approx_degrees, clip_raster
 from fire_impacts import util as toputil # points to fire_impacts.util
+from fire_impacts.util import date_rel
 from .data_sources import DEA_STAC, SENTINEL_2_COLLECTIONS
 logger = logging.getLogger(__name__)
 
 CATALOG=None
 
+# Sensor split and Landsat collections
+SPLIT_DATE = pd.Timestamp("2016-01-01")
+
+# DEA ARD Landsat collections; you can tweak this if you want fewer sensors
+LANDSAT_COLLECTIONS = [
+    "ga_ls5t_ard_3",
+    "ga_ls7e_ard_3",
+    "ga_ls8c_ard_3",
+    "ga_ls9c_ard_3",
+]
 ###############################################################################
 def init_catalog(url:str=DEA_STAC):
     """
@@ -45,7 +57,7 @@ def calc_nbr(
     desired_resolution,
     output_path,
     use_mask=True
-    ):
+):
     """
     
     Returns:
@@ -55,47 +67,156 @@ def calc_nbr(
     - Requires the global variable CATALOG to be initialised
     --------------------------------------------------------------------
     """
-    # Search for datasets for the requested area and date:
-    query = CATALOG.search(
-        bbox=bbox,
-        collections=collection_id,
-        datetime=datetime,
-        filter=filter_query,
-        sortby="eo:cloud_cover",
-    )
-    # Get a list of matching items and show how many in the log:
-    items = list(query.items())
-    logger.info(f"Found: {len(items):d} datasets")
-
-    # Specify bands to use; NBR requires NIR and SWIR:
-    bands = ['nbart_nir_1', 'nbart_swir_3']
-    if use_mask:
-        bands.append('oa_s2cloudless_mask') # oa_s2cloudless_mask is not used for POST fire. WHY?
-    ds = odc.stac.load(
-        items,
-        bands=bands,
-        crs=desired_crs,
-        resolution=desired_resolution,
-        groupby="solar_day",
-        bbox=bbox
+    if CATALOG is None:
+        raise RuntimeError(
+            "CATALOG is not initialised. Call init_catalog() before calc_nbr()."
         )
+
+
+    # Parse the incoming datetime string: 'YYYY-MM-DD/YYYY-MM-DD'
+    dt0_str, dt1_str = datetime.split("/")
+    dt_start = pd.Timestamp(dt0_str)
+    dt_end   = pd.Timestamp(dt1_str)
+
+    # Safety check in case of inverted ranges
+    if dt_end < dt_start:
+        raise ValueError(f"datetime range is invalid: {datetime}")
+
+    # Build subranges: Landsat before SPLIT_DATE, Sentinel-2 after
+    subranges = []
+
+    # Part strictly before SPLIT_DATE >> Landsat
+    if dt_start < SPLIT_DATE:
+        lt_start = dt_start
+        lt_end   = min(dt_end, SPLIT_DATE - pd.Timedelta(seconds=1))
+        if lt_start <= lt_end:
+            subranges.append(("landsat", lt_start, lt_end))
+
+    # Part on/after SPLIT_DATE >> Sentinel-2
+    if dt_end >= SPLIT_DATE:
+        s2_start = max(dt_start, SPLIT_DATE)
+        s2_end   = dt_end
+        if s2_start <= s2_end:
+            subranges.append(("sentinel", s2_start, s2_end))
+
+    # For each subrange, query STAC, load, and normalise band names
+    all_items = []
+    ds_parts = []
+
+    for sensor, d0, d1 in subranges:
+        # Format a STAC datetime range for this subrange
+        dt_str = f"{d0:%Y-%m-%d}/{d1:%Y-%m-%d}"
+
+        if sensor == "sentinel":
+            # Use the package-level SENTINEL_2_COLLECTIONS for Sentinel-2
+            collections = SENTINEL_2_COLLECTIONS
+            bands = ["nbart_nir_1", "nbart_swir_3"]
+            # Optionally add the cloud mask for pre-fire runs
+            if use_mask:
+                bands.append("oa_s2cloudless_mask")
+        else:
+            # Landsat: use LANDSAT_COLLECTIONS defined above
+            collections = LANDSAT_COLLECTIONS
+            # DEA ARD Landsat NIR & SWIR2 bands
+            bands = ["nbart_nir", "nbart_swir_2"]
+            # Note: no s2cloudless mask for Landsat
+
+        logger.info(
+            "calc_nbr(): loading %s data for %s (%s to %s)",
+            sensor, label, d0.date(), d1.date()
+        )
+
+       # Search for datasets for the requested area and date:
+        query = CATALOG.search(
+            bbox=bbox,
+            collections=collections,
+            datetime=dt_str,
+            filter=filter_query,
+            sortby="eo:cloud_cover",
+        )
+        items = list(query.items())
+        logger.info("Found %d %s datasets for %s", len(items), sensor, label)
+
+        if not items:
+            continue  # no data for this sensor / subrange
+
+        # STAC load for this subrange and sensor
+        ds = odc.stac.load(
+            items,
+            bands=bands,
+            crs=desired_crs,
+            resolution=desired_resolution,
+            groupby="solar_day",
+            bbox=bbox,
+        )
+
+        # Normalise band names so that downstream NBR formula is generic.
+        # We map everything onto 'nir' and 'swir'.
+        rename_map = {}
+        if sensor == "sentinel":
+            # Sentinel-2: NIR = nbart_nir_1, SWIR = nbart_swir_3
+            if "nbart_nir_1" in ds.data_vars:
+                rename_map["nbart_nir_1"] = "nir"
+            if "nbart_swir_3" in ds.data_vars:
+                rename_map["nbart_swir_3"] = "swir"
+        else:
+            # Landsat: NIR = nbart_nir, SWIR = nbart_swir_2
+            if "nbart_nir" in ds.data_vars:
+                rename_map["nbart_nir"] = "nir"
+            if "nbart_swir_2" in ds.data_vars:
+                rename_map["nbart_swir_2"] = "swir"
+
+        if rename_map:
+            ds = ds.rename(rename_map)
+
+        # In rare cases filtering can result in no time steps left
+        if ds.sizes.get("time", 0) == 0:
+            logger.warning(
+                "calc_nbr(): %s dataset for %s has 0 timesteps after load; skipping.",
+                sensor, label
+            )
+            continue
+
+        ds_parts.append(ds)
+        all_items.extend(items)
+
+    # Combine all sensor parts; if nothing loaded, bail out
+    if not ds_parts:
+        logger.warning(
+            "calc_nbr(): no imagery found for %s over the interval %s.",
+            label, datetime
+        )
+        # Keep return types consistent: empty metadata, None raster
+        return [], None
+
+    # Concatenate along time dimension and sort by time
+    ds_all = xr.concat(ds_parts, dim="time").sortby("time")
+
+    # Extract metadata for all images actually used
     image_metadata = extract_image_metadata(
-        items,
-        ds['time'].values,
+        all_items,
+        ds_all["time"].values,
         desired_resolution,
         label
+    )
+
+    # Compute NBR manually using normalised 'nir' and 'swir' bands
+    # NBR = (NIR - SWIR) / (NIR + SWIR)
+    if "nir" not in ds_all.data_vars or "swir" not in ds_all.data_vars:
+        raise KeyError(
+            "calc_nbr(): expected 'nir' and 'swir' bands after normalisation."
         )
-    # Use built-in NBR calculation:
-    nbr = calculate_indices(
-        ds,
-        index='NBR',
-        collection=selected_collection,
-        drop=False
-        )
-    # Reduce the raster xarray (rioxarray package) dataset to median of each 
-    #pixel value along the time dimension.
-    image = nbr.median(dim='time')
-    nbr_ds = image.NBR
+
+    nir  = ds_all["nir"]
+    swir = ds_all["swir"]
+
+    # Avoid division-by-zero issues by using xarray's broadcasting;
+    # skipna=True will ignore NaNs created by bad pixels.
+    nbr = (nir - swir) / (nir + swir)
+
+    # Take the median along time, similar to the original approach
+    image = nbr.median(dim="time", skipna=True)
+    nbr_ds = image  # This is an xr.DataArray with rioxarray accessor
 
     return image_metadata, nbr_ds
 
@@ -200,23 +321,24 @@ def calculate_fire_severity(
         init_catalog()
 
     # Get the last day before the fire, and the first day after it:
-    end_date_pre = toputil.date_rel(fire_start_date,-1)
-    start_date_post = toputil.date_rel(fire_end_date,1)
-    # If the user hasn't specified a pre-fire period, default to 90 
-    #days:
+    end_date_pre = date_rel(fire_start_date, -1)
+    start_date_post = date_rel(fire_end_date, 1)
+
+    # If the user hasn't specified a pre-fire period, default to 90 days:
     if start_date_pre is None:
         logger.info(
             'No start date for pre-fire data provided. Defaulting to '
             '90 days before fire start date.'
-            )
-        start_date_pre = toputil.date_rel(fire_start_date,-90)
+        )
+        start_date_pre = date_rel(fire_start_date, -90)
+
     # Similar for post-fire period:
     if end_date_post is None:
         logger.info(
             'No end date for post-fire data provided. Defaulting to '
             '90 days after fire end date.'
-            )
-        end_date_post = toputil.date_rel(fire_end_date,90)
+        )
+        end_date_post = date_rel(fire_end_date, 90)
 
     if bbox is None:
         logger.info(
