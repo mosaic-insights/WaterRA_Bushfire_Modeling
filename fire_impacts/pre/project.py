@@ -43,7 +43,7 @@ class FireImpactsProject(object):
         - project_path (str): Path to the project folder.
         - exist_ok (bool): If True, do not raise an error if the project folder already exists.
         - clear (bool): If True, clear the project folder if it already exists.
-        
+
         TODO:
         - make this more resilient to different formats of paths used by
         the OS and by the user's input.
@@ -53,7 +53,7 @@ class FireImpactsProject(object):
         self.catchments = []
         self.boundary_files = {}
         self.source_data = {}
-        
+
         # If the user has said to clear the existing folder OR they have
         #said to proceed with loading a new project even if there is
         #already a folder there:
@@ -151,11 +151,11 @@ class FireImpactsProject(object):
         """
         Docstring placeholder
         """
-        # If there is already a folder and the user has said NOT to 
+        # If there is already a folder and the user has said NOT to
         #clear it:
         if not clear and os.path.exists(project_path):
             raise FileExistsError(f'Project folder already exists: {project_path}')
-        # If there is already a folder and the user as said it's ok to 
+        # If there is already a folder and the user as said it's ok to
         #clear its contents:
         if clear and os.path.exists(project_path):
             logger.info('Clearing existing project folder: %s',project_path)
@@ -240,7 +240,7 @@ class FireImpactsProject(object):
     ###########################################################################
     def load_vis_defaults(self):
         """
-        Helper function to load certain values for default 
+        Helper function to load certain values for default
         visualisations
         ----------------------------------------------------------------
         ----------------------------------------------------------------
@@ -298,7 +298,7 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither'
         }
 
-    
+
 
     ###########################################################################
     def plot_catchment_raster(
@@ -313,11 +313,11 @@ class FireImpactsProject(object):
         Plot the requested raster for catchment(s)
 
         Parameters:
-        - *args: 
+        - *args:
         - catchment (str): name of the catchment to
         plot. If none, each catchment in the current project will be
         plotted.
-        - figure (mpl.figure): matplotlib figure object within 
+        - figure (mpl.figure): matplotlib figure object within
         which all the plots will be created. This function will create
         one if not provided.
         - axes_index (int): Of the axes objects that belong to this
@@ -342,7 +342,7 @@ class FireImpactsProject(object):
             if axes_index is None:
                 # If an axes index isn't provided, use the end one:
                 axes_index = len(figure.axes) - 1
-            # If they have provided an axes index but have also 
+            # If they have provided an axes index but have also
             #requested a new subplot, display a warning:
             else:
                 if new_subplot:
@@ -387,7 +387,7 @@ class FireImpactsProject(object):
         import rasterio as rio
         import os
         import numpy as np
-        
+
         raster_path = self.catchment_path(catchment,*args)
         if not raster_path.endswith('.tif'):
             raster_path += '.tif'
@@ -411,7 +411,7 @@ class FireImpactsProject(object):
                 'cbar_extend': 'neither'
                 }
 
-        ax = figure.axes[axes_index] 
+        ax = figure.axes[axes_index]
         img, this_crs, cbar = toputil.plot_spatial_raster(
             ax,
             raster_path,
@@ -425,14 +425,13 @@ class FireImpactsProject(object):
             these_units = this_crs.linear_units + 's'
         elif this_crs.is_geographic:
             these_units = this_crs.angular_units + 's'
-        
+
         # Aesthetics:
         toputil.mapify_axes(ax, this_crs, these_units)
 
         # Add the catchment boundary:
         plot_catchment_boundary(self, catchment, ax)
-        
-        
+
         return
 
     ###########################################################################
@@ -449,7 +448,7 @@ class FireImpactsProject(object):
         Plot the headwaters coloured by a specified data value
 
         Parameters:
-        - catchment (str): name of the catchment within the current 
+        - catchment (str): name of the catchment within the current
         project
         - colour_col (str): name of the column in the .csv file which
         is to be used to colour the headwaters
@@ -457,7 +456,7 @@ class FireImpactsProject(object):
         be DebrisFlow but could be RUSLE or similar later
         - data_format (str): three-letter extension relevant to the file
         type being read for the non-spatial data.
-        - existing figure (mpl.figure): matplotlib figure object to 
+        - existing figure (mpl.figure): matplotlib figure object to
         include the new chart on, if desired. One will be created if
         not.
         - existing axes (mpl.axes): matplotlib axes object to plot the
@@ -478,21 +477,21 @@ class FireImpactsProject(object):
                 'Run topography.extract_headwaters() first for the current '
                 'catchment.'
             )
-        
+
         # Check that the data table that has been passed already exists:
         data_table_loc = self.catchment_path(catchment, data_type)
         data_table_path = os.path.join(
             data_table_loc,
             data_type
             ) + 'Data.' + data_format
-        
+
         if not os.path.isfile(data_table_path):
             raise FileNotFoundError(
                 'project.plot_headwaters() was called requeting to '
                 f'plot data from {data_type} as the variable. Full '
                 f'path checked for was {data_table_path}.'
             )
-        
+
         # Get the data table path and check that the requested column
         #exists:
         non_geo_data = pd.read_csv(data_table_path)
@@ -524,11 +523,11 @@ class FireImpactsProject(object):
 
         # Generate a relevant title:
         varname = (
-            vis_params['title_varname'] 
-            + ' ' 
+            vis_params['title_varname']
+            + ' '
             + colour_col.split('_')[1].title()
             ) # Variable name part of title
-        catch_title = toputil.clean_chart_title(catchment) 
+        catch_title = toputil.clean_chart_title(catchment)
         ax_title = (
             f'{catch_title} Headwaters: {varname}'
             )
@@ -543,7 +542,7 @@ class FireImpactsProject(object):
             id_col_name=id_col,
             data_col_name=colour_col
             )
-        
+
         # Work out which figure/axes to use:
         fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
 
@@ -552,8 +551,8 @@ class FireImpactsProject(object):
         # TODO: add this code
 
         # Set a grey background for headwater plots to aid readbility:
-        ax.set_facecolor('#D3D3D3') 
-        
+        ax.set_facecolor('#D3D3D3')
+
 
         # Add scalebar or ticks as appropriate:
         these_units = this_crs.axis_info[0].unit_name
@@ -577,9 +576,9 @@ class FireImpactsProject(object):
         headwater.
 
         Parameters:
-        - catchment (str): name of the catchment within the current 
+        - catchment (str): name of the catchment within the current
         project
-        - existing figure (mpl.figure): matplotlib figure object to 
+        - existing figure (mpl.figure): matplotlib figure object to
         include the new chart on, if desired. One will be created if
         not.
         - existing axes (mpl.axes): matplotlib axes object to plot the
@@ -595,7 +594,7 @@ class FireImpactsProject(object):
         folder = self.catchment_path(catchment, 'DebrisFlow')
         file = 'DebrisFlowData.csv'
         path = os.path.join(folder, file)
-        
+
         # Make sure it actually existsa and if not, throw an error:
         if not os.path.isfile(path):
             raise FileNotFoundError(
@@ -604,7 +603,7 @@ class FireImpactsProject(object):
                 f'the required data in a csv here:\n{path}'
             )
         non_geo_data = pd.read_csv(path)
-        
+
         # Prepare the data for plotting:
         x1_col = 'I12_crit_mean_Year_1'
         x2_col = 'I12_crit_mean_Year_2'
@@ -621,7 +620,7 @@ class FireImpactsProject(object):
         col_year_2 = '#696969' #grey
 
         sfig, sax = toputil.fig_ax_admin(existing_figure, existing_axes)
-        
+
         # Set size and resolution parameters for figure:
         sfig.set_size_inches(width, height)
         sfig.set_dpi(dpi)
@@ -641,7 +640,7 @@ class FireImpactsProject(object):
             color=col_year_2,
             label='Year 2'
         )
-        # Vertical lines for critical rainfall threshold medians for 
+        # Vertical lines for critical rainfall threshold medians for
         #each year:
         x1_col_med = sax.axvline(
             x=median_x1_col,
@@ -659,7 +658,7 @@ class FireImpactsProject(object):
         y_col_med = sax.axhline(
             y=median_y_col, label=f'dNBR median', ls=':', c='grey'
             )
-        
+
         # Aesthetics:
         sax.set_title(
             'Scatter plot of mean dNBR vs year 1 critical rainfall '
@@ -685,11 +684,11 @@ def plot_catchment_boundary(
     new_legend=True
     ):
     """
-    Plot the the catchment boundary on an axes object and add a 
+    Plot the the catchment boundary on an axes object and add a
     a legend
     --------------------------------------------------------------------
     TODO: Move this to top util and use plot_spatial_vector() for most
-    steps. 
+    steps.
     For now, We'll keep this separate as the way it plots and the way
     it gets the data are both somewhat different.
     --------------------------------------------------------------------
@@ -835,7 +834,7 @@ def get_zonal_stats(gdf, raster_path,label):
 ###############################################################################
 def format_dNBR(series:pd.Series):
     """
-    Convert dNBR values between -1 and 1, to standardised values 
+    Convert dNBR values between -1 and 1, to standardised values
     between 0 and 1000. Values below 0 are set to 0.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
@@ -843,7 +842,7 @@ def format_dNBR(series:pd.Series):
     return series.clip(lower=0).mul(1000)
 
 
-    
+
 
 
 
