@@ -439,6 +439,7 @@ class FireImpactsProject(object):
         self,
         catchment:str,
         colour_col:str,
+        table:pd.DataFrame=None,
         data_type:str='DebrisFlow',
         data_format:str='csv',
         existing_figure=None,
@@ -452,6 +453,9 @@ class FireImpactsProject(object):
         project
         - colour_col (str): name of the column in the .csv file which
         is to be used to colour the headwaters
+        - table (pd.DataFrame): OPTIONAL: DataFrame containing the
+        data to plot. If not provided, the function will attempt to
+        load a data table from file.
         - data_type (str): name of the output type, which will generally
         be DebrisFlow but could be RUSLE or similar later
         - data_format (str): three-letter extension relevant to the file
@@ -478,23 +482,27 @@ class FireImpactsProject(object):
                 'catchment.'
             )
 
-        # Check that the data table that has been passed already exists:
-        data_table_loc = self.catchment_path(catchment, data_type)
-        data_table_path = os.path.join(
-            data_table_loc,
-            data_type
-            ) + 'Data.' + data_format
+        if table is None:
+            # Check that the data table that has been passed already exists:
+            data_table_loc = self.catchment_path(catchment, data_type)
+            data_table_path = os.path.join(
+                data_table_loc,
+                data_type
+                ) + 'Data.' + data_format
 
-        if not os.path.isfile(data_table_path):
-            raise FileNotFoundError(
-                'project.plot_headwaters() was called requeting to '
-                f'plot data from {data_type} as the variable. Full '
-                f'path checked for was {data_table_path}.'
-            )
+            if not os.path.isfile(data_table_path):
+                raise FileNotFoundError(
+                    'project.plot_headwaters() was called requeting to '
+                    f'plot data from {data_type} as the variable. Full '
+                    f'path checked for was {data_table_path}.'
+                )
 
-        # Get the data table path and check that the requested column
-        #exists:
-        non_geo_data = pd.read_csv(data_table_path)
+            # Get the data table path and check that the requested column
+            #exists:
+            non_geo_data = pd.read_csv(data_table_path)
+        else:
+            non_geo_data = table
+
         if colour_col not in non_geo_data.columns:
             raise ValueError(
                 'project.plot_headwaters() was asked to colour the map '
