@@ -100,7 +100,7 @@ proj = FireImpactsProject('.', exist_ok=True, clear=False)
 # **Note:** The boundary coverage should include a coordinate reference system (CRS). This is the CRS that will be used for all other data stored in relation to this catchment in the project.
 
 # %%
-proj.add_catchment('..\\test_data\\example_small_catchment.json') # PUT THE PATH TO YOUR CATCHMENT BOUNDARY HERE
+proj.add_catchment('..\\test_data\\example_small_catchment.json',replace_existing=True) # PUT THE PATH TO YOUR CATCHMENT BOUNDARY HERE
 
 # %%
 proj.catchments
@@ -135,16 +135,19 @@ proj.catchments
 #
 
 # %%
-DEM_FILENAME='..\\test_data\\example_dem.tif' # PUT THE PATH TO YOUR DEM FILE HERE
+# PUT THE PATH TO YOUR DEM FILE HERE
+# If you don't have a DEM, the system will use the 1" SRTM DEM-H from Geoscience Australia 
+CUSTOM_DEM=None # '..\\test_data\\example_dem.tif' 
+
 
 # %%
-topography.extract_catchment_dems(proj,DEM_FILENAME)
+topography.extract_catchment_dems(proj,CUSTOM_DEM)
 
 # %%
 headwaters = topography.extract_headwaters(proj)
 
 # %%
-headwaters['example_small_catchment']
+headwaters[proj.catchments[0]]
 
 # %% [markdown]
 # ## Aside: Visualising data
@@ -177,6 +180,9 @@ proj.plot_catchment_raster('Topography','Flow_accumulation')
 # topography.extract_headwaters?
 # ```
 
+# %% [markdown]
+#
+
 # %%
 # topography.extract_headwaters?
 
@@ -195,6 +201,15 @@ severity.calculate_fire_severity(
     fire_end_date=fire_end_date,
 )
 
+# %%
+proj.plot_catchment_raster('FireSeverity','dNBR')
+
+# %%
+proj.plot_catchment_raster('FireSeverity','Prefire_NBR')
+
+# %%
+proj.plot_catchment_raster('FireSeverity','Postfire_NBR')
+
 
 # %% [markdown]
 # ## Soils
@@ -203,9 +218,9 @@ severity.calculate_fire_severity(
 
 # %%
 ARIDITY=r'..\\test_data\\Aridity_PT.tif'
-
+TERN_API_KEY='YOUR_TERN_API_KEY_HERE'  # PUT YOUR TERN API KEY HERE
 # %%
-soil.download_soil_data(proj)
+soil.download_soil_data_stac(proj, api_key=TERN_API_KEY)
 
 # Extract aridity data for each catchment
 soil.extract_aridity_data(proj,aridity_raster=ARIDITY)
@@ -218,8 +233,8 @@ soil.extract_aridity_data(proj,aridity_raster=ARIDITY)
 #
 
 # %%
-c_factor_path='..\\test_data\\c_factor_g94.tif'
-k_factor_path='..\\test_data\\k_factor_g94.tif'
+c_factor_path=None # Use default C factor
+k_factor_path=None # Use default K factor
 
 
 # %%
@@ -231,7 +246,7 @@ results = rusle.compute_lsi(proj)
 
 
 # %%
-
+rusle.compute_sediment_delivery_ratio(proj)
 # %% [markdown]
 # ## Summary information for Fire Severity
 
@@ -241,6 +256,5 @@ summary = project.summary_stats(proj)
 # %%
 
 # %%
-summary['example_small_catchment']
-
+summary[proj.catchments[0]]
 # %%
