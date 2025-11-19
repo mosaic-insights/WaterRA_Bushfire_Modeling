@@ -1,6 +1,8 @@
 import requests
 import pandas as pd
 import numpy as np
+from fire_impacts.pre.project import FireImpactsProject
+from fire_impacts.pre.util import read_raster
 import xarray as xr
 from ...pre.data_sources import STOCHASTIC_RAINFALL_API
 
@@ -57,3 +59,44 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
     result_x = result_x.rename({'variable':'replicate','index':'time'})
     result_x = xr.Dataset({'rainfall':result_x})
     return result_x
+
+def get_rainfall_replicates(proj:FireImpactsProject, catchment,start, end, num_replicates, mean_annual_rainfall, average_temperature, num_years=2):
+    '''
+    Get stochastic rainfall replicates for one or more catchments in the project.
+
+    Infer location and elevation from catchment boundary and DEM. User supplied climate statistics are used to generate the replicates.
+
+    Parameters:
+    - proj (FireImpactsProject): A dictionary of project folders created for catchments.
+    - catchment (str): OPTIONAL: Name of the catchment to process. If None, process all catchments.
+    - start (str): Start date for the rainfall data.
+    - end (str): End date for the rainfall data.
+    - num_replicates (int): Number of rainfall replicates to generate.
+    - mean_annual_rainfall (float): Mean annual rainfall in mm for the catchment.
+    - average_temperature (float): Average temperature in °C for the catchment.
+    - num_years (int): Length of data in years. Default is 2.
+
+    Returns:
+    - Dataset: XArray dataset with datetime index and simulations as columns.
+
+    '''
+    if catchment is None:
+        return proj.for_each_catchment(lambda c: get_rainfall_replicates(
+            proj, c, start, end, num_replicates, mean_annual_rainfall, average_temperature, num_years))
+
+    boundary = proj.catchment_boundary(catchment).to_crs(epsg=4326)
+    centroid = boundary.geometry.centroid
+    lat = centroid.y.values[0]
+    lon = centroid.x.values[0]
+    dem,_,_ = read_raster(
+        proj.catchment_path(
+            catchment,
+            'Topography',
+            'DEM.tif'
+            )
+        )
+    elev = np.nanmean(dem)
+    rep = get_replicates(
+        lat, lon, elev, mean_annual_rainfall, average_temperature, num_years, num_replicates)
+    return rep
+

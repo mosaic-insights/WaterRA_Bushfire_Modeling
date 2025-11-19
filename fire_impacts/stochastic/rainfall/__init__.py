@@ -1,2 +1,2 @@
 
-from .replicates import get_replicates
+from .replicates import get_replicates, get_rainfall_replicates
