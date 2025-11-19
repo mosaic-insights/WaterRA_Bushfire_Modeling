@@ -511,7 +511,7 @@ def plot_spatial_vector(
         thing_to_plot = shapes
 
     # Use Geopandas' built-in plot method:
-    thing_to_plot.plot(
+    existing_axes = thing_to_plot.plot(
         ax=existing_axes,
         column=colour_col,
         cmap=cmap,
@@ -532,6 +532,6 @@ def plot_spatial_vector(
     
     existing_axes.set_title(title)
 
-    return this_crs, this_cbar
+    return this_crs, this_cbar, existing_axes
 
 

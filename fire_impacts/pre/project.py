@@ -541,7 +541,7 @@ class FireImpactsProject(object):
             )
 
         # Call the vector plotting function:
-        this_crs, cbar = toputil.plot_spatial_vector(
+        this_crs, cbar, existing_axes = toputil.plot_spatial_vector(
             existing_axes,
             hw_shape_path,
             vis_params,
