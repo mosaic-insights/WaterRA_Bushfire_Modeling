@@ -427,7 +427,8 @@ class FireImpactsProject(object):
         if this_crs.is_projected:
             these_units = this_crs.linear_units + 's'
         elif this_crs.is_geographic:
-            these_units = this_crs.angular_units + 's'
+            # Assumes degrees are the only relevant angular unit:
+            these_units = 'degrees'
 
         # Aesthetics:
         toputil.mapify_axes(ax, this_crs, these_units)
