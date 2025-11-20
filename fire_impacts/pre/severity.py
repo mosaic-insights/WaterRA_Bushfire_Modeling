@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 CATALOG=None
 
 # Sensor split and Landsat collections
-SPLIT_DATE = pd.Timestamp("2016-01-01")
+SPLIT_DATE = pd.Timestamp("2016-07-01")
 
 ###############################################################################
 def init_catalog(url:str=DEA_STAC):
