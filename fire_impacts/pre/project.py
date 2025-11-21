@@ -547,12 +547,18 @@ class FireImpactsProject(object):
                 'title_varname': '-'
             }
 
+        non_under = colour_col.split('_')
+        if len(non_under) >= 2:
+            var_qual = non_under[1].title()
+        else:
+            var_qual = ''
+
         # Generate a relevant title:
         varname = (
             vis_params['title_varname']
             + ' '
-            + colour_col.split('_')[1].title()
-            ) # Variable name part of title
+            + var_qual
+            ).strip() # Variable name part of title
         catch_title = toputil.clean_chart_title(catchment)
         ax_title = (
             f'{catch_title} Headwaters: {varname}'
