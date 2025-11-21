@@ -195,27 +195,25 @@ def mapify_axes(
         ax.add_artist(this_scalebar)
 
     if crs.is_geographic:
+        # Set number format to always two decimal places:
         this_tick_label_formatter = mpl.ticker.FormatStrFormatter('%.2f')
         ax.xaxis.set_major_formatter(this_tick_label_formatter)
         ax.yaxis.set_major_formatter(this_tick_label_formatter)
-        this_tick_number_formatter = mpl.ticker.MaxNLocator(
+        # 3-5 ticks on x-axis
+        tick_number_formatter_x = mpl.ticker.MaxNLocator(
             min_n_ticks=3,
             nbins=5
             )
-        ax.xaxis.set_major_locator(this_tick_number_formatter)
-        this_tick_number_formatter = mpl.ticker.MaxNLocator(
+        ax.xaxis.set_major_locator(tick_number_formatter_x)
+        # Same on y-axis
+        tick_number_formatter_y = mpl.ticker.MaxNLocator(
             min_n_ticks=3,
             nbins=5
             )
-        ax.yaxis.set_major_locator(this_tick_number_formatter)
+        ax.yaxis.set_major_locator(tick_number_formatter_y)
+
         ax.set_xlabel('Longitude')
         ax.set_ylabel('Latitude')
-        ax.added_cbar.remove()
-        # Set number format to always two decimal places:
-
-            
-
-        
 
 ###############################################################################
 def fit_multi_figs(fig):
@@ -363,8 +361,9 @@ def insert_colourbar(axes, normaliser, vis_params):
     width = abs(axes.get_xlim()[1] - axes.get_xlim()[0])
     height = abs(axes.get_ylim()[1] - axes.get_ylim()[0])
     # Put the colourbar on the right unless the plot is notably
-    #landscape in proportions:
-    if width / height >= 1.5:
+    #landscape in proportions. Exception is if it's projected,
+    #in which case colourbar on the bottom looks bad.
+    if width / height >= 1.5 and axes.loaded_crs.is_projected:
         position = 'bottom'
     else:
         position = 'right'
@@ -385,9 +384,6 @@ def insert_colourbar(axes, normaliser, vis_params):
         label=f"{vis_params['measure']} ({vis_params['units']})",
         extend=vis_params['cbar_extend']
         )
-    
-    axes.added_cbar = cbar
-    axes.added_cax = cax
 
     return cbar
 
@@ -425,6 +421,13 @@ def plot_spatial_raster(
             # Replace NoData values with NaN
             data = np.where(data == no_data_value, np.nan, data)
         transform = src.transform
+
+        # Grab the crs while we have it:
+        this_crs = src.crs
+
+        # Tie the vis params and crs to the axes for access elsewhere:
+        ax.loaded_vis_params = vis_params
+        ax.loaded_crs = this_crs
         
         # Get the minimum value from vis_params if there is one:
         try:
@@ -467,10 +470,7 @@ def plot_spatial_raster(
         else:
             this_cbar=None
 
-        # Grab the crs while we have it:
-        this_crs = src.crs
-
-        ax.loaded_vis_params = vis_params
+        
 
         return img, this_crs, this_cbar
 
