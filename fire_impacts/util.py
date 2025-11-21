@@ -392,6 +392,7 @@ def plot_spatial_raster(
     existing_axes,
     full_raster_path:str,    
     vis_params:dict,
+    title:str, 
     colourbar:bool=True
     ):
     """
@@ -470,7 +471,7 @@ def plot_spatial_raster(
         else:
             this_cbar=None
 
-        
+        existing_axes.set_title(title)
 
         return img, this_crs, this_cbar
 
@@ -504,6 +505,9 @@ def plot_spatial_vector(
     shapes = gpd.read_file(full_vector_path)
     # Get useful metadata:
     this_crs = shapes.crs
+
+    existing_axes.loaded_vis_params = vis_params
+    existing_axes.loaded_crs = this_crs
 
     # If a symbolisation DataFrame is provided:
     if symbol_data is not None:

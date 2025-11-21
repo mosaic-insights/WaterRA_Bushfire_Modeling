@@ -254,7 +254,8 @@ class FireImpactsProject(object):
             'measure': 'Elevation',
             'units': 'm',
             'norm': None,
-            'cbar_extend': 'neither'
+            'cbar_extend': 'neither',
+            'title_varname': 'DEM'
         }
 
         self.vis_slope = {
@@ -262,7 +263,8 @@ class FireImpactsProject(object):
             'measure': 'Slope',
             'units': '°',
             'norm': None,
-            'cbar_extend': 'neither'
+            'cbar_extend': 'neither',
+            'title_varname': 'Slope'
         }
 
         self.vis_flow_accum = {
@@ -271,13 +273,14 @@ class FireImpactsProject(object):
             'units': 'count',
             'norm': 'log',
             'vmin': 10,
-            'cbar_extend': 'min'
+            'cbar_extend': 'min',
+            'title_varname': 'Flow Accumulation'
         }
 
         self.vis_dNBR = {
             'cmap': 'inferno',
             'measure': 'ΔNBR',
-            'units': 'n/a',
+            'units': 'raw',
             'title_varname': 'ΔNBR',
             'norm': 'linear',
             'cbar_extend': 'neither'
@@ -296,7 +299,7 @@ class FireImpactsProject(object):
             'cmap': 'cividis',
             'measure': 'Aridity Factor',
             'units': 'wet → dry',
-            'title_varname': '',
+            'title_varname': 'Aridity',
             'norm': 'linear',
             'cbar_extend': 'neither'
         }
@@ -397,28 +400,39 @@ class FireImpactsProject(object):
 
         gdf = self.catchment_boundary(catchment)
 
-        if args[-1].split('.')[0] == 'DEM':
+        useful_filename_part = args[-1].split('.')[0].lower()
+
+        if useful_filename_part == 'dem':
             vis_params = self.vis_DEM
-        elif args[-1].split('.')[0].lower() == 'slope':
+        elif useful_filename_part == 'slope':
             vis_params = self.vis_slope
-        elif args[-1].split('.')[0].lower() == 'flow_accumulation':
+        elif useful_filename_part == 'flow_accumulation':
             vis_params = self.vis_flow_accum
-        elif args[-1].split('.')[0].lower() == 'aridity':
+        elif useful_filename_part == 'aridity':
             vis_params = self.vis_aridity
+        elif useful_filename_part == 'dnbr':
+            vis_params = self.vis_dNBR
         else:
             vis_params = {
                 'cmap': 'viridis',
                 'measure': 'Undefined',
                 'units': 'n/a',
                 'norm': None,
-                'cbar_extend': 'neither'
+                'cbar_extend': 'neither',
+                'title_varname': ''
                 }
+            
+        catch_name = toputil.clean_chart_title(catchment)
+        chart_title = catch_name + ': ' + vis_params['title_varname']
+
+
 
         ax = figure.axes[axes_index]
         img, this_crs, cbar = toputil.plot_spatial_raster(
             ax,
             raster_path,
             vis_params,
+            title=chart_title,
             colourbar=True
             )
 
