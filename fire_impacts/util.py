@@ -195,8 +195,27 @@ def mapify_axes(
         ax.add_artist(this_scalebar)
 
     if crs.is_geographic:
+        this_tick_label_formatter = mpl.ticker.FormatStrFormatter('%.2f')
+        ax.xaxis.set_major_formatter(this_tick_label_formatter)
+        ax.yaxis.set_major_formatter(this_tick_label_formatter)
+        this_tick_number_formatter = mpl.ticker.MaxNLocator(
+            min_n_ticks=3,
+            nbins=5
+            )
+        ax.xaxis.set_major_locator(this_tick_number_formatter)
+        this_tick_number_formatter = mpl.ticker.MaxNLocator(
+            min_n_ticks=3,
+            nbins=5
+            )
+        ax.yaxis.set_major_locator(this_tick_number_formatter)
         ax.set_xlabel('Longitude')
         ax.set_ylabel('Latitude')
+        ax.added_cbar.remove()
+        # Set number format to always two decimal places:
+
+            
+
+        
 
 ###############################################################################
 def fit_multi_figs(fig):
@@ -366,6 +385,10 @@ def insert_colourbar(axes, normaliser, vis_params):
         label=f"{vis_params['measure']} ({vis_params['units']})",
         extend=vis_params['cbar_extend']
         )
+    
+    axes.added_cbar = cbar
+    axes.added_cax = cax
+
     return cbar
 
 ###########################################################################
@@ -446,6 +469,8 @@ def plot_spatial_raster(
 
         # Grab the crs while we have it:
         this_crs = src.crs
+
+        ax.loaded_vis_params = vis_params
 
         return img, this_crs, this_cbar
 
