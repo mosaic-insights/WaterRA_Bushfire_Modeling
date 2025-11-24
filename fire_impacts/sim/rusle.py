@@ -422,7 +422,13 @@ def calculate_lumped_rusle(subcatchments:gpd.GeoDataFrame, rainfall:pd.DataFrame
     logger.info('Done')
     return RUSLE_df
 
-def generate_rusle(rainfall:pd.Series, klscp:np.array, sdr:np.array, dnbr:np.array, cell_area_ha:float):
+def generate_rusle(
+    rainfall:pd.Series,
+    klscp:np.array,
+    sdr:np.array,
+    dnbr:np.array,
+    cell_area_ha:float
+    ):
     '''
     Calculates RUSLE and SDR erosion values for sub-catchments based on 30min rainfall sequence.
 
@@ -443,6 +449,8 @@ def generate_rusle(rainfall:pd.Series, klscp:np.array, sdr:np.array, dnbr:np.arr
         'RUSLE_below_threshold' (np.array), 'RUSLE_above_threshold' (np.array),
         'SDR_below_threshold' (np.array), 'SDR_above_threshold' (np.array))
     '''
+    if isinstance(rainfall, pd.DataFrame):
+        rainfall = pd.Series(data=rainfall['rainfall'], index=rainfall.index)
     # Pre-compute severity masks based on dNBR thresholds
     dnbr_below_threshold = dnbr < DNBR_SEVERITY_THRESHOLD
     dnbr_above_threshold = dnbr >= DNBR_SEVERITY_THRESHOLD
