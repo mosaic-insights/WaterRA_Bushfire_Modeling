@@ -23,6 +23,8 @@ import importlib
 toputil = importlib.import_module('fire_impacts.util') 
 logger = logging.getLogger(__name__)
 
+# These are the default directories that need to exist inside every 
+#catchments directory:
 PER_CATCHMENT_FOLDERS = [
     'Topography',
     'FireSeverity',
@@ -34,23 +36,36 @@ PER_CATCHMENT_FOLDERS = [
 STATS=['mean', 'max', 'min', 'median', 'std']
 APPROX_KM_PER_DEGREE = 111  # Approximate conversion factor from degrees to kilometers
 
+
+###############################################################################
+####### FireImpactsProject ####################################################
+###############################################################################
 class FireImpactsProject(object):
-    '''Objects representing the project folder structure for a fire impacts study.'''
+    """
+    Object representing the project folder structure for a fire impacts 
+    study.
+    --------------------------------------------------------------------
+    Notes:
+    - Keeps track of data related to one or more catchments
+    - Register catchments using the add_catchment or add_all_catchments 
+    methods.
+    --------------------------------------------------------------------
+    """
+    ###########################################################################
     def __init__(self,project_path,exist_ok=False,clear=False):
-        '''
-        Initialise a project object from a given project path based on the file found in the project path.
-
-        Keeps track of data related to one or more catchments. Register catchments using the add_catchment or add_all_catchments methods.
-
+        """
+        Initialise a project object from a given project path based on 
+        the file found in the project path.
+        
         Parameters:
         - project_path (str): Path to the project folder.
-        - exist_ok (bool): If True, do not raise an error if the project folder already exists.
-        - clear (bool): If True, clear the project folder if it already exists.
-
-        TODO:
-        - make this more resilient to different formats of paths used by
-        the OS and by the user's input.
-        '''
+        - exist_ok (bool): If True, do not raise an error if the 
+        project folder already exists.
+        - clear (bool): If True, clear the project folder if it already 
+        exists.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
         norm_path = os.path.normpath(project_path)
         self.project_path = norm_path
         self.catchments = []
@@ -61,141 +76,315 @@ class FireImpactsProject(object):
         #said to proceed with loading a new project even if there is
         #already a folder there:
         if clear or not exist_ok:
-          self.initialise_project(norm_path,exist_ok=exist_ok,clear=clear)
+            self.initialise_project(norm_path,exist_ok=exist_ok,clear=clear)
         else:
-          try:
-              self.load_project()
-          except:
-              self.initialise_project(norm_path,exist_ok=exist_ok,clear=clear)
+            try:
+                self.load_project()
+            except:
+                self.initialise_project(
+                    norm_path,exist_ok=exist_ok,clear=clear
+                    )
 
         self.load_vis_defaults()
 
-
+    ###########################################################################
     def _settings_fn(self):
+        """
+        Load settings from a .json file in the project folder
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
         return os.path.join(self.project_path,'settings.json')
 
+    ###########################################################################
     def _settings(self):
-        return dict(catchments=self.catchments,source_data=self.source_data,boundary_files=self.boundary_files)
+        """
+        Get the settings from the project that are required for the
+        settings.json file
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        settings_dict = dict(
+            catchments=self.catchments,
+            source_data=self.source_data,
+            boundary_files=self.boundary_files
+            )
+        return settings_dict
 
+    ###########################################################################
     def _write(self):
+        """
+        Write the settings from the current project to a .json file
+        ----------------------------------------------------------------
+        Notes:
+        - All this really does is save the paths for the boundary files
+        in a json-friendly way
+        ----------------------------------------------------------------
+        """
+        # Use _settings_fn() to get the path in write mode:
         with open(self._settings_fn(),'w') as f:
             json.dump(self._settings(),f,indent=2)
 
+    ###########################################################################
     def catchment_path(self,catchment_name=None,*args):
-        '''
-        Expand a path relative to the project folder to a full path.
+        """
+        Expand a path based on key words to a usable path relative to 
+        a particular catchment
 
         Parameters:
-        - catchment_name (str): Name of the catchment to expand the path for. If not provided, the path will be expanded to the main Catchments folder.
+        - catchment_name (str): Name of the catchment to expand the 
+        path for. If not provided, the path will be expanded to the 
+        main Catchments folder.
         - args (list): Additional path components to expand.
-        '''
+
+        Returns:
+        - Path to the catchment folder, or base as a fallback
+        ----------------------------------------------------------------
+        Notes:
+        - Args should correspond to subfolder names, for example 
+        'Erodibility', 'KLSCP.tif' gives the full path to that file
+        ----------------------------------------------------------------
+        """
+        # Every project will have a Catchments folder:
         base = os.path.join(self.project_path,'Catchments')
+        # If they haven't provided additional arguments, just return
+        #the top level:
         if catchment_name is None:
-            assert len(args) == 0, 'Cannot specify additional arguments without a catchment name.'
+            assert len(args) == 0, (
+                'Cannot specify additional arguments without a '
+                'catchment name.'
+                )
             return base
         return os.path.join(base,catchment_name,*args)
 
+    ###########################################################################
     def load_project(self):
-        '''
+        """
         (re)Load the project settings from the settings file.
-        '''
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # Get the current path and load the settings file in:
         with open(self._settings_fn(),'r') as f:
             settings = json.load(f)
+        # Get the names of the current catchments and assign to 
+        #class instance:
         self.catchments = settings.get('catchments',[])
+        # If Source data has been loaded, assign to class instance:
         self.source_data = settings.get('source_data',{})
+        # Load boundary files to class instance:
         self.boundary_files = settings.get('boundary_files',{})
+
+
         self.ensure_catchment_folders()
         self.load_vis_defaults()
 
-    def add_catchment(self,catchment_shapefile:str|Path,name=None,replace_existing=False):
-        '''
-        Register a new catchment in the project.
+    ###########################################################################
+    def add_catchment(
+        self,
+        catchment_shapefile:str|Path,
+        name=None,
+        replace_existing=False
+        ):
+        """
+        Register a new catchment in the project
 
         Parameters:
-        - catchment_shapefile (str): Path to the shapefile defining the catchment boundary.
-        - name (str): Name to use for the catchment. If not provided, the name will be derived from the shapefile name.
-        - replace_existing (bool): If True, replace an existing catchment with the same name.
-                                   If False, raise an error if a catchment with the same name already exists.
-        '''
+        - catchment_shapefile: string or Path object pointing to a 
+        shapefile of the catchment boundary
+        - name: name to use for the catchment. If not provided, the 
+        name will be derived from the shapefile name.
+        - replace_existing: whether the shapefile should be overwritten 
+        if it already exists
+        ----------------------------------------------------------------
+        Notes:
+        - replace_existing behaviour:
+            - If True, replace an existing catchment with the same name
+            - If False, raise an error if a catchment with the same 
+            name already exists.
+        ----------------------------------------------------------------
+        """
+        # If a name hasn't been specified, derive one from the 
+        #shapefile name:
         if name is None:
             name = os.path.splitext(os.path.basename(catchment_shapefile))[0]
+        
+        # Check if the catchment is already there:
         have_already = name in self.catchments
+        # If so, and the user hasn't said to replace, raise an error:
         if have_already and not replace_existing:
-            raise ValueError(f'Catchment {name} already exists in project.')
-
+            raise ValueError(
+                f'Catchment {name} already exists in project.'
+                )
+        # If the catchment isn't already there, add its name to the 
+        #list of catchments in the class instance
         if not have_already:
             self.catchments.append(name)
+        # Add an entry to the current instance's boundary files 
+        #dictionary pointing to the current catchment shapefile path:
         self.boundary_files[name] = str(catchment_shapefile)
+
+        # Create the standard set of subcatchment folders for this new
+        #catchment:
         self.ensure_catchment_folders(name)
+        # Update the settings.json file so it includes the new 
+        #catchment:
         self._write()
 
+    ###########################################################################
+    def add_subcatchments(self):
+        """
+        
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        pass
+
+    ###########################################################################
     def ensure_catchment_folders(self,catchment_name:str=None):
+        """
+        Make sure the project directory structure is as expected. 
+        Create the required folders if they don't already exist.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # Run for all catchments if none is specified:
         if catchment_name is None:
             for catchment in self.catchments:
                 self.ensure_catchment_folders(catchment)
             return
+        # Get the catchment-level folder:
         catchment_path = self.catchment_path(catchment_name)
+        # Go throuh each of the required folders:
         for folder in PER_CATCHMENT_FOLDERS:
+            # Make a new one if it's not already there:
             os.makedirs(os.path.join(catchment_path,folder),exist_ok=True)
 
+    ###########################################################################
     def add_all_catchments(self,catchment_shapefiles):
-        '''
-        Register all catchments in the project from a list of shapefiles.
+        """
+        Register all catchments in the project from a list of 
+        shapefiles.
 
         Parameters:
-        - catchment_shapefiles (list): List of paths to the shapefiles defining the catchment boundaries.
-
-        Note: This method will replace any existing catchments in the project.
-        '''
+        - catchment_shapefiles (list): List of paths to the shapefiles 
+        defining the catchment boundaries.
+        ----------------------------------------------------------------
+        Notes:
+        - This method will replace any existing catchments in the 
+        project.
+        ----------------------------------------------------------------
+        """
         for shapefile in catchment_shapefiles:
             logger.info('Adding catchment from: %s',shapefile)
             self.add_catchment(shapefile,replace_existing=True)
 
+    ###########################################################################
     def initialise_project(self,project_path,exist_ok=False,clear=False):
         """
-        Docstring placeholder
+        Load a brand new project in the specified path. Throw an error 
+        if it already exists but user has said not to clear.
+
+        Parameters:
+        - project_path: path to the desired location, including the 
+        desired project name as the final folder
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
         """
         # If there is already a folder and the user has said NOT to
         #clear it:
         if not clear and os.path.exists(project_path):
-            raise FileExistsError(f'Project folder already exists: {project_path}')
+            raise FileExistsError(
+                f'Project folder already exists: {project_path}'
+                )
         # If there is already a folder and the user as said it's ok to
         #clear its contents:
         if clear and os.path.exists(project_path):
             logger.info('Clearing existing project folder: %s',project_path)
             # Remove the directory and all of its contents:
             shutil.rmtree(project_path)
+        # Create a new folder in the location of the project path:
         os.makedirs(self.catchment_path(),exist_ok=exist_ok)
+        # Write the settings (which will initially be shells):
         self._write()
 
+    ###########################################################################
     def catchment_boundary(self,catchment:str) -> gpd.GeoDataFrame:
-        '''
+        """
         Get the catchment boundary as a GeoDataFrame.
-        '''
+
+        Parameters:
+        - catchment: name of the catchment loaded into the class 
+        instance
+
+        Returns:
+        - Geodataframe of the catchment boundary file
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
         shapefile_path = self.boundary_files[catchment]
         gdf = gpd.read_file(shapefile_path)
         return gdf
 
+    ###########################################################################
     def subcatchment_boundaries(self,catchment:str) -> gpd.GeoDataFrame:
-        '''
+        """
         Get the subcatchment boundaries as a GeoDataFrame.
-        '''
-        shapefile_path = self.catchment_path(catchment,'Topography','Subcatchments.shp')
-        if os.path.exists(shapefile_path):
-          gdf = gpd.read_file(shapefile_path)
-          return gdf
 
+        Parameters:
+        - Name of the catchment to get subcatchments for
+
+        Returns:
+        - Geodataframe of subcatchments if it exists, otherwise just 
+        the catchment boundary itself
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # Assume there is a shapefile with all the subcatchment 
+        #boundaries in the Topography folder for the current project:
+        shapefile_path = self.catchment_path(
+            catchment,
+            'Topography',
+            'Subcatchments.shp'
+            )
+        
+        # If there is a subcatchments shapefile, load it as a 
+        #GeoDataFrame and return it:
+        if os.path.exists(shapefile_path):
+            gdf = gpd.read_file(shapefile_path)
+            return gdf
+        # Otherwise just return the catchment boundary:
         return self.catchment_boundary(catchment)
 
+    ###########################################################################
     def catchment_bounds(self,catchment:str, buffer_distance_km:float=10):
-        '''
-        Get the bounding box for a catchment in WGS84 with an (optional) buffer distance in approximate kilometres.
-        '''
+        """
+        Get the bounding box for a catchment in WGS84 with an 
+        (optional) buffer distance in approximate kilometres.
+
+        Parameters:
+        - catchment: name of the catchment to get the bounding box of
+        - buffer_distance_km: number of kilometres beyond the 
+        catchment's boundary to buffer before getting the bounding box
+
+        Returns:
+        - List of min/max longitude/latitude of the buffered catchment 
+        boundary
+        ----------------------------------------------------------------
+        Notes:
+        - Buffer is important to allow for differences in projections 
+        etc.
+        - Primarily used for getting satellite data through dea-tools
+        ----------------------------------------------------------------
+        """
+        # Get the catchmetn boundary and transform to WGS84:
         gdf = self.catchment_boundary(catchment)
         gdf_wgs84 = gdf.to_crs(epsg=4326)
+        # Get the extent from the transformed geodataframe:
         bbox = gdf_wgs84.total_bounds
 
-        # Convert 10 km to degrees (approximate conversion, 1 degree = 111 km)
+        # Convert 10 km to degrees (approximate conversion, 1 degree = 
+        #111 km)
         buffer_degrees = buffer_distance_km / APPROX_KM_PER_DEGREE
 
         # Apply buffer to the bounding box
@@ -207,22 +396,53 @@ class FireImpactsProject(object):
         ]
         return bbox_with_buffer
 
+    ###########################################################################
     def catchment_crs(self,catchment:str):
-        '''
-        Get the CRS for a catchment from the catchment boundary coverage.
-        '''
+        """
+        Get the CRS for a catchment from the catchment boundary
+
+        Parameters:
+        - catchment: name of the catchment
+
+        Returns:
+        - GeoPandas crs object
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
         gdf = self.catchment_boundary(catchment)
         return gdf.crs
 
+    ###########################################################################
     def cell_area(self,catchment:str=None):
-        if catchment is None:
-            return self.for_each_catchment(lambda c:self.cell_area(catchment=c))
+        """
+        Get the cell area of the DEM for a catchment
 
+        Parameters:
+        - catchment: name of the catchment
+        
+        Returns:
+        - Planar area of one cell in the catchment DEM, in the units of 
+        that DEM
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # If no catchment sspecified, process for all catchments:
+        if catchment is None:
+            return self.for_each_catchment(
+                lambda c:self.cell_area(catchment=c)
+                )
+
+        # Get the path for the DEM for the current cathment:
         fn = self.catchment_path(catchment,'Topography','DEM.tif')
+        
+        # Open the DEM in rasterio:
         with rio.open(fn) as src:
+            # Get the transform, which has the cell sizes
             transform = src.transform
+            # Compute width *  height and return the positive value:
             return abs(transform.a * transform.e)
 
+    ###########################################################################
     def for_each_catchment(self,fn:callable):
         """
         Run a function for each catchment in the project.
