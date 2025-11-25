@@ -30,7 +30,8 @@ PER_CATCHMENT_FOLDERS = [
     'FireSeverity',
     'Soils',
     'Erodibility',
-    'Delivery'
+    'Delivery',
+    'Subcatchments'
 ]
 
 STATS=['mean', 'max', 'min', 'median', 'std']
@@ -232,13 +233,79 @@ class FireImpactsProject(object):
         self._write()
 
     ###########################################################################
-    def add_subcatchments(self):
+    def add_subcatchments(
+        self,
+        catchment_name:str,
+        subcatch_shapefile_path:str,
+        id_cols:list=[]
+        ):
         """
-        
+        Load subcatchments from a shapefile.
+
+        Parameters:
         ----------------------------------------------------------------
+        Notes:
+        - Reproject to the catchment crs
+        - Clip to the catchment boundary
+        - Keep identifying attributes
+        - Load into class instance as geodataframe
+        - Add path to boundary files and update settings.json
+        - Save processed boundary as shapefile in the subcatchments 
+        folder
+
+        TODO:
+        - Handle slivers near edge of catchment boundary
         ----------------------------------------------------------------
         """
-        pass
+        # Read in the proposed subcatchments:
+        in_gdf = gpd.read_file(subcatch_shapefile_path)
+        # Check and compare CRS of subcatchment and existing catchment:
+        subcatch_crs = in_gdf.crs
+        catch_crs = self.catchment_crs(catchment_name)
+        if subcatch_crs != catch_crs:
+            catch_epsg = catch_crs.to_epsg()
+            subcatch_epsg = subcatch_crs.to_epsg()
+            logger.info(
+                f'Subcatchment shapefile CRS is EPSG: {subcatch_epsg}. '
+                'Reprojecting/transforming to the catchment CRS which '
+                f'is EPSG: {catch_epsg}.'
+                )
+            int_gdf = in_gdf.to_crs(catch_crs)
+        else:
+            int_gdf = in_gdf
+
+        # Check that there is at least some overlap in the bounding 
+        #boxes of the newly 
+        catch_gdf = self.catchment_boundary(catchment_name)
+        logger.info(
+            'Clipping subcatchments to the catchment polygon...'
+            )
+        # Clip the subcatchments to the catchment boundary
+        subcatch_clipped = int_gdf.clip(catch_gdf)
+        # Raise an error if there's no shared area:
+        if subcatch_clipped.empty:
+            raise ValueError(
+                'Only subcatchment areas within the catchment boundary '
+                'can be processed, but there were none left after '
+                'clipping.'
+                )
+        # Add original subcatchment geodataframe to boundary files:
+        key_name = catchment_name + '_' + 'subcatchments'
+        self.boundary_files[key_name] = subcatch_shapefile_path
+        self._write()
+
+        # Get only the useful columns, plus geometry:
+        good_cols = id_cols + [subcatch_clipped.geometry.name]
+        out_gdf = subcatch_clipped[good_cols]
+        # Save the clipped subcatchments to the subcatchments folder:
+        save_path = self.catchment_path(catchment_name, 'Subcatchments')
+        key_file_name = key_name + '.shp'
+        key_file_path = os.path.join(save_path, key_file_name)
+        out_gdf.to_file(key_file_path)
+        logger.info(
+            'Saved clipped subcatchments shapefile in the catchment '
+            f'crs to {key_file_path}'
+            )
 
     ###########################################################################
     def ensure_catchment_folders(self,catchment_name:str=None):
@@ -327,7 +394,7 @@ class FireImpactsProject(object):
         return gdf
 
     ###########################################################################
-    def subcatchment_boundaries(self,catchment:str) -> gpd.GeoDataFrame:
+    def get_subcatchments(self,catchment:str) -> gpd.GeoDataFrame:
         """
         Get the subcatchment boundaries as a GeoDataFrame.
 
@@ -344,7 +411,7 @@ class FireImpactsProject(object):
         #boundaries in the Topography folder for the current project:
         shapefile_path = self.catchment_path(
             catchment,
-            'Topography',
+            'Subcatchments',
             'Subcatchments.shp'
             )
         
@@ -353,8 +420,15 @@ class FireImpactsProject(object):
         if os.path.exists(shapefile_path):
             gdf = gpd.read_file(shapefile_path)
             return gdf
-        # Otherwise just return the catchment boundary:
-        return self.catchment_boundary(catchment)
+        # Otherwise return None
+        else:
+            logger.warning(
+                'Subcatchment boundaries were requested from '
+                f'project.get_subcatchments() for {catchment}, '
+                'but they appear not to be loaded yet. Use '
+                'project.add_subcatchments() first.'
+                )
+            return None
 
     ###########################################################################
     def catchment_bounds(self,catchment:str, buffer_distance_km:float=10):
