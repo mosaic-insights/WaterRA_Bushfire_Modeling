@@ -407,12 +407,13 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
+        shape_name = catchment + '_subcatchments.shp'
         # Assume there is a shapefile with all the subcatchment 
         #boundaries in the Topography folder for the current project:
         shapefile_path = self.catchment_path(
             catchment,
             'Subcatchments',
-            'Subcatchments.shp'
+            shape_name
             )
         
         # If there is a subcatchments shapefile, load it as a 
