@@ -105,6 +105,7 @@ class FireImpactsProject(object):
         self.source_data = settings.get('source_data',{})
         self.boundary_files = settings.get('boundary_files',{})
         self.ensure_catchment_folders()
+        self.load_vis_defaults()
 
     def add_catchment(self,catchment_shapefile:str|Path,name=None,replace_existing=False):
         '''
@@ -295,11 +296,29 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither'
         }
 
+        self.vis_num_debris_flow_events = {
+            'cmap': 'Reds',
+            'measure': 'Debris Flow Events',
+            'units': 'count',
+            'title_varname': 'Debris Flow Events',
+            'norm': 'boundary',
+            'cbar_extend': 'neither',
+        }
+
         self.vis_aridity = {
             'cmap': 'cividis',
             'measure': 'Aridity Factor',
             'units': 'wet → dry',
             'title_varname': 'Aridity',
+            'norm': 'linear',
+            'cbar_extend': 'neither'
+        }
+
+        self.vis_erosion = {
+            'cmap': 'cividis',
+            'measure': 'Erosion',
+            'units': 'tonnes per cell',
+            'title_varname': '',
             'norm': 'linear',
             'cbar_extend': 'neither'
         }
@@ -412,6 +431,18 @@ class FireImpactsProject(object):
             vis_params = self.vis_aridity
         elif useful_filename_part == 'dnbr':
             vis_params = self.vis_dNBR
+        elif useful_filename_part == 'erosion_y1':
+            vis_params = self.vis_erosion
+            vis_params['title_varname'] = 'Total Erosion Year 1'
+        elif useful_filename_part == 'erosion_y2':
+            vis_params = self.vis_erosion
+            vis_params['title_varname'] = 'Total Erosion Year 2'
+        elif useful_filename_part == 'peak_erosion_y1':
+            vis_params = self.vis_erosion
+            vis_params['title_varname'] = 'Peak 30-min Erosion Year 1'
+        elif useful_filename_part == 'peak_erosion_y2':
+            vis_params = self.vis_erosion
+            vis_params['title_varname'] = 'Peak 30-min Erosion Year 2'
         else:
             vis_params = {
                 'cmap': 'viridis',
@@ -536,6 +567,8 @@ class FireImpactsProject(object):
             vis_params = self.vis_dNBR
         elif colour_col[:8].lower() == 'i12_crit':
             vis_params = self.vis_i12_crit
+        elif colour_col[-10:].lower() == 'num_events':
+            vis_params = self.vis_num_debris_flow_events
         # Default parameters fallback:
         else:
             vis_params = {
@@ -547,9 +580,14 @@ class FireImpactsProject(object):
                 'title_varname': '-'
             }
 
+        # Format the chart title to use the colour column in some way:
+        #TODO: This needs to be more dynamic, currently I'm just 
+        #building it to handle the cases I've seen so far.
         non_under = colour_col.split('_')
-        if len(non_under) >= 2:
+        if len(non_under) == 2:
             var_qual = non_under[1].title()
+        elif len(non_under) > 2:
+            var_qual = non_under[0].title()
         else:
             var_qual = ''
 

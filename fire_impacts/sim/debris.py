@@ -444,7 +444,7 @@ def debris_flow(
             year_results[year]["event_counts"].append(len(events))
             year_results[year]["rainfall_events"].append(events.tolist())
             year_results[year]["event_dates"].append(event_dates_row)
-
+        
         # Add the number of events as a new column for the current year
         result[f"Year{year}_num_events"] = year_results[year]["event_counts"]
 
@@ -460,7 +460,7 @@ def debris_flow(
             ]
             # Add event dates for event[j]
             sim_columns[f"Year{year}_event{j+1}_date"] = [
-                f"{date[j][0]}_{date[j][1]}" if j < len(date) else np.nan for date in year_results[year]["event_dates"]
+                f"{date[j].date().isoformat()}" if j < len(date) else np.nan for date in year_results[year]["event_dates"]
             ]
 
         # Add all columns for the current year and simulation to the DataFrame

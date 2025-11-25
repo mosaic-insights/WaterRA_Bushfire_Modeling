@@ -319,8 +319,17 @@ def get_cmap_normer(
 
     # For now we're going to make everything linear unless the user
     #specifies logarithmic:
-    if scale is None or scale.lower().strip() != 'log':
+    if scale is None or scale.lower().strip() == 'linear':
         return Normalize(vmin=vmin, vmax=vmax)
+    elif scale.lower().strip() == 'boundary':
+        # Update the vmin and max to integers:
+        vmin = int(vmin)
+        vmax = int(vmax)
+        bounds = np.arange((vmin - 0.5), (vmax + 1.5), 1)
+        num_boundaries = len(bounds)
+        return mpl.colors.BoundaryNorm(bounds, num_boundaries)
+
+
     # Handle logarithmic scale in a safe way;
     else:
         # Lift vmin above 0 if it's not already, and check that not all
@@ -368,15 +377,58 @@ def insert_colourbar(axes, normaliser, vis_params):
     else:
         position = 'right'
     
+    norm_type = vis_params['norm']
+    cmap_name = vis_params['cmap']
+
+    # Create a special discrete mapper if we're using a boundary 
+    #normaliser:
+    if norm_type == 'boundary':
+        num_colours = normaliser.N - 1
+        # Get a version of the colourmap with the specific number of 
+        #colours needed:
+        boundary_cmap = plt.cm.get_cmap(cmap_name, num_colours)
+        # Create the mappable object:
+        mappable = ScalarMappable(norm=normaliser, cmap=boundary_cmap)
+
+        max_ticks = 10
+        # Update the ticks to go in the centre of the discrete colours:
+        bounds = normaliser.boundaries
+        centres = 0.5 * (bounds[:-1] + bounds[1:])
+        int_labels = np.round(centres).astype(int)
+        if num_colours > 1:
+            
+            int_min, int_max = int_labels[0], int_labels[-1]
+
+            # If the number of labels is less than the maximum, show all:
+            if num_colours <= max_ticks:
+                vals_to_show = np.arange(int_min, int_max + 1)
+            # Otherwise, work out a roughly optimal spacing:
+            else:
+                int_between_ticks = np.ceil(num_colours / (max_ticks - 1))
+                vals_to_show = np.arange(int_min, int_max + 1, int_between_ticks)
+                # If we haven't naturally included the maximum, add it in again:
+                if vals_to_show[-1] != int_max:
+                    vals_to_show = np.append(vals_to_show, int_max)
+            # Make a lookup of what labels to use for what ticks:
+            val_centre_dict = dict(zip(int_labels, centres))
+            labels_to_show = vals_to_show.astype(int)
+            tick_positions = [val_centre_dict[v] for v in vals_to_show]
+        else:
+            tick_positions = centres
+            labels_to_show = centres.astype(int)
+
+    # Otherwise we're using a normal continuous one:
+    else:
+        # Create a mappable object using the previously-created normaliser:
+        mappable = ScalarMappable(norm=normaliser, cmap=vis_params['cmap'])
+    
+    mappable.set_array([]) #avoid warnings
 
     # Create a divider to manage spacing of axis and colourbar:
     divider = make_axes_locatable(axes)
     cax = divider.append_axes(position, size='5%', pad=0.05)
 
-    # Create a mappable object using the previously-created normaliser:
-    mappable = ScalarMappable(norm=normaliser, cmap=vis_params['cmap'])
-    mappable.set_array([]) #avoid warnings
-
+    # Create the colourbar:
     cbar = axes.figure.colorbar(
         mappable,
         cax=cax,
@@ -384,6 +436,13 @@ def insert_colourbar(axes, normaliser, vis_params):
         label=f"{vis_params['measure']} ({vis_params['units']})",
         extend=vis_params['cbar_extend']
         )
+    if norm_type == 'boundary':
+        cbar.set_ticks(tick_positions)
+        cbar.set_ticklabels(labels_to_show)
+        cbar.minorticks_off()
+
+    axes.custom_cbar = cbar
+    axes.custom_cax = cax
 
     return cbar
 
@@ -509,6 +568,10 @@ def plot_spatial_vector(
     existing_axes.loaded_vis_params = vis_params
     existing_axes.loaded_crs = this_crs
 
+    # Get relevant values
+    norm_type = vis_params['norm']
+    cmap_name = vis_params['cmap']
+
     # If a symbolisation DataFrame is provided:
     if symbol_data is not None:
         # Merge in id_col_name so we have the value for each vector
@@ -528,24 +591,32 @@ def plot_spatial_vector(
         min_plot_val = normer.vmin
         max_plot_val = normer.vmax
 
-        cmap = vis_params['cmap']
+        # Create a special discrete mapper if we're using a boundary 
+        #normaliser:
+        if norm_type == 'boundary':
+            num_colours = normer.N - 1
+            # Get a version of the colourmap with the specific number of 
+            #colours needed:
+            boundary_cmap = plt.cm.get_cmap(cmap_name, num_colours)
+            # Create the mappable object:
+            use_this_cmap = boundary_cmap
+        else:
+            use_this_cmap = cmap_name
+
         thing_to_plot=geom_with_data
     # Populate empty values for symbolisations
     else:
         colour_col = None
-        cmap=None
+        use_this_cmap=None
         normer=None
-        min_plot_val=None
-        max_plot_val=None
         thing_to_plot = shapes
 
     # Use Geopandas' built-in plot method:
     existing_axes = thing_to_plot.plot(
         ax=existing_axes,
         column=colour_col,
-        cmap=cmap,
-        vmin=min_plot_val,
-        vmax=max_plot_val
+        cmap=use_this_cmap,
+        norm=normer
         )
     
     # If we're symbolising by column and a colourbar is requested,
