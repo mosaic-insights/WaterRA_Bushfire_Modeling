@@ -87,6 +87,7 @@ class FireImpactsProject(object):
                     )
 
         self.load_vis_defaults()
+        self.load_name_defaults()
 
     ###########################################################################
     def _settings_fn(self):
@@ -179,6 +180,7 @@ class FireImpactsProject(object):
 
         self.ensure_catchment_folders()
         self.load_vis_defaults()
+        self.load_name_defaults()
 
     ###########################################################################
     def add_catchment(
@@ -407,29 +409,85 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
+        # Load basic path elements:
         shape_name = catchment + '_subcatchments.shp'
-        # Assume there is a shapefile with all the subcatchment 
-        #boundaries in the Topography folder for the current project:
+        project_folder = 'Subcatchments'
+        new_id_col_name = self.subcatchment_id
+        # Read in the shapefile:
+        gdf = self.get_catchment_polygons(
+            catchment,
+            project_folder,
+            shape_name,
+            new_id_col_name
+            )
+        return gdf
+    
+    ###########################################################################
+    def get_headwaters(self, catchment:str) -> gpd.GeoDataFrame:
+        """
+        Get the headwater boundaries and basic attributes as a 
+        GeoDataFrame.
+
+        Parameters:
+        - Name of the catchment to get subcatchments for
+
+        Returns:
+        - Geodataframe of headwaters
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # Load basic path elements:
+        shape_name = 'Headwaters.shp'
+        project_folder = 'Topography'
+        new_id_col_name = self.headwater_id
+        # Read in the shapefile:
+        gdf = self.get_catchment_polygons(
+            catchment,
+            project_folder,
+            shape_name,
+            new_id_col_name
+            )
+        return gdf
+
+        
+    ###########################################################################
+    def get_catchment_polygons(
+        self,
+        catchment:str,
+        folder:str,
+        poly_file_name:str,
+        auto_id_col_name:str
+        ) -> gpd.GeoDataFrame:
+        """
+        Read a shapefile containing relevant polygons in a catchment and
+        return a GeoDataFrame
+        ----------------------------------------------------------------
+        Notes:
+        - First check if headwaters have been created.
+        - Return the GeoDataFrame wiht all the inherent columns
+        ----------------------------------------------------------------
+        """
+        # Get the path to the shapefile:
         shapefile_path = self.catchment_path(
             catchment,
-            'Subcatchments',
-            shape_name
+            folder,
+            poly_file_name
             )
-        
-        # If there is a subcatchments shapefile, load it as a 
-        #GeoDataFrame and return it:
+        # Check that it exists and if so, return it:
         if os.path.exists(shapefile_path):
             gdf = gpd.read_file(shapefile_path)
+            # Add an auto ID column:
+            gdf[auto_id_col_name] = gdf.index
             return gdf
         # Otherwise return None
         else:
-            logger.warning(
-                'Subcatchment boundaries were requested from '
-                f'project.get_subcatchments() for {catchment}, '
+            raise FileNotFoundError(
+                f'Catchment polygons ({poly_file_name}) were requested '
+                f'from project.get_catchment_polygons() for {catchment}, '
                 'but they appear not to be loaded yet. Use '
-                'project.add_subcatchments() first.'
+                'project.add_subcatchments() or '
+                'topography.extract_headwaters() first.'
                 )
-            return None
 
     ###########################################################################
     def catchment_bounds(self,catchment:str, buffer_distance_km:float=10):
@@ -618,7 +676,16 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither'
         }
 
-
+    ###########################################################################
+    def load_name_defaults(self):
+        """
+        Load useful default field names to be accessed later
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # ID fields:
+        self.headwater_id = 'hw_ID'
+        self.subcatchment_id = 'sc_ID'
 
     ###########################################################################
     def plot_catchment_raster(
@@ -812,19 +879,7 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # Check that headwaters have been computed. If not, raise error:
-        hw_shape_loc = self.catchment_path(
-            catchment,
-            'Topography',
-            )
-        hw_shape_path = os.path.join(hw_shape_loc, 'Headwaters.shp')
-        if not os.path.isfile(hw_shape_path):
-            raise FileNotFoundError(
-                'project.plot_headwaters() was called but Headwaters.shp '
-                f'does not exist in the Topography folder for {catchment}. '
-                'Run topography.extract_headwaters() first for the current '
-                'catchment.'
-            )
+        headwaters_gdf = self.get_headwaters(catchment)
 
         if table is None:
             # Check that the data table that has been passed already exists:
@@ -846,7 +901,7 @@ class FireImpactsProject(object):
             non_geo_data = pd.read_csv(data_table_path)
         else:
             non_geo_data = table
-
+        
         if colour_col not in non_geo_data.columns:
             raise ValueError(
                 'project.plot_headwaters() was asked to colour the map '
@@ -854,7 +909,7 @@ class FireImpactsProject(object):
                 f'following:\n {non_geo_data.columns}'
             )
         # Get a subset of just the ID coloumn and the colour column:
-        id_col = 'ID'
+        id_col = self.headwater_id
         ng_for_join = non_geo_data[[id_col, colour_col]]
 
         # Choose visualisation parameters based on the colour column:
@@ -900,7 +955,7 @@ class FireImpactsProject(object):
         # Call the vector plotting function:
         this_crs, cbar, existing_axes = toputil.plot_spatial_vector(
             existing_axes,
-            hw_shape_path,
+            headwaters_gdf,
             vis_params,
             ax_title,
             symbol_data=ng_for_join,
@@ -1118,25 +1173,59 @@ def find_all_shapefiles(base_directory):
     shapefiles = glob(os.path.join(base_directory, '**','*.shp'),recursive=True)
     return shapefiles
 
-def summary_stats(project:FireImpactsProject,catchment_name=None):
-    '''
-    Calculate summary statistics for a catchment from pre-processed raster data.
+###############################################################################
+def summary_stats(
+    project:FireImpactsProject,
+    catchment_name=None,
+    zone_type='headwaters'
+    ):
+    """
+    Calculate summary statistics for a catchment from pre-processed 
+    raster data.
 
     Parameters:
-    - project (FireImpactsProject): Project object containing the catchment data.
-    - catchment_name (str): Name of the catchment to process. If not provided, process all catchments in the project.
+    - project (FireImpactsProject): Project object containing the 
+    catchment data.
+    - catchment_name (str): Name of the catchment to process. If not 
+    provided, process all catchments in the project.
 
     Returns:
-    - pd.DataFrame: DataFrame containing the summary statistics for the catchment (if catchment_name is provided), OR
-    - dict: Dictionary of DataFrames containing the summary statistics for each catchment.
-    '''
+    - pd.DataFrame: DataFrame containing the summary statistics for the 
+    catchment (if catchment_name is provided), OR
+    - dict: Dictionary of DataFrames containing the summary statistics 
+    for each catchment.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Check that we've been asked for something we can do:
+    acceptable_zones = ['headwaters', 'subcatchments']
+    requested_zone = zone_type.strip().lower()
+    if requested_zone not in acceptable_zones:
+        raise ValueError(
+            'project.summary_stats() was asked to compute stats for '
+            f'{zone_type}. This is not currently coded for, please use '
+            f'one of: {acceptable_zones}'
+            )
+    # If we've been given a string instead of an actual project object,
+    #try initialising/loading a project with the given name:
     if isinstance(project,str):
         project = FireImpactsProject(project)
+    # Process for all catchments if none was specified:
     if catchment_name is None:
         return project.for_each_catchment(lambda c:summary_stats(project,c))
+    
+    if requested_zone == 'subcatchments':
+        id_col_name = project.subcatchment_id
+        zones_gdf = project.get_subcatchments(catchment_name)
+    else:
+        id_col_name = project.headwater_id
+        headwaters_path = project.catchment_path(
+            catchment_name,
+            'Topography',
+            'Headwaters.shp'
+            )
+        zones_gdf = gpd.read_file(headwaters_path)
 
-    headwaters_path = project.catchment_path(catchment_name,'Topography','Headwaters.shp')
-    gdf = gpd.read_file(headwaters_path)
     # Initialize a list to store the results
     results = []
 
@@ -1159,13 +1248,13 @@ def summary_stats(project:FireImpactsProject,catchment_name=None):
 
     # Process each polygon in the shapefile
     result = {
-        'ID':gdf['ID']
+        id_col_name: zones_gdf[id_col_name]
     }
 
-    logger.info('Processing %d polygons for %d layers in %s',len(gdf),len(sources),catchment_name)
+    logger.info('Processing %d polygons for %d layers in %s',len(zones_gdf),len(sources),catchment_name)
     for label, path in sources:
         logging.info('Processing %s from %s',label,path[-1])
-        stats = get_zonal_stats(gdf, project.catchment_path(catchment_name,*path),label)
+        stats = get_zonal_stats(zones_gdf, project.catchment_path(catchment_name,*path),label)
         for k in STATS:
             result[f'{label}_{k}'] = [s[k] for s in stats]
 

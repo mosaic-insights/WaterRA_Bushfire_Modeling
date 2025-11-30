@@ -85,6 +85,7 @@ def prep_debris_flow_simulation(
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
+    id_field = proj.headwater_id
     dem_path = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
     slope_ratio, acc_data, flowdir, dem_data, transform, crs, raster_meta = get_slope(dem_path)
     shape = slope_ratio.shape
@@ -101,11 +102,11 @@ def prep_debris_flow_simulation(
             catchment,
             'Soil_Slope_Aridity_dNBR.csv'
             )
-        )
+        ) #This seems to have the correct ID column
     
     condition_data = condition_data.fillna(0.0) # TODO Check - is this correct? Example is getting nulls in dNBR columns
     topo_data = pd.read_csv(proj.catchment_path(catchment,'Topography','Headwaters.csv'))
-    fire_impact_data = pd.merge(condition_data, topo_data, on='ID',how='outer')
+    fire_impact_data = pd.merge(condition_data, topo_data, on=id_field,how='outer')
 
     return debris_flow_load(dem_data,slope_ratio,transform,acc_data,flowdir,
                             clay0_5,clay5_15,
@@ -113,14 +114,14 @@ def prep_debris_flow_simulation(
                             fire_impact_data,
                             hf_lookup,
                             load_package_data('debris-constituents.csv'),
-                            raster_meta)
+                            raster_meta,id_field)
 
 ###############################################################################
 def debris_flow_load(
     dem_data,slope_ratio, slope_transform, flow_accumulation, flowdir,
     clay0_5_fraction, clay5_15_fraction, out_path,
     fire_impact_data:pd.DataFrame, hf_lookup:pd.DataFrame,
-    debris_flow_constituents:pd.DataFrame,raster_meta):
+    debris_flow_constituents:pd.DataFrame,raster_meta, id_field:str):
     """
     Function to calculate debris flow load for each pixel and integrate
     fire impact analysis.
@@ -139,6 +140,7 @@ def debris_flow_load(
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
+    
     # Step 1: calculate debris flow
 
     # get pixel area
@@ -350,8 +352,8 @@ def debris_flow_load(
     # Combine the results
     fire_impact_data = pd.merge(
         merged_year_1,
-        merged_year_2[["ID","TSF_Year_2", "I12_crit_mean_Year_2"]],
-        on=["ID"],
+        merged_year_2[[id_field,"TSF_Year_2", "I12_crit_mean_Year_2"]],
+        on=[id_field],
         how="left"
     ).drop(columns=["AI", "dNBR", "slope"], errors="ignore")
 

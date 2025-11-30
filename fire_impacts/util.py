@@ -537,7 +537,7 @@ def plot_spatial_raster(
 ###########################################################################
 def plot_spatial_vector(
     existing_axes,
-    full_vector_path:str,
+    vector_path_or_data:str | gpd.GeoDataFrame,
     vis_params:dict,
     title:str, #title for this axes
     legend:bool=False,
@@ -560,8 +560,17 @@ def plot_spatial_vector(
     spatial file by the ID.
     ----------------------------------------------------------------
     """
-    # Read in the spatial data file:
-    shapes = gpd.read_file(full_vector_path)
+    if isinstance(vector_path_or_data, str):
+        # Read in the spatial data file:
+        shapes = gpd.read_file(vector_path_or_data)
+    elif isinstance(vector_path_or_data, gpd.GeoDataFrame):
+        shapes = vector_path_or_data
+    else:
+        raise ValueError(
+            'util.plot_spatial_vector() requires either a path to a '
+            'shapefile, or a GeoDataFrame, as the vector_path_or_data '
+            f'parameter, but received {vector_path_or_data}'
+        )
     # Get useful metadata:
     this_crs = shapes.crs
 

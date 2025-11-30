@@ -145,6 +145,7 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
     Returns:
     - pd.DataFrame: DataFrame containing the headwaters summary data.
     '''
+    new_hw_id_field = project.headwater_id
     # Extract CRS and transform and copy meta from DEM to write headwaters
     if name is None:
         return project.for_each_catchment(lambda c: extract_headwaters(project,c,threshold_m2))
@@ -302,7 +303,7 @@ def extract_headwaters(project:FireImpactsProject,name:str=None,threshold_m2:flo
         geometries.append(combined_geometry)
 
         records.append({
-            'ID': catchment_id,
+            new_hw_id_field: catchment_id,
             'Area_m2': round(combined_geometry.area, 0),
             'Area_ha': round(combined_geometry.area / 10000, 1),
             'PP_Flow_acc': pp_flow_acc,
