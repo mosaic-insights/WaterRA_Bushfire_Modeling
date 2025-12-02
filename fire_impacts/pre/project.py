@@ -932,23 +932,7 @@ class FireImpactsProject(object):
         id_col = self.headwater_id
         ng_for_join = non_geo_data[[id_col, colour_col]]
 
-        # Choose visualisation parameters based on the colour column:
-        if colour_col[:4].lower() == 'dnbr':
-            vis_params = self.vis_dNBR
-        elif colour_col[:8].lower() == 'i12_crit':
-            vis_params = self.vis_i12_crit
-        elif colour_col[-10:].lower() == 'num_events':
-            vis_params = self.vis_num_debris_flow_events
-        # Default parameters fallback:
-        else:
-            vis_params = {
-                'cmap': 'inferno',
-                'measure': 'Undefined',
-                'units': 'n/a',
-                'norm': None,
-                'cbar_extend': 'neither',
-                'title_varname': '-'
-            }
+        vis_params = self.get_vis_params(colour_col)
 
         # Format the chart title to use the colour column in some way:
         #TODO: This needs to be more dynamic, currently I'm just 
