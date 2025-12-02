@@ -68,6 +68,23 @@ def unique_file_matching(path,*substrings):
     return matches[0]
 
 ###############################################################################
+def check_acceptable_param(param:str, acceptable_types) -> str:
+    """
+    Check that a string used for a function parameter is coded for, and 
+    return it formatted in a standard way
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    cleaned_param = param.lower().strip()
+    if cleaned_param not in acceptable_types:
+        raise ValueError(
+            f'Received argument of {param} for a function, but it must '
+            f'be one of {acceptable_types}.'
+            )
+    else:
+        return cleaned_param
+
+###############################################################################
 def date_rel(date:str, days:int):
     """
     Helper function to calculate date differences by number of days
