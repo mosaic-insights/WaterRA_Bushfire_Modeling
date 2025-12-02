@@ -645,7 +645,7 @@ class FireImpactsProject(object):
             'cmap': 'plasma_r',
             'measure': '12-minute intensity threshold',
             'units': 'mm/hr',
-            'title_varname': 'Rain Intensity',
+            'title_varname': 'Rain Intensity I12 Crit',
             'norm': 'linear',
             'cbar_extend': 'neither'
         }
@@ -1000,24 +1000,11 @@ class FireImpactsProject(object):
 
         vis_params = self.get_vis_params(colour_col)
 
-        # Format the chart title to use the colour column in some way:
-        non_under = colour_col.split('_')
-        if len(non_under) == 2:
-            var_qual = non_under[1].title()
-        elif len(non_under) > 2:
-            var_qual = non_under[0].title()
-        else:
-            var_qual = ''
-
-        # Generate a relevant title:
-        varname = (
-            vis_params['title_varname']
-            + ' '
-            + var_qual
-            ).strip() # Variable name part of title
-        catch_title = toputil.clean_chart_title(catchment)
-        ax_title = (
-            f'{catch_title} Headwaters: {varname}'
+        ax_title = toputil.make_axes_title(
+            catchment,
+            'Headwaters',
+            vis_params['title_varname'],
+            colour_col
             )
         
         self.plot_catchment_polygons(

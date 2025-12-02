@@ -248,6 +248,51 @@ def fit_multi_figs(fig):
     pass
 
 ###############################################################################
+def make_axes_title(
+    catchment_name:str,
+    area_type:str,
+    var_name:str,
+    colour_column_name:str,
+    ) -> str:
+    """
+    
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    catch_title = clean_chart_title(catchment_name)
+    area_title = area_type.title().strip()
+    # Most columns will have an aggregation type which is separate to 
+    #the variable name, which we still want to keep if it exists:
+    clean_name = colour_column_name.replace('_', '').lower().strip()
+    for stat in STATS:
+        if stat in clean_name:
+            agg = stat.title()
+            break
+        else:
+            agg = ''
+    
+    # Include a year in the title if it's part of the column name:
+    if 'year' in clean_name:
+        if 'year1' in clean_name:
+            year = 'Year 1'
+        elif 'year2' in clean_name:
+            year = 'Year 2'
+        else:
+            year = ''
+    else:
+        year = ''
+    
+    # Put the title together then clean extra spaces:
+    base_title = f'{catch_title} {area_title}: {var_name} {year} {agg}'
+    neat_title = ' '.join(base_title.split())
+    
+    return neat_title
+
+
+
+
+
+###############################################################################
 def clean_chart_title(text):
     """
     Removes underscores, ending-EPSG codes, camel-case
