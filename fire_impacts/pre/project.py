@@ -677,6 +677,51 @@ class FireImpactsProject(object):
         }
 
     ###########################################################################
+    def get_vis_params(self, file_or_col_name:str):
+        """
+        Get the appropriate visualisation parameters based on the name 
+        of a raster file OR the name of a column in a table
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        input_string = file_or_col_name.lower().strip().replace(' ', '_')
+
+        # Fallback values:
+        default_params = {
+            'cmap': 'viridis',
+            'measure': 'Undefined',
+            'units': 'n/a',
+            'norm': None,
+            'cbar_extend': 'neither',
+            'title_varname': ''
+            }
+        
+        # Dictionary linking 
+        param_dict = {
+            'slope': self.vis_slope,
+            'flow_acc': self.vis_flow_accum,
+            'dnbr': self.vis_dNBR,
+            'i12_crit': self.vis_i12_crit,
+            'num_events': self.vis_num_debris_flow_events,
+            'aridity': self.vis_aridity,
+            'erosion': self.vis_erosion,
+            'dem': self.vis_DEM
+            }
+        
+        # Return the vis_params attribute if the input string matches:
+        for key, value in param_dict.items():
+            if key in input_string:
+                return value
+        
+        logger.info(
+            'Visualisation parameters not found for '
+            f'{file_or_col_name}. Falling back to defaults.'
+            )
+        return default_params
+        
+
+
+    ###########################################################################
     def load_name_defaults(self):
         """
         Load useful default field names to be accessed later
@@ -781,39 +826,14 @@ class FireImpactsProject(object):
 
         gdf = self.catchment_boundary(catchment)
 
-        useful_filename_part = args[-1].split('.')[0].lower()
+        file_name = args[-1]
 
-        if useful_filename_part == 'dem':
-            vis_params = self.vis_DEM
-        elif useful_filename_part == 'slope':
-            vis_params = self.vis_slope
-        elif useful_filename_part == 'flow_accumulation':
-            vis_params = self.vis_flow_accum
-        elif useful_filename_part == 'aridity':
-            vis_params = self.vis_aridity
-        elif useful_filename_part == 'dnbr':
-            vis_params = self.vis_dNBR
-        elif useful_filename_part == 'erosion_y1':
-            vis_params = self.vis_erosion
-            vis_params['title_varname'] = 'Total Erosion Year 1'
-        elif useful_filename_part == 'erosion_y2':
-            vis_params = self.vis_erosion
-            vis_params['title_varname'] = 'Total Erosion Year 2'
-        elif useful_filename_part == 'peak_erosion_y1':
-            vis_params = self.vis_erosion
-            vis_params['title_varname'] = 'Peak 30-min Erosion Year 1'
-        elif useful_filename_part == 'peak_erosion_y2':
-            vis_params = self.vis_erosion
-            vis_params['title_varname'] = 'Peak 30-min Erosion Year 2'
-        else:
-            vis_params = {
-                'cmap': 'viridis',
-                'measure': 'Undefined',
-                'units': 'n/a',
-                'norm': None,
-                'cbar_extend': 'neither',
-                'title_varname': ''
-                }
+        vis_params = self.get_vis_params(file_name)
+
+        useful_filename_part = file_name.split('.')[0].lower()
+        if 'erosion' in file_name:
+            title = toputil.get_erosion_title(useful_filename_part)
+            vis_params['title_varname'] = title
             
         catch_name = toputil.clean_chart_title(catchment)
         chart_title = catch_name + ': ' + vis_params['title_varname']
@@ -1272,7 +1292,7 @@ def summary_stats(
 
     return extracted_data
 
-
+###############################################################################
 def get_zonal_stats(gdf, raster_path,label):
     '''Function to get stats for a given polygon and raster'''
     with rio.open(raster_path) as src:

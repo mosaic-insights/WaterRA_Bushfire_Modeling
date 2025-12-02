@@ -350,7 +350,7 @@ def get_cmap_normer(
                 )
         return LogNorm(vmin=vmin, vmax=vmax)
     
-###########################################################################
+###############################################################################
 def insert_colourbar(axes, normaliser, vis_params):
     """
     Insert a relevant colourbar that fits nicely with a raster plot
@@ -446,7 +446,7 @@ def insert_colourbar(axes, normaliser, vis_params):
 
     return cbar
 
-###########################################################################
+###############################################################################
 def plot_spatial_raster(
     existing_axes,
     full_raster_path:str,    
@@ -462,12 +462,12 @@ def plot_spatial_raster(
 
     Returns:
     - img, the raster image artist created by this function
-    ----------------------------------------------------------------
+    --------------------------------------------------------------------
     Notes:
     - The image artist returned by this function can be used to set
     colourmaps etc.
     - Requires rasterio and numpy
-    ----------------------------------------------------------------
+    --------------------------------------------------------------------
     """
     # Ensure we have a valid figure and axes for plotting:
     ax = existing_axes
@@ -534,7 +534,7 @@ def plot_spatial_raster(
 
         return img, this_crs, this_cbar
 
-###########################################################################
+###############################################################################
 def plot_spatial_vector(
     existing_axes,
     vector_path_or_data:str | gpd.GeoDataFrame,
@@ -549,7 +549,7 @@ def plot_spatial_vector(
     ):
     """
     Plot a vector in a standardised way
-    ----------------------------------------------------------------
+    --------------------------------------------------------------------
     Notes:
     - We should assume for now that we're getting two things. A 
     polygon file with areas, and (optionally) a DataFrame with 
@@ -558,7 +558,7 @@ def plot_spatial_vector(
     receive a two-column dataframe. It will have an ID in the first
     column and the value in the second. Will be joined to the 
     spatial file by the ID.
-    ----------------------------------------------------------------
+    --------------------------------------------------------------------
     """
     if isinstance(vector_path_or_data, str):
         # Read in the spatial data file:
@@ -643,4 +643,28 @@ def plot_spatial_vector(
 
     return this_crs, this_cbar, existing_axes
 
+###########################################################################
+def get_erosion_title(file_or_col:str):
+    """
+    Construct the 'title varname' attribute when plotting the 
+    different types of erosion outputs
+    ----------------------------------------------------------------
+    ----------------------------------------------------------------
+    """
+    if 'y1' in file_or_col:
+        year = 'Year 1'
+    elif 'y2' in file_or_col:
+        year = 'Year 2'
+    else:
+        year = '-'
 
+    if 'peak' in file_or_col:
+        agg = 'Peak 30-min'
+    elif 'total' in file_or_col:
+        agg = 'Total'
+    else:
+        agg = '-'
+
+    title = f'{agg} Erosion {year}'
+
+    return title
