@@ -6,3 +6,5 @@ M2_TO_HA=1e-4
 PERCENT_TO_FRACTION=1e-2
 
 MILLIGRAMS_TO_KILOGRAMS=1e-6
+
+STATS=['mean', 'max', 'min', 'median', 'std']

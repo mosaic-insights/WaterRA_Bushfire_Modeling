@@ -7,7 +7,6 @@ from glob import glob
 from pathlib import Path
 import shutil
 import rasterio as rio
-import rasterstats as rs
 import numpy as np
 import geopandas as gpd
 import pandas as pd
@@ -21,6 +20,7 @@ import matplotlib.pyplot as plt
 # Get the top-level util specifically using importlib:
 import importlib
 toputil = importlib.import_module('fire_impacts.util') 
+constants = importlib.import_module('fire_impacts.const')
 logger = logging.getLogger(__name__)
 
 # These are the default directories that need to exist inside every 
@@ -34,7 +34,7 @@ PER_CATCHMENT_FOLDERS = [
     'Subcatchments'
 ]
 
-STATS=['mean', 'max', 'min', 'median', 'std']
+STATS = constants.STATS
 APPROX_KM_PER_DEGREE = 111  # Approximate conversion factor from degrees to kilometers
 
 
@@ -1258,7 +1258,7 @@ def summary_stats(
     logger.info('Processing %d polygons for %d layers in %s',len(zones_gdf),len(sources),catchment_name)
     for label, path in sources:
         logging.info('Processing %s from %s',label,path[-1])
-        stats = get_zonal_stats(zones_gdf, project.catchment_path(catchment_name,*path),label)
+        stats = toputil.get_zonal_stats(zones_gdf, project.catchment_path(catchment_name,*path),label)
         for k in STATS:
             result[f'{label}_{k}'] = [s[k] for s in stats]
 
@@ -1271,23 +1271,13 @@ def summary_stats(
         extracted_data[new_col_name] = format_dNBR(extracted_data[this_col_name])
 
 
-    csv_path=project.catchment_path(catchment_name, 'Soil_Slope_Aridity_dNBR.csv')
+    csv_path=project.catchment_path(
+        catchment_name,
+        f'Soil_Slope_Aridity_dNBR_{zone_type}.csv'
+        )
     extracted_data.to_csv(csv_path, index=False)
 
     return extracted_data
-
-###############################################################################
-def get_zonal_stats(gdf, raster_path,label):
-    '''Function to get stats for a given polygon and raster'''
-    with rio.open(raster_path) as src:
-        assert src.crs == gdf.crs, f"CRS mismatch: {src.crs} != {gdf.crs}"
-        stats = rs.zonal_stats(
-            gdf,
-            raster_path,
-            stats=STATS,
-            nodata=src.nodata or -9999
-        )
-    return stats
 
 ###############################################################################
 def format_dNBR(series:pd.Series):
@@ -1298,6 +1288,8 @@ def format_dNBR(series:pd.Series):
     --------------------------------------------------------------------
     """
     return series.clip(lower=0).mul(1000)
+
+
 
 
 

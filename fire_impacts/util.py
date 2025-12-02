@@ -11,6 +11,12 @@ from matplotlib.cm import ScalarMappable
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import geopandas as gpd
 import rasterio as rio
+import rasterstats as rs
+
+import importlib
+constants = importlib.import_module('fire_impacts.const')
+
+STATS=constants.STATS
 
 logger = logging.getLogger(__name__)
 
@@ -668,3 +674,20 @@ def get_erosion_title(file_or_col:str):
     title = f'{agg} Erosion {year}'
 
     return title
+
+###############################################################################
+def get_zonal_stats(gdf, raster_path,label):
+    """
+    
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    with rio.open(raster_path) as src:
+        assert src.crs == gdf.crs, f"CRS mismatch: {src.crs} != {gdf.crs}"
+        stats = rs.zonal_stats(
+            gdf,
+            raster_path,
+            stats=STATS,
+            nodata=src.nodata or -9999
+        )
+    return stats
