@@ -973,27 +973,19 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
+        # Get the headwater polygons:
         headwaters_gdf = self.get_headwaters(catchment)
 
-        # If a specific table has not been passed, look for the csv 
-        #file within the project folder structure:
-        if table is None:
-            # Get the data table path and check that the requested column
-            #exists:
-            non_geo_data = self.get_saved_data(
-                catchment=catchment,
-                type=data_type,
-                name='DebrisFlowData'
-                )
-        else:
-            non_geo_data = table
-        
-        if colour_col not in non_geo_data.columns:
-            raise ValueError(
-                'project.plot_headwaters() was asked to colour the map '
-                f'based on {colour_col}, but data table only had the '
-                f'following:\n {non_geo_data.columns}'
+        # Get the non-spatial data
+        non_geo_data = self.get_table_safely(
+            colour_col=colour_col,
+            data_type=data_type,
+            data_file='DebrisFlowData',
+            catchment=catchment,
+            allow_basic=False,
+            table=table
             )
+        
         # Get a subset of just the ID coloumn and the colour column:
         id_col = self.headwater_id
         ng_for_join = non_geo_data[[id_col, colour_col]]
@@ -1024,6 +1016,8 @@ class FireImpactsProject(object):
         self,
         catchment:str,
         colour_col:str,
+        data_type:str='',
+        data_file:str='Soil_Slope_Aridity_dNBR_subcatchments',
         table:pd.DataFrame | None=None,
         existing_figure=None,
         existing_axes=None
@@ -1034,11 +1028,58 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         """
         subcatch_gdf = self.get_subcatchments(catchment)
-
         id_col = self.subcatchment_id
-
         pass
-
+            
+    ###########################################################################
+    def get_table_safely(
+        self,
+        colour_col:str,
+        data_type:str,
+        data_file:str,
+        catchment:str,
+        allow_basic:bool,
+        table:pd.DataFrame | None=None
+        ):
+        """
+        Perform basic sanity checks and retrieve a non-spatial table 
+        for use when plotting polygons like headwaters or subcatchments.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        if table is None:
+            # Try to get the data using the specified data type/file:
+            try:
+                non_geo_data = self.get_saved_data(
+                    catchment=catchment,
+                    type=data_type,
+                    name=data_file
+                    )
+            # If nothing is found we'll still plot the subcatchments 
+            #but all the same colour:
+            except FileNotFoundError:
+                if allow_basic:
+                    logger.info(
+                        'Plotting polygons was requested with no '
+                        'data to colour the shapes with. Proceeding '
+                        'to plot boundaries with uniform '
+                        'colours.'
+                        )
+                    non_geo_data = None
+                else:
+                    raise
+        else:
+            non_geo_data = table
+        # Raise an error if there is data available but the required 
+        #column is not there:
+        if non_geo_data is not None:
+            if colour_col not in non_geo_data.columns:
+                raise ValueError(
+                    'project.plot_subcatchments() was asked to colour '
+                    f'the map based on {colour_col}, but data table '
+                    f'only had the following:\n {non_geo_data.columns}'
+                    )
+        return non_geo_data
 
     ###########################################################################
     def thresh_sev_scatter(
