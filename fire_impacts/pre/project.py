@@ -867,15 +867,88 @@ class FireImpactsProject(object):
         return
 
     ###########################################################################
+    def get_saved_data(
+        self,
+        catchment:str,
+        type:str,
+        name:str,
+        format:str='csv'
+        ) -> pd.DataFrame:
+        """
+        Get a file saved within the catchment's folder structure
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # Get the subfolder for the requested catchment:
+        data_table_loc = self.catchment_path(catchment, type)
+        # Get the actual path the the file: 
+        data_table_path = os.path.join(
+            data_table_loc,
+            name
+            ) + '.' + format
+        
+        # Try reading in the csv:
+        df = pd.read_csv(data_table_path)
+
+        return df
+        
+
+    ###########################################################################
+    def plot_catchment_polygons(
+        self,
+        catchment:str,
+        polygons:gpd.GeoDataFrame,
+        colour_col:str,
+        vis_params:dict,
+        title:str,
+        non_geo_data:pd.DataFrame | None=None,
+        id_col:str | None=None,
+        existing_figure=None,
+        existing_axes=None
+        ):
+        """
+        Plot catchment polygons, 
+        optionally coloured by a specific column.
+        ----------------------------------------------------------------
+        Notes:
+        - individual methods (headwaters, subcatchments) should get the 
+        relevant geodataframe and non-spatial data, and join them 
+        together
+        - Then they should call this method to do the actual plotting.
+        ----------------------------------------------------------------
+        """
+        # Call the vector plotting function:
+        this_crs, cbar, existing_axes = toputil.plot_spatial_vector(
+            existing_axes,
+            polygons,
+            vis_params,
+            title,
+            symbol_data=non_geo_data,
+            id_col_name=id_col,
+            data_col_name=colour_col
+            )
+
+        # Work out which figure/axes to use:
+        fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
+
+        # Set a grey background for plots to aid readbility:
+        ax.set_facecolor('#D3D3D3')
+
+        # Add scalebar or ticks as appropriate:
+        these_units = this_crs.axis_info[0].unit_name
+        toputil.mapify_axes(ax, this_crs, these_units)
+        # Add the catchment boundary:
+        plot_catchment_boundary(self, catchment, ax)
+
+    ###########################################################################
     def plot_headwaters(
         self,
         catchment:str,
         colour_col:str,
-        table:pd.DataFrame=None,
+        table:pd.DataFrame | None=None,
         data_type:str='DebrisFlow',
-        data_format:str='csv',
         existing_figure=None,
-        existing_axes=None,
+        existing_axes=None
         ):
         """
         Plot the headwaters coloured by a specified data value
@@ -902,24 +975,16 @@ class FireImpactsProject(object):
         """
         headwaters_gdf = self.get_headwaters(catchment)
 
+        # If a specific table has not been passed, look for the csv 
+        #file within the project folder structure:
         if table is None:
-            # Check that the data table that has been passed already exists:
-            data_table_loc = self.catchment_path(catchment, data_type)
-            data_table_path = os.path.join(
-                data_table_loc,
-                data_type
-                ) + 'Data.' + data_format
-
-            if not os.path.isfile(data_table_path):
-                raise FileNotFoundError(
-                    'project.plot_headwaters() was called requeting to '
-                    f'plot data from {data_type} as the variable. Full '
-                    f'path checked for was {data_table_path}.'
-                )
-
             # Get the data table path and check that the requested column
             #exists:
-            non_geo_data = pd.read_csv(data_table_path)
+            non_geo_data = self.get_saved_data(
+                catchment=catchment,
+                type=data_type,
+                name='DebrisFlowData'
+                )
         else:
             non_geo_data = table
         
@@ -936,8 +1001,6 @@ class FireImpactsProject(object):
         vis_params = self.get_vis_params(colour_col)
 
         # Format the chart title to use the colour column in some way:
-        #TODO: This needs to be more dynamic, currently I'm just 
-        #building it to handle the cases I've seen so far.
         non_under = colour_col.split('_')
         if len(non_under) == 2:
             var_qual = non_under[1].title()
@@ -956,34 +1019,39 @@ class FireImpactsProject(object):
         ax_title = (
             f'{catch_title} Headwaters: {varname}'
             )
-
-        # Call the vector plotting function:
-        this_crs, cbar, existing_axes = toputil.plot_spatial_vector(
-            existing_axes,
-            headwaters_gdf,
-            vis_params,
-            ax_title,
-            symbol_data=ng_for_join,
-            id_col_name=id_col,
-            data_col_name=colour_col
+        
+        self.plot_catchment_polygons(
+            catchment=catchment,
+            polygons=headwaters_gdf,
+            colour_col=colour_col,
+            vis_params=vis_params,
+            title=ax_title,
+            non_geo_data=ng_for_join,
+            id_col=id_col,
+            existing_figure=existing_figure,
+            existing_axes=existing_axes
             )
 
-        # Work out which figure/axes to use:
-        fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
+    ###########################################################################
+    def plot_subcatchments(
+        self,
+        catchment:str,
+        colour_col:str,
+        table:pd.DataFrame | None=None,
+        existing_figure=None,
+        existing_axes=None
+        ):
+        """
 
-        # Handle whether a catchment is specified and if not, plot for all
-        #catchments just like plot_catchment_rasters():
-        # TODO: add this code
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        subcatch_gdf = self.get_subcatchments(catchment)
 
-        # Set a grey background for headwater plots to aid readbility:
-        ax.set_facecolor('#D3D3D3')
+        id_col = self.subcatchment_id
 
+        pass
 
-        # Add scalebar or ticks as appropriate:
-        these_units = this_crs.axis_info[0].unit_name
-        toputil.mapify_axes(ax, this_crs, these_units)
-        # Add the catchment boundary:
-        plot_catchment_boundary(self, catchment, ax)
 
     ###########################################################################
     def thresh_sev_scatter(
