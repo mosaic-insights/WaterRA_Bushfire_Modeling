@@ -1028,8 +1028,43 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         """
         subcatch_gdf = self.get_subcatchments(catchment)
+
+        # Get the non-spatial data
+        non_geo_data = self.get_table_safely(
+            colour_col=colour_col,
+            data_type=data_type,
+            data_file=data_file,
+            catchment=catchment,
+            allow_basic=True,
+            table=table
+            )
+
         id_col = self.subcatchment_id
-        pass
+        if non_geo_data is not None:
+            ng_for_join = non_geo_data[[id_col, colour_col]]
+        else:
+            ng_for_join = None
+
+        vis_params = self.get_vis_params(colour_col)
+
+        ax_title = toputil.make_axes_title(
+            catchment,
+            'Subcatchments',
+            vis_params['title_varname'],
+            colour_col
+            )
+        
+        self.plot_catchment_polygons(
+            catchment=catchment,
+            polygons=subcatch_gdf,
+            colour_col=colour_col,
+            vis_params=vis_params,
+            title=ax_title,
+            non_geo_data=ng_for_join,
+            id_col=id_col,
+            existing_figure=existing_figure,
+            existing_axes=existing_axes
+            )
             
     ###########################################################################
     def get_table_safely(
