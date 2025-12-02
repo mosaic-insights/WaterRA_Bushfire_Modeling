@@ -683,11 +683,20 @@ def get_zonal_stats(gdf, raster_path,label):
     --------------------------------------------------------------------
     """
     with rio.open(raster_path) as src:
-        assert src.crs == gdf.crs, f"CRS mismatch: {src.crs} != {gdf.crs}"
+        logger.info(
+            f'Getting zonal stats for raster in {src.crs.to_epsg()}.'
+            f'Zonal vector is in {gdf.crs.to_epsg()}.'
+            )
+        if src.crs != gdf.crs:
+            logger.info(f'Reprojecting zones to {src.crs.to_epsg()}...')
+            temp_gdf = gdf.to_crs(src.crs)
+        else:
+            temp_gdf = gdf
+
         stats = rs.zonal_stats(
             gdf,
             raster_path,
             stats=STATS,
             nodata=src.nodata or -9999
-        )
+            )
     return stats

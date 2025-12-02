@@ -420,6 +420,7 @@ class FireImpactsProject(object):
             shape_name,
             new_id_col_name
             )
+        
         return gdf
     
     ###########################################################################
@@ -1258,7 +1259,11 @@ def summary_stats(
     logger.info('Processing %d polygons for %d layers in %s',len(zones_gdf),len(sources),catchment_name)
     for label, path in sources:
         logging.info('Processing %s from %s',label,path[-1])
-        stats = toputil.get_zonal_stats(zones_gdf, project.catchment_path(catchment_name,*path),label)
+        stats = toputil.get_zonal_stats(
+            zones_gdf,
+            project.catchment_path(catchment_name,*path),
+            label
+            )
         for k in STATS:
             result[f'{label}_{k}'] = [s[k] for s in stats]
 
