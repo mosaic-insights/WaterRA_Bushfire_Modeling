@@ -917,9 +917,13 @@ class FireImpactsProject(object):
         - Then they should call this method to do the actual plotting.
         ----------------------------------------------------------------
         """
+
+        # Work out which figure/axes to use:
+        fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
+
         # Call the vector plotting function:
-        this_crs, cbar, existing_axes = toputil.plot_spatial_vector(
-            existing_axes,
+        this_crs, cbar, ax = toputil.plot_spatial_vector(
+            ax,
             polygons,
             vis_params,
             title,
@@ -928,8 +932,7 @@ class FireImpactsProject(object):
             data_col_name=colour_col
             )
 
-        # Work out which figure/axes to use:
-        fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
+        
 
         # Set a grey background for plots to aid readbility:
         ax.set_facecolor('#D3D3D3')
