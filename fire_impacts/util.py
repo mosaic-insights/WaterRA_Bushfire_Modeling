@@ -288,10 +288,6 @@ def make_axes_title(
     
     return neat_title
 
-
-
-
-
 ###############################################################################
 def clean_chart_title(text):
     """
