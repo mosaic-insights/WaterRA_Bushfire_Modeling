@@ -12,6 +12,10 @@
 #     name: python3
 # ---
 
+# %%
+import os
+
+
 # %% [markdown]
 # # Preparing data for fire impact analysis
 #
@@ -81,12 +85,11 @@ logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(leveln
 #
 # By default, *current directory* here is the directory this Notebook is saved in.
 #
-#
-# **Try** running this next code not on OneDrive and see if we still get hte access error
+# > **Access Note:** running this Notebook and associated code from a OneDrive folder may result in 'Access Denied' errors when creating or updating a project. We recommend setting up on your C:\ (or other primary local) drive.
 
 # %%
-
-proj = FireImpactsProject('.', exist_ok=True, clear=False)
+# proj = FireImpactsProject('.\\fire_impacts_example_project', clear=True)
+proj = FireImpactsProject('\\zz_TempDump\\fire_impacts_example_project',clear=True)
 
 # %% [markdown]
 # ## Catchment areas
@@ -100,13 +103,14 @@ proj = FireImpactsProject('.', exist_ok=True, clear=False)
 # **Note:** The boundary coverage should include a coordinate reference system (CRS). This is the CRS that will be used for all other data stored in relation to this catchment in the project.
 
 # %%
-proj.add_catchment('..\\test_data\\example_small_catchment.json',replace_existing=True) # PUT THE PATH TO YOUR CATCHMENT BOUNDARY HERE
+example_catchment_name = 'example_small_catchment'
+proj.add_catchment(f'..\\test_data\\{example_catchment_name}.json')
 
 # %%
 proj.catchments
 
 # %% [markdown]
-# ## Pro processing steps
+# ## Pre-processing steps
 #
 # We will now work through each step of data pre-processing to support for the fire impacts modelling:
 #
@@ -120,9 +124,14 @@ proj.catchments
 # The following sections describe each process and the data required.
 
 # %% [markdown]
+# ## Aside: Visualising data
+#
+# The `proj` object includes convenience functions for visualising the processed data layers as they are created. Here, we show the visualisation after each step using built-in default parameters.
+
+# %% [markdown]
 # ## Topography
 #
-# The topographic processing uses a DEM to identify relevant topographic properties required for the modelling.
+# The topographic processing uses a DEM to identify relevant topographic properties required for the modelling.. 
 #
 # This includes:
 #
@@ -134,40 +143,40 @@ proj.catchments
 # If using the [national 1" DEM](https://ecat.ga.gov.au/geonetwork/srv/eng/catalog.search#/metadata/72759), use the hydrologically enforced DEM (DEM-H).
 #
 
-# %%
-# PUT THE PATH TO YOUR DEM FILE HERE
-# If you don't have a DEM, the system will use the 1" SRTM DEM-H from Geoscience Australia 
-CUSTOM_DEM=None # '..\\test_data\\example_dem.tif' 
-
+# %% [markdown]
+# ### Digital Elevation Model (DEM)
 
 # %%
-topography.extract_catchment_dems(proj,CUSTOM_DEM)
+# Point python to the DEM. For any case other than this example catchment, update the path to point to your actual DEM:
+DEM_FILENAME='..\\test_data\\example_dem.tif'
+# Extract the catchment only from the input DEM:
+topography.extract_catchment_dems(proj,DEM_FILENAME)
+# Visualise the processed DEM:
+proj.plot_catchment_raster('Topography','DEM.tif')
+
+# %% [markdown]
+# ### Headwaters
+# We will see the headwaters visualised later on in this notebook.
 
 # %%
+# Just call the extract_headwaters() method from the topography module:
 headwaters = topography.extract_headwaters(proj)
 
 # %%
-headwaters[proj.catchments[0]]
+# See a snapshot of what the table of headwaters looks like:
+headwaters['example_small_catchment'].head()
 
 # %% [markdown]
-# ## Aside: Visualising data
-#
-# The `proj` object includes a convenience function for visualising the processed data layers:
-
-# %%
-proj.plot_catchment_raster('Topography','DEM.tif')
-
-# %%
+# ### Slope
 
 # %%
 proj.plot_catchment_raster('Topography','Slope')
 
+# %% [markdown]
+# ### Flow Accumulation
+
 # %%
 proj.plot_catchment_raster('Topography','Flow_accumulation')
-
-# %%
-
-# %%
 
 # %% [markdown]
 # ## Aside: Function documentation
@@ -180,20 +189,22 @@ proj.plot_catchment_raster('Topography','Flow_accumulation')
 # topography.extract_headwaters?
 # ```
 
-# %% [markdown]
-#
-
 # %%
 # topography.extract_headwaters?
 
 # %% [markdown]
 # ## Fire Severity
+# Fire severity data requires measuring Normalised Burn Ration (NBR) before and after a fire, to produce a measure of change called delta-NBR (abbreviated as dNBR or ΔNBR).
+#
+# This package automatically finds and downloads relevant satellite-based NBR datasets and computes fire severity for your catchment. 
+# > **Note**: Currently, our example small catchment does not have a known fire date, so dNBR values will not be high. This will be updated in a future release to use an actual or simulated fire for this area.
 
 # %%
 fire_start_date = '2019-01-15'  # Set fire start date (the date that fire started)
 fire_end_date = '2019-03-07'    # Set fire end date (the date that fire ended)
 
 # %%
+# This method may take a few minutes to download and process data.
 severity.calculate_fire_severity(
     project=proj,
     catchment=None,
@@ -201,60 +212,71 @@ severity.calculate_fire_severity(
     fire_end_date=fire_end_date,
 )
 
-# %%
-proj.plot_catchment_raster('FireSeverity','dNBR')
 
 # %%
-proj.plot_catchment_raster('FireSeverity','Prefire_NBR')
-
-# %%
-proj.plot_catchment_raster('FireSeverity','Postfire_NBR')
-
+proj.plot_catchment_raster('FireSeverity', 'dNBR')
 
 # %% [markdown]
 # ## Soils
+# Soil data are required for RUSLE (erosion) and debris flow simulations.
 #
+# ### Required Inputs
+# Many of these will be downloaded and processed automatically by the package, but you will need a **TERN API KEY** to access them. We suggest creating your API key then saving it as an Environment Variable under your user profile (for Windows). We assume this has already been set up for the purpose of this example notebook.
 #
+# You will also need an **Aridity raster** file, which is included for the example catchment but will need to be obtained for your catchment of interest before loading the subsequent datasets or running the simulations.
 
 # %%
+# Tell python where your API key is:
+API_KEY = os.environ.get('TERN_API_KEY')
+# Download the relevant data from TERN:
+soil.download_soil_data_stac(proj, api_key=API_KEY)
+
+# Existing aridity raster location:
 ARIDITY=r'..\\test_data\\Aridity_PT.tif'
-TERN_API_KEY='YOUR_TERN_API_KEY_HERE'  # PUT YOUR TERN API KEY HERE
-# %%
-soil.download_soil_data_stac(proj, api_key=TERN_API_KEY)
-
-# Extract aridity data for each catchment
-soil.extract_aridity_data(proj,aridity_raster=ARIDITY)
+# Extract aridity data for each catchment:
+soil.extract_aridity_data(proj, aridity_raster=ARIDITY)
 
 # %%
+# Visualise the processed aridity raster:
+proj.plot_catchment_raster('Soils', 'Aridity')
 
 # %% [markdown]
 # ## RUSLE
+# The **R**evised **U**niversal **S**oil **L**oss **E**quation is used to estimate general post-fire erosion and is calculated for the entire catchment.
 #
+# ### Required Inputs
+# You will need to obtain RUSLE factor rasters for the erosion simulations. The package will prepare them for simulation in each catchment. 
+# Both **C-factor** and **K-factor** rasters are required. They have been provided for this example catchment to demonstrate functionality.
 #
 
-# %%
-c_factor_path=None # Use default C factor
-k_factor_path=None # Use default K factor
-
+# %% [markdown]
+# ### C- and K-Factors
 
 # %%
-rusle.compute_adjusted_k_c(proj,catchment=None,c_factor_fn=c_factor_path,k_factor_fn=k_factor_path)
+# Point to your provided rasters:
+c_factor_path='..\\test_data\\c_factor_g94.tif'
+k_factor_path='..\\test_data\\k_factor_g94.tif'
 
-# %%
+# Compute adjusted K- and C-factors ready for erosion simulation:
+rusle.compute_adjusted_k_c(proj, catchment=example_catchment_name, c_factor_fn=c_factor_path, k_factor_fn=k_factor_path)
 
-results = rusle.compute_lsi(proj)
-
-
-# %%
-rusle.compute_sediment_delivery_ratio(proj)
 # %% [markdown]
 # ## Summary information for Fire Severity
+# We can now produce a summary table of all the key inputs to the simulation steps to follow:
+#
+# This may take a few minutes while aggregations are computed for each headwater.
 
 # %%
 summary = project.summary_stats(proj)
 
-# %%
+# %% [markdown]
+# The *summary stats* table shows these inputs for each headwater. You can view them in table form easily...
 
 # %%
-summary[proj.catchments[0]]
+summary['example_small_catchment'].head()
+
+# %% [markdown]
+# ...and also in a map, where we can see the shape of those headwaters now:
+
 # %%
+proj.plot_headwaters(example_catchment_name, colour_col='dNBR_mean', table=summary['example_small_catchment'])
