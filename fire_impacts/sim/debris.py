@@ -386,10 +386,13 @@ def debris_flow(
     Run debris flow simulation for a given catchment or all catchments in the project.
 
     Parameters:
-    proj (FireImpactsProject): The FireImpactsProject instance.
-    rainfall (pd.Series): A pandas Series containing rainfall intensities (mm/hr) with a DateTime index.
-    catchment (str, optional): The catchment to run the simulation for. If None, run for all catchments.
-    save (bool, optional): Whether to save the results. Defaults to True.
+    - proj (FireImpactsProject): The FireImpactsProject instance.
+    - rainfall (pd.Series): A pandas Series containing rainfall 
+    intensities (mm/hr) with a DateTime index.
+    - catchment (str, optional): The catchment to run the simulation 
+    for. If None, run for all catchments.
+    - save (bool, optional): Whether to save the results. Defaults to 
+    True.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """

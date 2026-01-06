@@ -60,26 +60,45 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
     result_x = xr.Dataset({'rainfall':result_x})
     return result_x
 
-def get_rainfall_replicates(proj:FireImpactsProject, catchment,start, end, num_replicates, mean_annual_rainfall, average_temperature, num_years=2):
-    '''
-    Get stochastic rainfall replicates for one or more catchments in the project.
-
-    Infer location and elevation from catchment boundary and DEM. User supplied climate statistics are used to generate the replicates.
+###############################################################################
+def get_rainfall_replicates(
+    proj:FireImpactsProject,
+    catchment,
+    start,
+    end,
+    num_replicates,
+    mean_annual_rainfall,
+    average_temperature,
+    num_years=2
+    ):
+    """
+    Get stochastic rainfall replicates for one or more catchments in 
+    the project.
 
     Parameters:
-    - proj (FireImpactsProject): A dictionary of project folders created for catchments.
-    - catchment (str): OPTIONAL: Name of the catchment to process. If None, process all catchments.
+    - proj (FireImpactsProject): A dictionary of project folders 
+    created for catchments.
+    - catchment (str): OPTIONAL: Name of the catchment to process. If 
+    None, process all catchments.
     - start (str): Start date for the rainfall data.
     - end (str): End date for the rainfall data.
     - num_replicates (int): Number of rainfall replicates to generate.
-    - mean_annual_rainfall (float): Mean annual rainfall in mm for the catchment.
-    - average_temperature (float): Average temperature in °C for the catchment.
+    - mean_annual_rainfall (float): Mean annual rainfall in mm for the 
+    catchment.
+    - average_temperature (float): Average temperature in °C for the 
+    catchment.
     - num_years (int): Length of data in years. Default is 2.
 
     Returns:
-    - Dataset: XArray dataset with datetime index and simulations as columns.
-
-    '''
+    - Dataset: XArray dataset with datetime index and simulations as 
+    columns.
+    --------------------------------------------------------------------
+    Notes:
+    - Infer location and elevation from catchment boundary and DEM. 
+    User supplied climate statistics are used to generate the 
+    replicates.
+    --------------------------------------------------------------------
+    """
     if catchment is None:
         return proj.for_each_catchment(lambda c: get_rainfall_replicates(
             proj, c, start, end, num_replicates, mean_annual_rainfall, average_temperature, num_years))

@@ -154,9 +154,13 @@ def reproject_raster(
                     )
 
 ###############################################################################
-def read_raster(fn:str):
-  with rio.open(fn) as src:
-    return src.read(1), src.transform, src.crs
+def read_raster(path_to_file:str):
+    """
+    Helper function to read a raster file and return its data, 
+    transform, and crs as separate objects.
+    """
+    with rio.open(path_to_file) as src:
+        return src.read(1), src.transform, src.crs
 
 ###############################################################################
 def read_aligned(raster_fn:str, transform, crs,shape,resampling=Resampling.nearest):
