@@ -100,7 +100,7 @@ def prep_debris_flow_simulation(
     condition_data = pd.read_csv(
         proj.catchment_path(
             catchment,
-            'Soil_Slope_Aridity_dNBR.csv'
+            'Soil_Slope_Aridity_dNBR_headwaters.csv'
             )
         ) #This seems to have the correct ID column
     
