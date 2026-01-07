@@ -409,17 +409,21 @@ def debris_flow(
         logger.error("Rainfall data has units '%s', expected 'mm/h'", rainfall.attrs['units'])
         raise ValueError("Rainfall data has units '%s', expected 'mm/h'"%rainfall.attrs['units'])
 
+    NUM_YEARS=2
     result = prep_debris_flow_simulation(proj, catchment)
 
-    NUM_YEARS=2
     years = range(1, NUM_YEARS + 1)
     # for sim in ds_12min['simulation'].values:
         # Initialize a dictionary to store results for each year
     year_results = {year: {"event_counts": [], "rainfall_events": [], "event_dates": []} for year in years}
+    t0 = rainfall.index[0]
 
     # Iterate through each year
     for year in years:
+        t1 = t0 + pd.Timedelta(days=365)
         threshold_col = f"I12_crit_mean_Year_{year}"
+        rain_year = rainfall[(rainfall.index >= t0) & (rainfall.index < t1)]
+        t0 = t1
 
         # Iterate through each row in fire_impact_data
         for idx, threshold in enumerate(result[threshold_col]):
@@ -430,20 +434,13 @@ def debris_flow(
                 continue
 
             # Select rainfall and coordinates of time (day, subday_12mins) for the current simulation
-            rain_flat = rainfall.values
-            # days = ds_12min['day'].values
-            # subdays = ds_12min['subday_12mins'].values
-
-            # Flatten the arrays for easy processing
-            # rain_flat = rain_values.flatten()
-            # days_flat = np.repeat(days, len(subdays))
-            # subdays_flat = np.tile(subdays, len(days))
+            rain_flat = rain_year.values
 
             # Find events where rainfall exceeds the threshold
             indices = np.where(rain_flat >= threshold)[0]
             events = rain_flat[indices]
             # event_dates_row = [(days_flat[i], subdays_flat[i]) for i in indices]
-            event_dates_row = rainfall.index[indices]
+            event_dates_row = rain_year.index[indices]
 
             # Append results for the current year
             year_results[year]["event_counts"].append(len(events))
