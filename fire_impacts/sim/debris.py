@@ -411,6 +411,7 @@ def debris_flow(
 
     NUM_YEARS=2
     result = prep_debris_flow_simulation(proj, catchment)
+    event_ts = pd.DataFrame(0,index=rainfall.index, columns=result['hw_ID'])
 
     years = range(1, NUM_YEARS + 1)
     # for sim in ds_12min['simulation'].values:
@@ -426,7 +427,9 @@ def debris_flow(
         t0 = t1
 
         # Iterate through each row in fire_impact_data
-        for idx, threshold in enumerate(result[threshold_col]):
+        for idx, row in result.iterrows():
+            threshold = row[threshold_col]
+            hw_id = row['hw_ID']
             if np.isnan(threshold):  # Skip rows with NaN thresholds
                 year_results[year]["event_counts"].append(0)
                 year_results[year]["rainfall_events"].append([])
@@ -446,7 +449,9 @@ def debris_flow(
             year_results[year]["event_counts"].append(len(events))
             year_results[year]["rainfall_events"].append(events.tolist())
             year_results[year]["event_dates"].append(event_dates_row)
-        
+            for d in event_dates_row:
+                event_ts.at[d, hw_id] += 1
+
         # Add the number of events as a new column for the current year
         result[f"Year{year}_num_events"] = year_results[year]["event_counts"]
 
@@ -481,4 +486,4 @@ def debris_flow(
             )
 
     logger.info('Done!')
-    return Debris_Flow_Data
+    return Debris_Flow_Data, event_ts
