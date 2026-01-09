@@ -156,11 +156,16 @@ def reproject_raster(
 ###############################################################################
 def read_raster(path_to_file:str):
     """
-    Helper function to read a raster file and return its data, 
-    transform, and crs as separate objects.
+    Helper function to read a raster file and return its data and 
+    metadata dictionary
+
+    NOTE: This will cause errors as I have just updated it to return 
+    data and meta, not data, crs, transform. Should just need to update
+    the calling functions to get those objects from the meta dictionary
+    i.e. crs = meta['crs'], transform = meta['transform']
     """
     with rio.open(path_to_file) as src:
-        return src.read(1), src.transform, src.crs
+        return (src.read(1), src.meta)
 
 ###############################################################################
 def read_aligned(raster_fn:str, transform, crs,shape,resampling=Resampling.nearest):

@@ -118,10 +118,20 @@ def prep_debris_flow_simulation(
 
 ###############################################################################
 def debris_flow_load(
-    dem_data,slope_ratio, slope_transform, flow_accumulation, flowdir,
-    clay0_5_fraction, clay5_15_fraction, out_path,
-    fire_impact_data:pd.DataFrame, hf_lookup:pd.DataFrame,
-    debris_flow_constituents:pd.DataFrame,raster_meta, id_field:str):
+    dem_data,
+    slope_ratio,
+    slope_transform,
+    flow_accumulation,
+    flowdir,
+    clay0_5_fraction,
+    clay5_15_fraction,
+    out_path,
+    fire_impact_data:pd.DataFrame,
+    hf_lookup:pd.DataFrame,
+    debris_flow_constituents:pd.DataFrame,
+    raster_meta,
+    id_field:str
+    ):
     """
     Function to calculate debris flow load for each pixel and integrate
     fire impact analysis.
@@ -487,3 +497,48 @@ def debris_flow(
 
     logger.info('Done!')
     return Debris_Flow_Data, event_ts
+
+###############################################################################
+def run_debris_flow_sim(
+    project:FireImpactsProject,
+    rainfall,
+    catchment=None,
+    recorders=None
+    ):
+    """
+    Run the debris flow simulation for a given project and set of 
+    rainfall data, recording results as specified.
+
+    Parameters:
+    - project (fire_impacts.FireImpactsProject): Current project
+    - rainfall (Series-like): 30 minute rainfall data (mm)
+    - catchment (str): Name of the catchment to process. If None, 
+    process all catchments.
+    - recorders (dict): OPTIONAL: Dictionary of recorder functions to 
+    use during the simulation.
+
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Run for all catchments if none was specified:
+    if catchment is None:
+        return project.for_each_catchment(
+            lambda c: run_debris_flow_sim(project,rainfall,c,recorders)
+            )
+    # If no recorders were passed, use an empty dictionary so the rest 
+    #of the code works consistently:
+    if recorders is None:
+        recorders = dict()
+    # Reset each recorder so we're building new arrays for aggregation:
+    for recorder in recorders.values():
+        recorder.reset()
+
+
+
+
+###############################################################################
+def generate_debris_flow(
+    rainfall:pd.Series,
+
+    ):
+    pass

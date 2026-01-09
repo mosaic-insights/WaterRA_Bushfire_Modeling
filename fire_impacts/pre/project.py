@@ -9,6 +9,7 @@ import shutil
 import rasterio as rio
 import numpy as np
 import geopandas as gpd
+import rasterio as rio
 import pandas as pd
 import json
 import logging
@@ -35,7 +36,16 @@ PER_CATCHMENT_FOLDERS = [
 ]
 
 STATS = constants.STATS
-APPROX_KM_PER_DEGREE = 111  # Approximate conversion factor from degrees to kilometers
+APPROX_KM_PER_DEGREE = constants.APPROX_KM_PER_DEGREE  
+
+# State exactly what dtypes we're happy to save rasters in:
+default_dtypes_raster = {
+    'int': rio.int32,
+    'float': rio.float32
+    }
+# Convert numpy one-character dtype.kind attributes into more general 
+#descriptors that will map in default_dtypes_raster:
+numpy_kind_to_desc = constants.numpy_kind_to_desc
 
 
 ###############################################################################
@@ -1428,7 +1438,49 @@ def format_dNBR(series:pd.Series):
     """
     return series.clip(lower=0).mul(1000)
 
+###############################################################################
+def save_catchment_raster(
+    project:FireImpactsProject,
+    catchment_name:str,
+    file_name:str,
+    section:str,
+    data,
+    meta
+    ):
+    """
+    
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Build the path:
+    out_path = project.catchment_path(
+        catchment_name,
+        section,
+        f'{file_name}.tif'
+        )
+    
+    # Set standard data type parameters for all our rasters:
+    final_meta = meta.copy()
+    in_dtype = final_meta['dtype']
+    in_dtype_kind = np.dtype(in_dtype).kind
+    out_dtype = default_dtypes_raster[numpy_kind_to_desc[in_dtype_kind]]
 
+    # Update the metadata with the final dtype
+    final_meta.update(dtype=out_dtype, count=1)
+
+    # Try writing the file. Return True with location if successful, 
+    #or false with the error message if not.
+    try:
+        with rio.open(out_path, 'w', **final_meta) as dst:
+            dst.write(data.astype(out_dtype), 1)
+        result = True
+        result_string = f'Saved raster to {out_path}'
+    except Exception as e:
+        result = False
+        result_string = f'Could not save raster: {e}'
+    
+    return result, result_string
+    
 
 
 
