@@ -1,21 +1,20 @@
 import os
 import numpy as np
+from numpy.typing import ArrayLike
 import pandas as pd
 import geopandas as gpd
 import rasterio as rio
 from shapely.geometry import shape, Point, LineString
 from shapely.strtree import STRtree
 from rasterio.features import shapes
+from pysheds.view import Raster as PyshedsRaster
 from pysheds.grid import Grid
 from .project import FireImpactsProject, save_catchment_raster
 from .util import *
 import copy
 import logging
 logger = logging.getLogger(__name__)
-
-from ..const import (
-    DEFAULT_HW_THRESHOLD, APPROX_DEGREES_TO_METRES, D8_FLOW_DIRECTIONS, CRS_METRE_UNITS
-    )
+from ..const import *
 
 def ftoi(x,dp=5):
     return int(round(x,dp))
@@ -129,9 +128,11 @@ def dem_to_slope(
     project:FireImpactsProject,
     dem:str | tuple,
     catchment_name:str,
+    gradient:bool=False,
     hydro:bool=False,
     save:bool=True,
-    crs_unit_to_metres:float=None):
+    crs_unit_to_metres:float=None
+    ):
     """
     Convert a DEM to a slope raster. Can be either raw, or a 
     hydrologically-enforced DEM.
@@ -206,27 +207,32 @@ def dem_to_slope(
     # Get a version in degrees:
     terr_slope_rad = np.arctan(terrain_grad)
     terr_slope_deg = np.degrees(terr_slope_rad)
+
+    if gradient:
+        final_data = terrain_grad
+    else:
+        final_data = terr_slope_deg
+
     # Save the slope raster if that's been requested:
     if save:
         # Set output file name based on whether we've used a 
         #hydrologically enforced DEM for this slope raster:
         if hydro:
-            file_name = 'Slope_hydro_enforced'
+            file_name = SLOPE_HYDRO_FN
         else:
-            file_name = 'Slope'
+            file_name = SLOPE_FN
         success, message = save_catchment_raster(
             project=project,
             catchment_name=catchment_name,
             file_name=file_name,
             section='Topography',
-            data=terr_slope_deg,
+            data=final_data,
             meta=meta2
             )
         logger.info(message)
         
-
     # Return the raster data and its metadata:
-    return data_present, meta2
+    return final_data, meta2
 
 ###############################################################################
 def hydro_force_dem(dem_path:str):
@@ -261,60 +267,115 @@ def hydro_force_dem(dem_path:str):
     return inflated_dem, grid
 
 ###############################################################################
-def get_flow_dir(
-    hydro_dem,
+def compute_flow_dir(
+    hydro_dem:ArrayLike,
+    hydro_meta:dict,
     grid:Grid,
-    dirmap
-    ):
+    dirmap:tuple,
+    project:FireImpactsProject,
+    catchment_name:str,
+    save:bool=True,
+    routing:str=FLOW_ROUTING_TYPE
+    ) -> tuple[PyshedsRaster, dict, Grid]:
     """
     Compute a flow direction raster from a hydrologically enforced DEM
 
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
+        
+    # Compute the flow direction grid:
     logger.info('Computing flow direction')
-    fdir = grid.flowdir(hydro_dem, dirmap=dirmap)  
+    fdir = grid.flowdir(hydro_dem, dirmap=dirmap, routing=routing)
+
+    # Define input and output nodata values:
+    in_nodata = hydro_meta['nodata']
+    out_nodata = np.int32(NODATA_VAL_INT)
+
+    # Update the rasterio metadata:
+    flow_dir_meta = hydro_meta.copy()
+    flow_dir_meta.update(dtype=np.int32, nodata=out_nodata, count=1)
+
+    # Update the pysheds viewfinder with the target nodata value:
+    flow_dir_vf = fdir.viewfinder.copy()
+    flow_dir_vf.nodata = out_nodata
+
+    # Replace input nodata values with a useful integer one:
+    flow_dir_data = np.where(
+        fdir == in_nodata,
+        out_nodata,
+        fdir
+        ).astype(np.int32)
     
-    return fdir, grid
+    flow_dir_Raster = PyshedsRaster(
+        input_array=flow_dir_data,
+        viewfinder=flow_dir_vf,
+        metadata={
+            'dirmap': dirmap,
+            'routing': routing
+            }
+        )
+    
+    # Save the raster to file if requested:
+    if save:
+        success, message = save_catchment_raster(
+            project=project,
+            catchment_name=catchment_name,
+            file_name=FLOW_DIRECTION_FN,
+            section = 'Topography',
+            data=flow_dir_data,
+            meta=flow_dir_meta
+            )
+        logger.info(message)
+    
+    return flow_dir_Raster, flow_dir_meta, grid
 
 ###############################################################################
-def get_flow_accum(
-    flow_dir_data,
-    flow_dir_meta,
+def compute_flow_accum(
+    flow_dir_data:ArrayLike,
+    flow_dir_meta:dict,
     grid:Grid,
-    dirmap,
+    dirmap:tuple,
     project:FireImpactsProject,
     catchment_name:str,
-    save:bool=True
-    ):
+    save:bool=True,
+    routing:str=FLOW_ROUTING_TYPE
+    ) -> tuple[PyshedsRaster, dict, Grid]:
     """
     Compute a flow accumulation raster from a flow direction raster
 
     --------------------------------------------------------------------
+    Notes:
+    - Assues the input flow direction has correct integer dtypes and 
+    nodata values.
     --------------------------------------------------------------------
     """
     # Compute the flow accumulation grid:
     logger.info('Computing flow accumulation')
-    flow_acc = grid.accumulation(flow_dir_data, dirmap=dirmap) 
+    flow_acc_data = grid.accumulation(
+        flow_dir_data,
+        dirmap=dirmap,
+        routing=routing) 
+    flow_acc_meta = flow_dir_meta.copy()
 
     # Save the raster to file if requested:
     if save:
         success, message = save_catchment_raster(
             project=project,
             catchment_name=catchment_name,
-            file_name='Flow_accumulation',
+            file_name=FLOW_ACCUMULATION_FN,
             section='Topography',
-            data=flow_acc,
-            meta=flow_dir_meta
+            data=flow_acc_data,
+            meta=flow_acc_meta
         )
         logger.info(message)
 
-    return flow_acc, grid
+    return flow_acc_data, flow_acc_meta, grid
     
-
+###############################################################################
 def extract_headwaters(
     project:FireImpactsProject,
-    name:str=None,
+    name:str | None=None,
     threshold_m2:float=DEFAULT_HW_THRESHOLD
     ):
     """
@@ -373,13 +434,18 @@ def extract_headwaters(
     # Hyrdologically enforce the DEM:
     prepared_dem, grid = hydro_force_dem(dem_fn)
     # Get a flow direction raster:
-    flow_dir, grid = get_flow_dir(
-        prepared_dem, grid, dirmap=D8_FLOW_DIRECTIONS
+    flow_dir_data, flow_dir_meta, grid = compute_flow_dir(
+        hydro_dem=prepared_dem,
+        hydro_meta=meta,
+        grid=grid,
+        dirmap=D8_FLOW_DIRECTIONS,
+        project=project,
+        catchment_name=name
         )
     # Get a flow accumulation raster:
-    flow_acc, grid = get_flow_accum(
-        flow_dir_data=flow_dir,
-        flow_dir_meta=meta,
+    flow_acc_data, flow_acc_meta, grid = compute_flow_accum(
+        flow_dir_data=flow_dir_data,
+        flow_dir_meta=flow_dir_meta,
         grid=grid,
         dirmap=D8_FLOW_DIRECTIONS,
         project=project,
@@ -391,22 +457,22 @@ def extract_headwaters(
     threshold_cells = int(threshold_m2 / res_sq)
     logger.info('Threshold # cells: %d (%f m^2)', threshold_cells, threshold_m2)
 
-    mask_at_threshold = flow_acc == threshold_cells
-    mask_above_threshold = flow_acc >= threshold_cells  # need to be equal or greater then threshold
+    mask_at_threshold = flow_acc_data == threshold_cells
+    mask_above_threshold = flow_acc_data >= threshold_cells  # need to be equal or greater then threshold
     # Extract river network based on flow accumulation threshold
     logger.info('Extracting river network')
-    branches = grid.extract_river_network(flow_dir, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS,nodata_out=np.int64(0)) # mask if the flow acc is less than threshold
+    branches = grid.extract_river_network(flow_dir_data, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS,nodata_out=np.int64(0)) # mask if the flow acc is less than threshold
     # Save the stream network as Stream_Network.tif
     stream_network_file = project.catchment_path(name,'Topography','Stream_Network.tif')
     stream_meta = meta.copy()
     stream_meta.update({
         'dtype': 'int32',
         'count': 1,
-        'nodata': -9999
+        'nodata': NODATA_VAL_INT
     })
 
     # Create an empty array for stream network output
-    stream_network_array = np.ones_like(flow_acc, dtype=np.int32) * -9999
+    stream_network_array = np.ones_like(flow_acc_data, dtype=np.int32) * -9999
 
     for feature in branches['features']:
         # print(feature)
@@ -427,7 +493,7 @@ def extract_headwaters(
     logger.info('Building spatial index of %d branches',len(branches['features']))
     lines = [LineString(branch['geometry']['coordinates']) for branch in branches['features']]
     spatial_index = STRtree(lines)
-    stream_order = grid.stream_order(flow_dir, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS, method='strahler') # get the stream order to filter the headwaters for first stream order
+    stream_order = grid.stream_order(flow_dir_data, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS, method='strahler') # get the stream order to filter the headwaters for first stream order
 
     logger.info('Snapping start points to stream heads')
     start_xs = [list(l.coords)[0][0] for l in lines]
@@ -459,15 +525,15 @@ def extract_headwaters(
             continue  # Skip to the next line if stream order is greater than 1
 
         # If the flow accumulation in the pour point is greater then threshold, get the an adjesent cell with the closest flow acc to the thrshold
-        if flow_acc[row, col] > threshold_cells:
+        if flow_acc_data[row, col] > threshold_cells:
             # Find the closest cell with flow accumulation near to threshold
-            row, col = find_closest_to_threshold(flow_acc, row, col, threshold_cells)
+            row, col = find_closest_to_threshold(flow_acc_data, row, col, threshold_cells)
             x, y = grid.affine * (col, row)  # Update the coordinates
         # Get the flow accumulation at the pour point and save it in the dataframe
-        pp_flow_acc = flow_acc[row, col]
+        pp_flow_acc = flow_acc_data[row, col]
         grid_1 = copy.deepcopy(grid)
 
-        catch = grid_1.catchment(x=x, y=y, fdir=flow_dir, dirmap=D8_FLOW_DIRECTIONS, xytype='coordinate') # snap the
+        catch = grid_1.catchment(x=x, y=y, fdir=flow_dir_data, dirmap=D8_FLOW_DIRECTIONS, xytype='coordinate') # snap the
         catchment_view = grid_1.view(catch)
         catchment_cells = catchment_view * catchment_id
         subcatchment_raster += catchment_cells

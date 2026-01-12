@@ -37,14 +37,24 @@ def retry(fn,retries=5,initial_delay=8,delay_scale=3,specific_exceptions=None):
         time.sleep(initial_delay)
         return retry(fn,retries-1,initial_delay*delay_scale,delay_scale,specific_exceptions)
 
+###############################################################################
 def package_data_path(fn=None):
+    """
+    Point to where static lookup tables are currently stored in the 
+    package and join them to a specified file name to produce a usable 
+    path
+    """
     dirname = os.path.join(os.path.dirname(__file__),'..','data')
     if fn is None:
         return dirname
     return os.path.join(dirname,fn)
 
-
+###############################################################################
 def load_package_data(fn):
+    """
+    For static package lookup tables, get the full path/filename.ext 
+    and then make sure the output is a csv.
+    """
     fn = package_data_path(fn)
     if fn.endswith('.csv'):
         logger.info(f"Loading data from {fn}")

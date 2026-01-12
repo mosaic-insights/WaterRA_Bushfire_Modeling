@@ -26,14 +26,7 @@ logger = logging.getLogger(__name__)
 
 # These are the default directories that need to exist inside every 
 #catchments directory:
-PER_CATCHMENT_FOLDERS = [
-    'Topography',
-    'FireSeverity',
-    'Soils',
-    'Erodibility',
-    'Delivery',
-    'Subcatchments'
-]
+PER_CATCHMENT_FOLDERS = constants.PER_CATCHMENT_FOLDERS
 
 STATS = constants.STATS
 APPROX_KM_PER_DEGREE = constants.APPROX_KM_PER_DEGREE  
