@@ -43,7 +43,7 @@ def extract_catchment_dems(
 
       if dem_path is None:
           logger.info('No DEM path provided, downloading DEMH data from AWS for catchment: %s',catchment)
-          from .data_sources import DEMH_WCS, DEMH
+          from .data_sources import DEMH
           fn = DEMH
       else:
           fn = dem_path

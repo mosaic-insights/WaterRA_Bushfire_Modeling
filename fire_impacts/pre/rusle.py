@@ -175,7 +175,7 @@ def compute_lsi(project: FireImpactsProject, catchment=None):
         m[mask] = beta / (1 + beta)
 
     # Calculate LSi factor (slope length-gradient factor)
-    D = xres  # Grid cell dimension (same as pixel size in DEM)
+    D = np.sqrt(pixel_area)  # Grid cell dimension (same as pixel size in DEM)
     LSi = Si * (((specific_area + D**2)**(m + 1)) - (specific_area **
                 (m + 1))) / ((D**(m + 2)) * (xi**m) * (22.13**m))
 
@@ -282,8 +282,9 @@ def compute_sediment_delivery_ratio(project: FireImpactsProject, catchment=None,
     # Read the temporary rasters into pysheds as Raster objects
     Sth_raster = grid.read_raster(Sth_path)
     acc_Sth = grid.accumulation(fdir=fdir, weights=Sth_raster) # this is accumulated c factor for each cell
-    acc_no0 = np.where(acc == 0, np.nan, acc)  # avoid divide by zero
-    Av_Sth = acc_Sth / acc_no0 # This is avarage of Cth in each cell
+    acc_Sth_arr = np.array(acc_Sth, dtype=np.float32)
+    acc_no0 = np.where(acc_data == 0, np.nan, acc_data)  # avoid divide by zero
+    Av_Sth = acc_Sth_arr / acc_no0 # This is avarage of Cth in each cell
 
     # --------------------------------------------------------------------------------------------------------------------------
     # Step 2: Read the C-factor raster and calculate Cth
@@ -302,7 +303,8 @@ def compute_sediment_delivery_ratio(project: FireImpactsProject, catchment=None,
     Cth_raster = grid.read_raster(Cth_path)
     # Calculate the average thresholded C factor of the upslope contributing area
     acc_Cth = grid.accumulation(fdir=fdir, weights=Cth_raster) # this is accumulated c factor for each cell
-    Av_Cth = acc_Cth / acc_no0  # This is avarage of Cth in each cell
+    acc_Cth_arr = np.array(acc_Cth, dtype=np.float32)
+    Av_Cth = acc_Cth_arr / acc_no0  # This is avarage of Cth in each cell
     #----------------------------------------------------------------------------------------------------------
     # Step 3: calculate downslope path distance to the nearest stream
     # Create stream network (channel domain) based on a flow accumulation threshold (e.g., 26 cells)
@@ -387,7 +389,8 @@ def compute_sediment_delivery_ratio(project: FireImpactsProject, catchment=None,
     Dup_path = project.catchment_path(catchment,'Delivery', 'Dup.tif')
     with rio.open(Dup_path, 'w', **dem_profile) as dst:
         dst.write(Dup.astype(rio.float32), 1)
-
+    EPS = 1 #A lower bound is set to avoid infinite values for IC.
+    Ddn = np.where(Ddn <= 0, EPS, Ddn)
     # Calculate Connectivity Index (IC)
     IC = np.log10(Dup / Ddn)
     # Mask zeros outside the catchment boundary by checking against the nodata values in the DEM
