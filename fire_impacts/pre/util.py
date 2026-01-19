@@ -150,7 +150,7 @@ def reproject_raster(
                     src_crs=src.crs,
                     dst_transform=transform,
                     dst_crs=target_crs,
-                    resampling=Resampling.nearest
+                    resampling=Resampling.bilinear
                     )
 
 ###############################################################################

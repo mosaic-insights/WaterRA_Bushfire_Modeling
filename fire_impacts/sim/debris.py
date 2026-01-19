@@ -8,7 +8,8 @@ import numpy as np
 import rasterio
 from rasterio.warp import Resampling
 from rasterio.transform import from_origin, Affine, rowcol
-from ..const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS, PERCENT_TO_FRACTION
+from ..const import *
+from fire_impacts.pre import topography
 from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.pre.util import read_aligned, read_raster
 from fire_impacts.util import load_package_data, unique_file_matching
@@ -17,44 +18,97 @@ import os
 import logging
 logger = logging.getLogger(__name__)
 
+
 ###############################################################################
-def get_slope(dem_path):
+def get_flow_layers(
+    hydro_dem,
+    dem_meta:dict,
+    grid:Grid,
+    dirmap:tuple,
+    project:FireImpactsProject,
+    catchment_name:str
+    ):
     """
-    
+    Grab the flow direction and flow accumulation rasters if they're 
+    already saved, otherwise compute new ones of each
+
+    Parameters:
+    - hydro_dem: Hydrologically enforced DEM
+    - dem_meta: Metadata dictionary for the hydro_dem
+    - grid: pysheds Grid object which can be used for hydro DEM ops
+    - dirmap: tuple of values for D8 flow direction cell assignment
+    - project: FireImpactsProject object for managing directory 
+    structure
+    - catchment_name: string name of the catchment the flow layers are 
+    required for
+
+    Returns:
+    - data for flow direction
+    - meta for flow direction
+    - data for flow accumulation
+    - meta for flow accumulation
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    with rasterio.open(dem_path) as src:
-        dem_data = src.read(1)  # Read the first band (DEM data)
-        dem_meta = src.meta.copy()
-        transform = src.transform  # Get the affine transform (coordinates)
-        crs = src.crs  # Get the CRS (UTM in your case)
-        nodata = src.nodata
+    # See if the flow direction raster is already saved. If so, use 
+    #that: 
+    try_flowdir_path = project.catchment_path(
+        catchment_name, 'Topography', f'{FLOW_DIRECTION_FN}.tif'
+        )
+    try:
+        flow_dir_array, flow_dir_meta = read_raster(try_flowdir_path)
+        logger.info(
+            'Existing flow direction raster found at '
+            f'{try_flowdir_path}. Reading this in instead of computing '
+            'new raster.'
+            )
+        flow_dir_data = topography.rio_to_pysheds(
+            flow_dir_array,
+            flow_dir_meta,
+            try_flowdir_path
+            )
+        
+    # If we don't already have a flow accumulation raster, compute one:
+    except FileNotFoundError:
+        flow_dir_data, flow_dir_meta, grid = topography.compute_flow_dir(
+            hydro_dem,
+            dem_meta,
+            grid,
+            dirmap,
+            project,
+            catchment_name
+            )
 
-    # Calculate the slope
-    xres = transform[0]  # Pixel width (east-west resolution)
-    yres = abs(transform[4])   # Pixel height (north-south resolution)
-    dem_data = np.where(dem_data == nodata, np.nan, dem_data) # mask nodata values
-    grid = Grid.from_raster(dem_path)
-    dem_grid = grid.read_raster(dem_path)
-    fill_dem = grid.fill_pits(dem_grid)
-    flooded_dem = grid.fill_depressions(fill_dem)
-    inflated_dem = grid.resolve_flats(flooded_dem)
-    dirmap = (64, 128, 1, 2, 4, 8, 16, 32)
-    fdir = grid.flowdir(inflated_dem, dirmap=dirmap)
-    acc = grid.accumulation(fdir, dirmap=dirmap)  # Calculate flow accumulation
-    acc_data=np.array(acc, dtype=np.float32) # get the array data from raster data
-    # get slope
-    dz_dx, dz_dy = np.gradient(dem_data, xres, yres) # Use numpy.gradient to calculate the change in elevation (dz) in both directions
-    slope_ratio = np.sqrt(dz_dx**2 + dz_dy**2) # Calculate the slope as a ratio (dimensionless number, rise/run)
+    # See if the flow accumulation reaster is already saved. If so, use 
+    #that:
+    try_flowacc_path = project.catchment_path(
+        catchment_name, 'Topography', f'{FLOW_ACCUMULATION_FN}.tif'
+        )
+    try:
+        flow_acc_array, flow_acc_meta = read_raster(try_flowacc_path)
+        logger.info(
+            'Existing flow accumulation raster found at '
+            f'{try_flowacc_path}. Reading this in instead of computing '
+            'new raster.'
+            )
+        flow_acc_data = topography.rio_to_pysheds(
+            flow_acc_array,
+            flow_acc_meta,
+            try_flowacc_path
+            )
 
-    # slope_radians = np.arctan(np.sqrt(dz_dx**2 + dz_dy**2)) # Calculate the slope as radian
-    # slope_degrees = np.degrees(slope_radians) # convert slope to degrees
-    # slope_path = os.path.join(out_path, 'slope.tif')
-    # with rasterio.open(slope_path, 'w', **dem_meta) as dest:
-    #     dest.write(slope_degrees.astype('float32'), 1)
+    # Otherwise, make a new one:
+    except FileNotFoundError:
+        flow_acc_data, flow_acc_meta, _ = topography.compute_flow_accum(
+            flow_dir_data,
+            flow_dir_meta,
+            grid,
+            dirmap,
+            project,
+            catchment_name
+            )
 
-    return slope_ratio, acc_data, fdir, dem_data, transform, crs, dem_meta
+    return flow_dir_data, flow_dir_meta, flow_acc_data, flow_acc_meta
 
 ###############################################################################
 def get_clay_fraction(
@@ -66,14 +120,37 @@ def get_clay_fraction(
     shape
     ):
     """
-    
+    Read clay percentage rasters for a certain depth range and convert 
+    them to a fraction
+
+    Parameters:
+    - proj: FireImpactsProject object to handle directories
+    - catchment: string name of the catchment being worked with
+    - depth: depth range the desired soil datset applies for, expressed 
+    as a string in the form 'xxx_yyy' where xxx is the start 
+    (top/shallow) of the range and yyy is the end (bottom/deep). In cm.
+    - transform: affine transformation for the raster as expected by 
+    rasterio
+    crs: crs object for the raster as expected by rasterio
+    - shape: shape of the data expressed as width * height in terms of 
+    number of cells.
     --------------------------------------------------------------------
+    Notes:
+    - unique_file_matching assumes certain naming conventions for clay 
+    files and will throw an error if there's duplicates that match the 
+    criteria
     --------------------------------------------------------------------
     """
+    # Get the location of clay soil datasets within the project:
     clay_directory = proj.catchment_path(catchment, 'Soils','CLY')
-    fn = unique_file_matching(clay_directory,'CLY',depth,'EV')
-    path_fn = os.path.join(clay_directory, fn)
-    return read_aligned(path_fn,transform,crs,shape)*PERCENT_TO_FRACTION
+    # Get the files with the relevant soil measure, depth and 'EV' in 
+    #the file name:
+    file_name = unique_file_matching(clay_directory,'CLY',depth,'EV')
+    # Append to the directory 
+    file_path = os.path.join(clay_directory, file_name)
+    # Get a version of the raster in the same CRS and convert it from
+    #percentage to a fraction:
+    return read_aligned(file_path,transform,crs,shape)*PERCENT_TO_FRACTION
 
 ###############################################################################
 def prep_debris_flow_simulation(
@@ -86,35 +163,108 @@ def prep_debris_flow_simulation(
     --------------------------------------------------------------------
     """
     id_field = proj.headwater_id
+    # Get the DEM and its metadata:
     dem_path = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
-    slope_ratio, acc_data, flowdir, dem_data, transform, crs, raster_meta = get_slope(dem_path)
-    shape = slope_ratio.shape
-    clay0_5, clay5_15 = [np.where(np.isnan(slope_ratio),np.nan,get_clay_fraction(proj, catchment, depth,transform,crs,shape)) for depth in ['000_005', '005_015']]
+    dem_data, dem_meta = read_raster(dem_path)
 
+    # Get a hydrologically-enforced DEM and pysheds grid object for 
+    #computing hydro layers:
+    hydro_dem, grid_obj = topography.hydro_force_dem(dem_path)
+
+    # Get a hydro slope layer from the hydro DEM:
+    slope_h_ratio, slope_h_meta = topography.dem_to_slope(
+        proj,
+        (dem_data, dem_meta),
+        catchment,
+        gradient=True,
+        hydro=True,
+        save=False
+        )
+    
+    # Get the relevant flow layers as a tuple:
+    flw_lyr_tuple = get_flow_layers(
+        hydro_dem,
+        dem_meta,
+        grid_obj,
+        D8_FLOW_DIRECTIONS,
+        proj,
+        catchment
+        )
+    # Unpack the tuple:
+    flow_dir_data, flow_dir_meta, flow_acc_data, flow_acc_meta = flw_lyr_tuple
+    # Get important objects for matching rasters:
+    transform = flow_acc_meta['transform']
+    crs = flow_acc_meta['crs']
+    shape = slope_h_ratio.shape
+    # Get the 0-5cm and 5-16cm clay values as a fraction, with values 
+    #masked where there is no data in the hydrolgically-enforced 
+    #slope raster:
+    clay0_5, clay5_15 = [
+        np.where(
+            np.isnan(slope_h_ratio),
+            np.nan,
+            get_clay_fraction(
+                proj,
+                catchment,
+                depth,
+                transform,
+                crs,
+                shape
+                )
+            ) for depth in ['000_005', '005_015']
+        ]
+
+    # From the data folder (in the same directory as fire_impacts 
+    #and test_data), get the HF lookup csv file which contains the 
+    #thresholds of 12-minute rainfall intensity at which debris flow 
+    #would occur, for a large range of combinations of Aridity Index, 
+    #dNBR, years since fire, and slope values:
     hf_lookup = load_package_data('HFlookup_b30pt27.csv')
+    # Round the critical mean values to one decimal place:
     hf_lookup['I12_crit_mean'] = hf_lookup['I12_crit_mean'].round(1)
+    
+    debris_lookup = load_package_data('debris-constituents.csv')
 
+
+    # Make a path for DebrisFlow outputs and create the directory if it 
+    #doesn't already exist:
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
     os.makedirs(out_path, exist_ok=True)
 
+    # Go get  the soil, slope, and aridity data required, assuming it's 
+    #already been saved:
     condition_data = pd.read_csv(
         proj.catchment_path(
             catchment,
             'Soil_Slope_Aridity_dNBR_headwaters.csv'
             )
-        ) #This seems to have the correct ID column
-    
+        ) 
+    # Replace any missing values with zero:
     condition_data = condition_data.fillna(0.0) # TODO Check - is this correct? Example is getting nulls in dNBR columns
-    topo_data = pd.read_csv(proj.catchment_path(catchment,'Topography','Headwaters.csv'))
-    fire_impact_data = pd.merge(condition_data, topo_data, on=id_field,how='outer')
+    
+    # Get the headwaters table, assuming it's already been generated: 
+    topo_data = pd.read_csv(
+        proj.catchment_path(catchment,'Topography','Headwaters.csv')
+        )
+    # Join condition and topographic data together:
+    fire_impact_data = pd.merge(
+        condition_data, topo_data, on=id_field,how='outer'
+        )
 
-    return debris_flow_load(dem_data,slope_ratio,transform,acc_data,flowdir,
-                            clay0_5,clay5_15,
-                            out_path,
-                            fire_impact_data,
-                            hf_lookup,
-                            load_package_data('debris-constituents.csv'),
-                            raster_meta,id_field)
+    return debris_flow_load(
+        dem_data,
+        slope_h_ratio,
+        transform,
+        flow_acc_data,
+        flow_dir_data,
+        clay0_5,clay5_15,
+        out_path,
+        fire_impact_data,
+        hf_lookup,
+        debris_lookup,
+        dem_meta,
+        id_field
+        )
 
 ###############################################################################
 def debris_flow_load(

@@ -5,11 +5,7 @@ __pycache__/
 
 # Dummy testing versions of example notebooks
 jupyter
-PrepareData.ipynb
-Severity.ipynb
-Simulation.ipynb
-TimeSeries.ipynb
-Visualisation.ipynb
+*.ipynb
 
 # Unnecessary sidecar files
 test_data/*.aux.xml

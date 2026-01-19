@@ -22,10 +22,11 @@ D8_FLOW_DIRECTIONS = (
     16, #west
     32 #northwest
     )
+FLOW_ROUTING_TYPE = 'd8'
 CRS_METRE_UNITS={'m','meter','meters','metre','metres'}
 
 
-# ----- Dtype standards: -----------------------------------------------
+#------ Dtype standards: -----------------------------------------------
 
 # Convert numpy one-character dtype.kind attributes into more general 
 #descriptors that will map in default_dtypes_raster:
@@ -34,3 +35,22 @@ numpy_kind_to_desc = {
     'u': 'int',
     'f': 'float'
     }
+NODATA_VAL_INT = -9999
+
+#------ Standardised file names: ---------------------------------------
+DEM_FN = 'DEM'
+FLOW_ACCUMULATION_FN = 'Flow_accumulation'
+FLOW_DIRECTION_FN = 'Flow_direction'
+HEADWATERS_FN = 'Headwaters'
+SLOPE_FN = 'Slope'
+SLOPE_HYDRO_FN = 'Slope_hydro_enforced'
+
+#------- Directory folder names: ---------------------------------------
+PER_CATCHMENT_FOLDERS = [
+    'Topography',
+    'FireSeverity',
+    'Soils',
+    'Erodibility',
+    'Delivery',
+    'Subcatchments'
+]
