@@ -57,6 +57,11 @@ def get_flow_layers(
         )
     try:
         flow_dir_array, flow_dir_meta = read_raster(try_flowdir_path)
+        logger.info(
+            'Existing flow direction raster found at '
+            f'{try_flowdir_path}. Reading this in instead of computing '
+            'new raster.'
+            )
         flow_dir_data = topography.rio_to_pysheds(
             flow_dir_array,
             flow_dir_meta,
@@ -73,7 +78,7 @@ def get_flow_layers(
             project,
             catchment_name
             )
-    
+
     # See if the flow accumulation reaster is already saved. If so, use 
     #that:
     try_flowacc_path = project.catchment_path(
@@ -81,6 +86,11 @@ def get_flow_layers(
         )
     try:
         flow_acc_array, flow_acc_meta = read_raster(try_flowacc_path)
+        logger.info(
+            'Existing flow accumulation raster found at '
+            f'{try_flowacc_path}. Reading this in instead of computing '
+            'new raster.'
+            )
         flow_acc_data = topography.rio_to_pysheds(
             flow_acc_array,
             flow_acc_meta,
