@@ -267,6 +267,41 @@ def hydro_force_dem(dem_path:str):
     return inflated_dem, grid
 
 ###############################################################################
+def rio_to_pysheds(
+    data,
+    meta,
+    filename,
+    dirmap:tuple=D8_FLOW_DIRECTIONS,
+    routing:str=FLOW_ROUTING_TYPE
+    ) -> PyshedsRaster:
+    """
+    Convert rasterio data and meta objects to a Pysheds raster
+
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Create and populate the pyshed Grid
+    grid = Grid.from_raster(filename)
+    interim = grid.read_raster(filename)
+
+    # Get the viewfinder from the grid, and update its metadata as 
+    #required:
+    vf = interim.viewfinder.copy()
+    vf.nodata = meta['nodata']
+
+    # Create the PyshedRaster object:
+    out_Raster = PyshedsRaster(
+        input_array=data,
+        viewfinder=vf,
+        metadata={
+            'dirmap': dirmap,
+            'routing': routing
+            }
+        )
+    
+    return out_Raster
+
+###############################################################################
 def compute_flow_dir(
     hydro_dem:ArrayLike,
     hydro_meta:dict,

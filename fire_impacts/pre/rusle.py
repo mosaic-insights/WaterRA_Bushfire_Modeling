@@ -30,7 +30,9 @@ def compute_adjusted_k_c(proj: FireImpactsProject, catchment: str, c_factor_fn: 
         catchment, 'Erodibility', 'K_factor.tif'))
 
     dem_fn = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
-    dem, dem_transform, dem_crs = read_raster(dem_fn)
+    dem, dem_meta = read_raster(dem_fn)
+    dem_transform = dem_meta['transform']
+    dem_crs = dem_meta['crs']
     dNBR = read_aligned(proj.catchment_path(
         catchment, 'FireSeverity', 'dNBR.tif'), dem_transform, dem_crs, dem.shape)
     Cbase = read_aligned(proj.catchment_path(

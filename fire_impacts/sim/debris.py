@@ -8,12 +8,7 @@ import numpy as np
 import rasterio
 from rasterio.warp import Resampling
 from rasterio.transform import from_origin, Affine, rowcol
-from ..const import (
-    M2_TO_HA,
-    MILLIGRAMS_TO_KILOGRAMS,
-    PERCENT_TO_FRACTION,
-    D8_FLOW_DIRECTIONS
-    )
+from ..const import *
 from fire_impacts.pre import topography
 from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.pre.util import read_aligned, read_raster
@@ -27,9 +22,9 @@ logger = logging.getLogger(__name__)
 ###############################################################################
 def get_flow_layers(
     hydro_dem,
-    dem_meta,
-    grid,
-    dirmap,
+    dem_meta:dict,
+    grid:Grid,
+    dirmap:tuple,
     project:FireImpactsProject,
     catchment_name:str
     ):
@@ -58,10 +53,16 @@ def get_flow_layers(
     # See if the flow direction raster is already saved. If so, use 
     #that: 
     try_flowdir_path = project.catchment_path(
-        'Topography', 'Flow_direction.tif'
+        catchment_name, 'Topography', f'{FLOW_DIRECTION_FN}.tif'
         )
     try:
-        flow_dir_data, flow_dir_meta = read_raster(try_flowdir_path)
+        flow_dir_array, flow_dir_meta = read_raster(try_flowdir_path)
+        flow_dir_data = topography.rio_to_pysheds(
+            flow_dir_array,
+            flow_dir_meta,
+            try_flowdir_path
+            )
+        
     # If we don't already have a flow accumulation raster, compute one:
     except FileNotFoundError:
         flow_dir_data, flow_dir_meta, grid = topography.compute_flow_dir(
@@ -76,13 +77,19 @@ def get_flow_layers(
     # See if the flow accumulation reaster is already saved. If so, use 
     #that:
     try_flowacc_path = project.catchment_path(
-        'Topography', 'Flow_accumulation.tif'
+        catchment_name, 'Topography', f'{FLOW_ACCUMULATION_FN}.tif'
         )
     try:
-        flow_acc_data, flow_acc_meta = read_raster(try_flowacc_path)
+        flow_acc_array, flow_acc_meta = read_raster(try_flowacc_path)
+        flow_acc_data = topography.rio_to_pysheds(
+            flow_acc_array,
+            flow_acc_meta,
+            try_flowacc_path
+            )
+
     # Otherwise, make a new one:
     except FileNotFoundError:
-        flow_dir_data, flow_dir_meta, _ = topography.compute_flow_accum(
+        flow_acc_data, flow_acc_meta, _ = topography.compute_flow_accum(
             flow_dir_data,
             flow_dir_meta,
             grid,
@@ -219,7 +226,7 @@ def prep_debris_flow_simulation(
     condition_data = pd.read_csv(
         proj.catchment_path(
             catchment,
-            'Soil_Slope_Aridity_dNBR.csv'
+            'Soil_Slope_Aridity_dNBR_headwaters.csv'
             )
         ) 
     # Replace any missing values with zero:

@@ -9,7 +9,6 @@ import shutil
 import rasterio as rio
 import numpy as np
 import geopandas as gpd
-import rasterio as rio
 import pandas as pd
 import json
 import logging
