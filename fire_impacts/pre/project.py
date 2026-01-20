@@ -1164,11 +1164,10 @@ class FireImpactsProject(object):
                 f'the required data in a csv here:\n{path}'
             )
         non_geo_data = pd.read_csv(path)
-
         # Prepare the data for plotting:
         x1_col = 'I12_crit_mean_Year_1'
         x2_col = 'I12_crit_mean_Year_2'
-        y_col = 'dNBR_mean_fmtd'
+        y_col = 'dNBR_mean'
         data_for_scatter = non_geo_data[[x1_col, x2_col, y_col]].dropna()
 
         # Get median values for axes lines:
@@ -1201,6 +1200,8 @@ class FireImpactsProject(object):
             color=col_year_2,
             label='Year 2'
         )
+        sax.set_ylim(0, 1000)
+
         # Vertical lines for critical rainfall threshold medians for
         #each year:
         x1_col_med = sax.axvline(
@@ -1408,8 +1409,9 @@ def summary_stats(
     # Convert dNBR values to a set of standardised numbers [0, 1000]:
     for stat in STATS:
         this_col_name = 'dNBR_' + stat
-        new_col_name = this_col_name + '_fmtd'
-        extracted_data[new_col_name] = format_dNBR(extracted_data[this_col_name])
+        extracted_data[this_col_name] = format_dNBR(
+            extracted_data[this_col_name]
+            )
 
 
     csv_path=project.catchment_path(

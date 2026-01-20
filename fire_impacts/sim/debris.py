@@ -577,18 +577,21 @@ def calc_I12_crit_columns(
     """
     # Step 4: Read HFlookup_i12 data and merge it with fire_impact_data 
     #and debris flow data:
+    # adjust (round up mean aridity to nesrest 0.25 to match it with AI 
+    #in HFlookup_I12 data)
     fire_impact_data[ARID_MEAN_ADJ] = np.ceil(
         fire_impact_data[ARID_MEAN].round(2) / 0.25
-        ) * 0.25 # adjust (round up mean aridity to nesrest 0.25 to match it with AI in HFlookup_I12 data)
-    fire_impact_data[DNBR_MEAN_ADJ] = (((
-                fire_impact_data[DNBR_MEAN] * 1000 + 50
-                ) // 100
-            ) * 100
-        ).astype("int64")  # adjust (round up mean dNBR to nearest 100 to match it with dNBR in HFlookup_I12 data)
+        ) * 0.25 
+    # For dNBR we will ROUND it to the NEAREST 100:
+    fire_impact_data[DNBR_MEAN_ADJ] = (
+        fire_impact_data[DNBR_MEAN]
+        ).round(-2).astype("int64") 
+    # The slope values in hf_lookup are in tenths of 100 degrees i.e. 
+    #a slope value of 26 degrees will be 0.3 in the lookup, and 90 
+    # degrees will be 0.9
     fire_impact_data[SLOPE_DEG_MEAN_ADJ] = (
         fire_impact_data[SLOPE_DEG_MEAN] / 100
-        ).round(1)  # # adjust (get ratio and round up slope to match it with slope in HFlookup_I12 data)
-
+        ).round(1) 
     
     join_keys_in_lookup = [
         HF_ARID_IDX_THRESH, HF_DNBR_THRESH, HF_GRADIENT_THRESH
@@ -605,7 +608,10 @@ def calc_I12_crit_columns(
         left_on=join_keys_in_data,
         right_on=join_keys_in_lookup,
         how="left"
-    ).rename(columns={HF_YEARS_THRESH: "TSF_Year_1", HF_I12_CRIT: "I12_crit_mean_Year_1"})
+    ).rename(columns={
+        HF_YEARS_THRESH: "TSF_Year_1",
+        HF_I12_CRIT: "I12_crit_mean_Year_1"
+        })
 
     HFlookup_year_2 = hf_lookup[hf_lookup["years"] >= 1]
     merged_year_2 = pd.merge(
@@ -614,7 +620,10 @@ def calc_I12_crit_columns(
         left_on=join_keys_in_data,
         right_on=join_keys_in_lookup,
         how="left"
-    ).rename(columns={HF_YEARS_THRESH: "TSF_Year_2", HF_I12_CRIT: "I12_crit_mean_Year_2"})
+    ).rename(columns={
+        HF_YEARS_THRESH: "TSF_Year_2",
+        HF_I12_CRIT: "I12_crit_mean_Year_2"
+        })
 
     # Combine the results
     fire_impact_data = pd.merge(
