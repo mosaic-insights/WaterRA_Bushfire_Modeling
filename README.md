@@ -61,7 +61,7 @@ The following table lists the key data requirements for the library. The user mu
 |------|--------|
 | Catchment / study area boundary | User provided |
 | DEM | DEM-H (local file) |
-| Soils | Soil and Landscape Grid of Australia (CSIRO web service) |
+| Soils | Soil and Landscape Grid of Australia (TERN web service, API key required) |
 | dNBR | Sentinel 2 (DEA Web service) |
 
 ### High level interface
