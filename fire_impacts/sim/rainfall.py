@@ -129,8 +129,7 @@ def aggregate_rainfall_data(source, rain_data_start=None, rain_data_end=None, ti
     '''
     r_flat = flatten_pyraingen_rainfall(source, rain_data_start, rain_data_end)
     r_agg = r_flat.resample(
-        time_res
-        #{'time': time_res}
+        {'time': time_res}
         )
 
     units = r_flat['rainfall'].attrs['units']
