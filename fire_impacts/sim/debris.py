@@ -30,7 +30,7 @@ def get_flow_layers(
     catchment_name:str
     ):
     """
-    Grab the flow direction and flow accumulation rasters if they're 
+    Grab the flow direction and flow accumulation rasters if they're
     already saved, otherwise compute new ones of each
 
     Parameters:
@@ -38,9 +38,9 @@ def get_flow_layers(
     - dem_meta: Metadata dictionary for the hydro_dem
     - grid: pysheds Grid object which can be used for hydro DEM ops
     - dirmap: tuple of values for D8 flow direction cell assignment
-    - project: FireImpactsProject object for managing directory 
+    - project: FireImpactsProject object for managing directory
     structure
-    - catchment_name: string name of the catchment the flow layers are 
+    - catchment_name: string name of the catchment the flow layers are
     required for
 
     Returns:
@@ -51,8 +51,8 @@ def get_flow_layers(
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    # See if the flow direction raster is already saved. If so, use 
-    #that: 
+    # See if the flow direction raster is already saved. If so, use
+    #that:
     try_flowdir_path = project.catchment_path(
         catchment_name, 'Topography', f'{FLOW_DIRECTION_FN}.tif'
         )
@@ -68,7 +68,7 @@ def get_flow_layers(
             flow_dir_meta,
             try_flowdir_path
             )
-        
+
     # If we don't already have a flow accumulation raster, compute one:
     except FileNotFoundError:
         flow_dir_data, flow_dir_meta, grid = topography.compute_flow_dir(
@@ -80,7 +80,7 @@ def get_flow_layers(
             catchment_name
             )
 
-    # See if the flow accumulation reaster is already saved. If so, use 
+    # See if the flow accumulation reaster is already saved. If so, use
     #that:
     try_flowacc_path = project.catchment_path(
         catchment_name, 'Topography', f'{FLOW_ACCUMULATION_FN}.tif'
@@ -121,33 +121,33 @@ def get_clay_fraction(
     shape
     ):
     """
-    Read clay percentage rasters for a certain depth range and convert 
+    Read clay percentage rasters for a certain depth range and convert
     them to a fraction
 
     Parameters:
     - proj: FireImpactsProject object to handle directories
     - catchment: string name of the catchment being worked with
-    - depth: depth range the desired soil datset applies for, expressed 
-    as a string in the form 'xxx_yyy' where xxx is the start 
+    - depth: depth range the desired soil datset applies for, expressed
+    as a string in the form 'xxx_yyy' where xxx is the start
     (top/shallow) of the range and yyy is the end (bottom/deep). In cm.
-    - transform: affine transformation for the raster as expected by 
+    - transform: affine transformation for the raster as expected by
     rasterio
     crs: crs object for the raster as expected by rasterio
-    - shape: shape of the data expressed as width * height in terms of 
+    - shape: shape of the data expressed as width * height in terms of
     number of cells.
     --------------------------------------------------------------------
     Notes:
-    - unique_file_matching assumes certain naming conventions for clay 
-    files and will throw an error if there's duplicates that match the 
+    - unique_file_matching assumes certain naming conventions for clay
+    files and will throw an error if there's duplicates that match the
     criteria
     --------------------------------------------------------------------
     """
     # Get the location of clay soil datasets within the project:
     clay_directory = proj.catchment_path(catchment, 'Soils','CLY')
-    # Get the files with the relevant soil measure, depth and 'EV' in 
+    # Get the files with the relevant soil measure, depth and 'EV' in
     #the file name:
     file_name = unique_file_matching(clay_directory,'CLY',depth,'EV')
-    # Append to the directory 
+    # Append to the directory
     file_path = os.path.join(clay_directory, file_name)
     # Get a version of the raster in the same CRS and convert it from
     #percentage to a fraction:
@@ -159,7 +159,7 @@ def prep_debris_flow_simulation(
     catchment:str
     ):
     """
-    
+
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
@@ -168,7 +168,7 @@ def prep_debris_flow_simulation(
     dem_path = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
     dem_data, dem_meta = read_raster(dem_path)
 
-    # Get a hydrologically-enforced DEM and pysheds grid object for 
+    # Get a hydrologically-enforced DEM and pysheds grid object for
     #computing hydro layers:
     hydro_dem, grid_obj = topography.hydro_force_dem(dem_path)
 
@@ -181,7 +181,7 @@ def prep_debris_flow_simulation(
         hydro=True,
         save=False
         )
-    
+
     # Get the relevant flow layers as a tuple:
     flw_lyr_tuple = get_flow_layers(
         hydro_dem,
@@ -197,8 +197,8 @@ def prep_debris_flow_simulation(
     transform = flow_acc_meta['transform']
     crs = flow_acc_meta['crs']
     shape = slope_h_ratio.shape
-    # Get the 0-5cm and 5-16cm clay values as a fraction, with values 
-    #masked where there is no data in the hydrolgically-enforced 
+    # Get the 0-5cm and 5-16cm clay values as a fraction, with values
+    #masked where there is no data in the hydrolgically-enforced
     #slope raster:
     clay0_5, clay5_15 = [
         np.where(
@@ -215,35 +215,35 @@ def prep_debris_flow_simulation(
             ) for depth in ['000_005', '005_015']
         ]
 
-    # From the data folder (in the same directory as fire_impacts 
-    #and test_data), get the HF lookup csv file which contains the 
-    #thresholds of 12-minute rainfall intensity at which debris flow 
-    #would occur, for a large range of combinations of Aridity Index, 
+    # From the data folder (in the same directory as fire_impacts
+    #and test_data), get the HF lookup csv file which contains the
+    #thresholds of 12-minute rainfall intensity at which debris flow
+    #would occur, for a large range of combinations of Aridity Index,
     #dNBR, years since fire, and slope values:
     hf_lookup = load_package_data('HFlookup_b30pt27.csv')
     # Round the critical mean values to one decimal place:
     hf_lookup['I12_crit_mean'] = hf_lookup['I12_crit_mean'].round(1)
-    
+
     debris_lookup = load_package_data('debris-constituents.csv')
 
 
-    # Make a path for DebrisFlow outputs and create the directory if it 
+    # Make a path for DebrisFlow outputs and create the directory if it
     #doesn't already exist:
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
     os.makedirs(out_path, exist_ok=True)
 
-    # Go get  the soil, slope, and aridity data required, assuming it's 
+    # Go get  the soil, slope, and aridity data required, assuming it's
     #already been saved:
     condition_data = pd.read_csv(
         proj.catchment_path(
             catchment,
             'Soil_Slope_Aridity_dNBR_headwaters.csv'
             )
-        ) 
+        )
     # Replace any missing values with zero:
     condition_data = condition_data.fillna(0.0) # TODO Check - is this correct? Example is getting nulls in dNBR columns
-    
-    # Get the headwaters table, assuming it's already been generated: 
+
+    # Get the headwaters table, assuming it's already been generated:
     topo_data = pd.read_csv(
         proj.catchment_path(catchment,'Topography','Headwaters.csv')
         )
@@ -280,14 +280,14 @@ def net_erosion(
     pixel_area:float
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    
+
 
     Parameters:
-    - 
+    -
 
     Returns:
     - Arrays of total mass eroded for each pixel:
-        - Total 
+        - Total
         - Clay
         - Sediment
     --------------------------------------------------------------------
@@ -314,23 +314,23 @@ def accumulate_erosion(
     save:bool=True
     ) -> ArrayLike:
     """
-    Create an erosion accumulation raster in the same way a flow 
-    accumulation raster is created, and set missing values that are 
+    Create an erosion accumulation raster in the same way a flow
+    accumulation raster is created, and set missing values that are
     still in the catchment to 0:
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
     fn = 'tmp_erosion.tif'
     try:
-        # Temporarily save a copy of the erosion raster so we can use 
+        # Temporarily save a copy of the erosion raster so we can use
         #the pysheds Grid.from_raster and read_raster:
         with rasterio.open(fn, 'w', **rio_meta) as dest:
             dest.write(erosion_values.astype('float32'), 1)
-        # Create the grid objcet, then the Pysheds Raster version of 
+        # Create the grid objcet, then the Pysheds Raster version of
         #the input erosion raster:
         grid = Grid.from_raster(fn)
         e_raster = grid.read_raster(fn)
-        #Create and return a flow accumulation raster weighted by 
+        #Create and return a flow accumulation raster weighted by
         #erosion values:
         accum_raster = grid.accumulation(
             fdir=flow_dir_raster,
@@ -362,7 +362,7 @@ def create_cum_erosion_layers(
     catchment_mask:np.ndarray
     ) -> tuple[ArrayLike, ArrayLike, ArrayLike]:
     """
-    Take basic per pixel erosion layers and convert to cumulative 
+    Take basic per pixel erosion layers and convert to cumulative
     erosion for the catchment
     --------------------------------------------------------------------
     --------------------------------------------------------------------
@@ -373,7 +373,7 @@ def create_cum_erosion_layers(
     Sediment_mass_cum_path = os.path.join(out_path, f"{ERO_CUM_M_SED_FN}.tif")
 
 
-    # Build cumulative erosion rasters for total, clay, and sediment 
+    # Build cumulative erosion rasters for total, clay, and sediment
     #erosion:
     e_all_accum = accumulate_erosion(
         erosion_mass_all,
@@ -396,7 +396,7 @@ def create_cum_erosion_layers(
         catchment_mask,
         Sediment_mass_cum_path
         )
-    
+
     return e_all_accum, e_clay_accum, sediment_mass_accum
 
 ###############################################################################
@@ -408,22 +408,22 @@ def create_erosion_sense_check(
     erosion_type:str='all',
     ) -> np.ndarray:
     """
-    Save a geotiff of total accumulated erosion per total accumulated 
+    Save a geotiff of total accumulated erosion per total accumulated
     flow area in hectares
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
     # Mass per heactare as a check on accurqcy
-    flow_acc_area_ha= flow_acc_area * M2_TO_HA 
+    flow_acc_area_ha= flow_acc_area * M2_TO_HA
     # get the array data from raster data
-    acc_ero_data=np.array(accum_erosion, dtype=np.float32) 
+    acc_ero_data=np.array(accum_erosion, dtype=np.float32)
     # Convert any negative values to 0:
     acc_ero_data=np.where(acc_ero_data < 0, 0, acc_ero_data)
-    # Create a sense-checking layer of accumulated erosion vs. 
+    # Create a sense-checking layer of accumulated erosion vs.
     #accumulated flow area in hectares:
     with np.errstate(divide='ignore', invalid='ignore'):
         E_all_mass_ha = np.divide(acc_ero_data, flow_acc_area_ha)
-    
+
     E_all_mass_ha_path = os.path.join(
         save_loc, f"Erosion_{erosion_type}_mass_per_ha.tif"
         )
@@ -458,7 +458,7 @@ def compute_net_erosion(
     # Get mass for channelised flow:
     er_mass_ch_total, er_mass_ch_clay, er_mass_ch_sediment = net_erosion(
         threshold_met = (
-            (flow_acc_area > HILLSLOPE_AREA) & 
+            (flow_acc_area > HILLSLOPE_AREA) &
             (flow_acc_area <= CHANNELISED_FLOW_THRESHOLD)
             ),
         **CHANNEL_PARAMETERS,
@@ -483,7 +483,7 @@ def get_debris_volume(
     debris_volume_array:ArrayLike
     ):
     """
-    Get the value of an array based on x- and y-coordinates and the 
+    Get the value of an array based on x- and y-coordinates and the
     appropriate affine transform
     --------------------------------------------------------------------
     --------------------------------------------------------------------
@@ -506,7 +506,7 @@ def debris_column_values(
     E_all_mass_ha: np.ndarray
     ) -> None:
     """
-    Get values for each of the four main debris load accumulations at 
+    Get values for each of the four main debris load accumulations at
     each headwater end point
     --------------------------------------------------------------------
     --------------------------------------------------------------------
@@ -518,8 +518,8 @@ def debris_column_values(
         (E_all_mass_ha, TOT_EM_ACC_KG_HA),
         (e_sed_accum, SED_M_ACC_KG)
         ]
-    
-    # For each of the required erosion layers, go through each 
+
+    # For each of the required erosion layers, go through each
     #headwater endpoint and get that layer's value at that point:
     for array, field_name in iter_this:
         fire_impact_data[field_name] = fire_impact_data.apply(
@@ -539,13 +539,13 @@ def calc_debris_constituent_cols(
     debris_flow_constituents:pd.DataFrame
     ) -> None:
     """
-    Estimates mass of elemental constituents of debris load via the 
+    Estimates mass of elemental constituents of debris load via the
     debris-constituents.csv lookup table, and populates new columns
     in-place with those estimates.
     --------------------------------------------------------------------
     Notes:
-    - Proportion of each element is estimated by the average milligrams 
-    per kilogram in the lookup table. This is then converted to 
+    - Proportion of each element is estimated by the average milligrams
+    per kilogram in the lookup table. This is then converted to
     kilograms per kilogram, and multiplied by the total kg of sediment.
     --------------------------------------------------------------------
     """
@@ -557,9 +557,9 @@ def calc_debris_constituent_cols(
         # Define new column name
         column_name = f"{particulate} (Kg)"
         fire_impact_data[column_name] = (
-            fire_impact_data[SED_M_ACC_KG] 
+            fire_impact_data[SED_M_ACC_KG]
             * (Average_Amount*MILLIGRAMS_TO_KILOGRAMS))
-    
+
     return None
 
 ###############################################################################
@@ -569,37 +569,37 @@ def calc_I12_crit_columns(
     hw_id_field:str
     ) -> pd.DataFrame:
     """
-    Use the hf_lookup table to calculate 12-minute rainfall intensity 
-    thresholds for each headwater, for the first and second year 
+    Use the hf_lookup table to calculate 12-minute rainfall intensity
+    thresholds for each headwater, for the first and second year
     post-fire
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    # Step 4: Read HFlookup_i12 data and merge it with fire_impact_data 
+    # Step 4: Read HFlookup_i12 data and merge it with fire_impact_data
     #and debris flow data:
-    # adjust (round up mean aridity to nesrest 0.25 to match it with AI 
+    # adjust (round up mean aridity to nesrest 0.25 to match it with AI
     #in HFlookup_I12 data)
     fire_impact_data[ARID_MEAN_ADJ] = np.ceil(
         fire_impact_data[ARID_MEAN].round(2) / 0.25
-        ) * 0.25 
+        ) * 0.25
     # For dNBR we will ROUND it to the NEAREST 100:
     fire_impact_data[DNBR_MEAN_ADJ] = (
         fire_impact_data[DNBR_MEAN]
-        ).round(-2).astype("int64") 
-    # The slope values in hf_lookup are in tenths of 100 degrees i.e. 
-    #a slope value of 26 degrees will be 0.3 in the lookup, and 90 
+        ).round(-2).astype("int64")
+    # The slope values in hf_lookup are in tenths of 100 degrees i.e.
+    #a slope value of 26 degrees will be 0.3 in the lookup, and 90
     # degrees will be 0.9
     fire_impact_data[SLOPE_DEG_MEAN_ADJ] = (
         fire_impact_data[SLOPE_DEG_MEAN] / 100
-        ).round(1) 
-    
+        ).round(1)
+
     join_keys_in_lookup = [
         HF_ARID_IDX_THRESH, HF_DNBR_THRESH, HF_GRADIENT_THRESH
         ]
     join_keys_in_data = [
         ARID_MEAN_ADJ, DNBR_MEAN_ADJ, SLOPE_DEG_MEAN_ADJ
         ]
-    # Split HFlookup_I12 into two subsets based on 'years' and merge 
+    # Split HFlookup_I12 into two subsets based on 'years' and merge
     #fire_impact_data with each subset:
     HFlookup_year_1 = hf_lookup[hf_lookup["years"] < 1]
     merged_year_1 = pd.merge(
@@ -658,9 +658,9 @@ def debris_flow_load(
 
     Parameters:
     - slope_ratio (array): Slope ratio
-    - clay0_5_path (array): Path to the 0-5cm clay fraction data 
+    - clay0_5_path (array): Path to the 0-5cm clay fraction data
     (raster).
-    - clay5_15_path (array): Path to the 5-15cm clay fraction data 
+    - clay5_15_path (array): Path to the 5-15cm clay fraction data
     (raster).
     - out_path (str): Path to the folder where outputs will be saved.
     - fire_impact_data_path (str): Path to the fire impact CSV file.
@@ -672,7 +672,7 @@ def debris_flow_load(
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    
+
     # Step 1: calculate debris flow
 
     # get pixel area
@@ -681,7 +681,7 @@ def debris_flow_load(
     pixel_area = xres * yres
     # Multiply the flow accumulation by the resolution to get the area:
     flow_acc_area = flow_accumulation * pixel_area  # This is area in meter square
-    # Create a catchment mask based on non-NaN values in the array 
+    # Create a catchment mask based on non-NaN values in the array
     #(assumes non-NaN is within catchment):
     catchment_mask = ~np.isnan(dem_data)
     # Make sure the dtype for output rasters is rasterio float 32:
@@ -713,7 +713,7 @@ def debris_flow_load(
         e_all_accum, flow_acc_area, inter_meta, out_path
         )
 
-    # Populate columns in the fire_impacts_data table with the relevant 
+    # Populate columns in the fire_impacts_data table with the relevant
     #erosion values for each headwater:
     debris_column_values(
         fire_impact_data,
@@ -724,11 +724,11 @@ def debris_flow_load(
         E_all_mass_ha=E_all_mass_ha
         )
 
-    # Populate columns with estimates of the mass of each element 
+    # Populate columns with estimates of the mass of each element
     #present in the debris:
     calc_debris_constituent_cols(fire_impact_data, debris_flow_constituents)
-    
-    # For each headwater, calculate the 12-minute rainfall intensity 
+
+    # For each headwater, calculate the 12-minute rainfall intensity
     #threshold at which a debris flow would occur:
     updated_data = calc_I12_crit_columns(fire_impact_data, hf_lookup, id_field)
 
@@ -743,28 +743,28 @@ def debris_flow(
     save:bool=True
     ):
     """
-    Run debris flow simulation for a given catchment or all catchments 
+    Run debris flow simulation for a given catchment or all catchments
     in the project.
 
     Parameters:
     - proj (FireImpactsProject): The FireImpactsProject instance.
-    - rainfall (pd.Series): A pandas Series containing rainfall 
+    - rainfall (pd.Series): A pandas Series containing rainfall
     intensities (mm/hr) with a DateTime index.
-    - catchment (str, optional): The catchment to run the simulation 
+    - catchment (str, optional): The catchment to run the simulation
     for. If None, run for all catchments.
-    - save (bool, optional): Whether to save the results. Defaults to 
+    - save (bool, optional): Whether to save the results. Defaults to
     True.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    # Iterate through simulations and calculate the number of events, 
+    # Iterate through simulations and calculate the number of events,
     #rainfall values, and event dates for both Year 1 and Year 2
-    
+
     if catchment is None:
         return proj.for_each_catchment(lambda c: debris_flow(proj,rainfall,c))
-    
+
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
-    
+
     if 'units' not in rainfall.attrs:
         logger.warning("Rainfall data has no units attribute, assuming units are correct (mm/hr)")
     elif rainfall.attrs['units'] != 'mm/h':
@@ -858,15 +858,15 @@ def run_debris_flow_sim(
     recorders=None
     ):
     """
-    Run the debris flow simulation for a given project and set of 
+    Run the debris flow simulation for a given project and set of
     rainfall data, recording results as specified.
 
     Parameters:
     - project (fire_impacts.FireImpactsProject): Current project
     - rainfall (Series-like): 12 minute rainfall intensity data (mm/hr)
-    - catchment (str): Name of the catchment to process. If None, 
+    - catchment (str): Name of the catchment to process. If None,
     process all catchments.
-    - recorders (dict): OPTIONAL: Dictionary of recorder functions to 
+    - recorders (dict): OPTIONAL: Dictionary of recorder functions to
     use during the simulation.
 
     --------------------------------------------------------------------
@@ -879,7 +879,7 @@ def run_debris_flow_sim(
         return project.for_each_catchment(
             lambda c: run_debris_flow_sim(project,rainfall,c,recorders)
             )
-    # If no recorders were passed, use an empty dictionary so the rest 
+    # If no recorders were passed, use an empty dictionary so the rest
     #of the code works consistently:
     if recorders is None:
         recorders = dict()
@@ -910,17 +910,17 @@ def generate_debris_flow(
     """
 
     Parameters:
-    - rainfall: Series of rainfall intensity (mm/hr) values at 
+    - rainfall: Series of rainfall intensity (mm/hr) values at
     12-minute intervales
     - elevation_arr: Hydrologically-enforced DEM data
     - gradient_arr: Array of gradient (rise/run) values
     - flow_direction_arr: Array of flow direction integer values (d8)
     - flow_accumulation_arr: Array of flow accumulation values
-    - clay_frac_arr_0_5: Array of values giving the fraction of clay in 
+    - clay_frac_arr_0_5: Array of values giving the fraction of clay in
     the top 5cm of soil
     - clay_frac_arr_5_15: Array of clay fraction for 5-15cm soil depths
-    - condition_by_hw: Dataframe with a row for each headwater 
-    identifiable by a hw_ID field (must match id_field parameter), and 
+    - condition_by_hw: Dataframe with a row for each headwater
+    identifiable by a hw_ID field (must match id_field parameter), and
     the following calculated values for each headwater:
         - X_EndP: The x-coordinate of the headwater end/outlet
         - Y_EndP: The y-coordinate of the headwater end/outlet
