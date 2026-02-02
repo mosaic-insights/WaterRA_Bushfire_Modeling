@@ -17,6 +17,8 @@ from fire_impacts.util import load_package_data, unique_file_matching
 from pysheds.grid import Grid
 import os
 import logging
+import geopandas as gpd
+
 logger = logging.getLogger(__name__)
 
 
@@ -734,6 +736,334 @@ def debris_flow_load(
 
     # Return the populated dataframe:
     return updated_data
+
+
+###############################################################################
+def allocate_headwaters_to_subcatchments(
+    proj: FireImpactsProject,
+    catchment: str,
+    area_fraction_threshold: float = 0.1
+    ) -> pd.DataFrame:
+    """
+    Allocate headwaters to subcatchments based on spatial overlay.
+
+    Each headwater is assigned to the subcatchment it is mostly contained within.
+    Small misalignments in boundaries are handled by setting a minimum area
+    fraction threshold.
+
+    Parameters:
+    -----------
+    proj : FireImpactsProject
+        The FireImpactsProject instance.
+    catchment : str
+        The catchment identifier.
+    area_fraction_threshold : float, optional
+        Minimum fraction of headwater area that must overlap with a subcatchment
+        for allocation. Default is 0.1 (10%).
+
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with columns: SiteID, hw_ID, Area_m2, area_intersect,
+        area_fraction. Each row represents a headwater-to-subcatchment allocation.
+
+    Notes:
+    ------
+    This function performs a spatial overlay of headwaters and subcatchments,
+    then selects the largest intersection for each headwater. It filters out
+    allocations below the specified area_fraction_threshold to handle minor
+    boundary misalignments.
+    """
+    headwaters = proj.get_headwaters(catchment)
+    subcatchments = proj.catchment_boundary(catchment)
+
+    # Perform spatial overlay
+    hw_intersection = gpd.overlay(headwaters, subcatchments)
+    hw_intersection['area_intersect'] = hw_intersection.geometry.area
+    hw_intersection['area_fraction'] = hw_intersection['area_intersect'] / hw_intersection['Area_m2']
+
+    # Keep only the largest intersection for each headwater (most contained within)
+    hw_allocations = (
+        hw_intersection
+        .sort_values('area_fraction', ascending=False)
+        .drop_duplicates(subset=['hw_ID'], keep='first')
+    )
+
+    # Filter by area fraction threshold
+    hw_allocations = hw_allocations[hw_allocations['area_fraction'] > area_fraction_threshold]
+
+    # Select and return relevant columns
+    result = hw_allocations[['SiteID', 'hw_ID', 'Area_m2', 'area_intersect', 'area_fraction']].copy()
+
+    logger.info(
+        f'Allocated {len(result)} headwaters to subcatchments in {catchment}. '
+        f'Filtered {len(hw_allocations) - len(result)} allocations below {area_fraction_threshold} threshold.'
+    )
+
+    return result
+
+
+###############################################################################
+def scale_debris_timeseries_by_allocation(
+    debris_timeseries: pd.DataFrame,
+    hw_allocations: pd.DataFrame
+    ) -> pd.DataFrame:
+    """
+    Scale debris flow timeseries by headwater allocation fractions.
+
+    Multiplies each headwater's sediment load timeseries by its area fraction
+    to account for partial allocation to subcatchments.
+
+    Parameters:
+    -----------
+    debris_timeseries : pd.DataFrame
+        DataFrame with headwater IDs as columns and datetime index.
+        Values are sediment loads (kg).
+    hw_allocations : pd.DataFrame
+        DataFrame from allocate_headwaters_to_subcatchments() with area fractions.
+
+    Returns:
+    --------
+    pd.DataFrame
+        Scaled timeseries with same shape as input, with values multiplied by
+        allocation fractions. Includes only headwaters present in hw_allocations.
+    """
+    # Extract fractions, limiting to 1.0 (some may be slightly > 1.0 due to rounding)
+    fractions = np.minimum(1.0, hw_allocations.set_index('hw_ID')['area_fraction'])
+
+    # Keep only headwaters that have allocations
+    scaled = debris_timeseries.copy()
+    scaled = scaled[[col for col in scaled.columns if col in fractions.index]]
+
+    # Multiply by fractions
+    scaled = scaled * fractions
+
+    logger.info(
+        f'Scaled debris timeseries for {len(fractions)} headwaters. '
+        f'Data shape: {scaled.shape}'
+    )
+
+    return scaled
+
+
+###############################################################################
+def aggregate_debris_to_subcatchments(
+    debris_timeseries: pd.DataFrame,
+    hw_allocations: pd.DataFrame,
+    time_resolution: str = '12min'
+    ) -> pd.DataFrame:
+    """
+    Aggregate debris flow results from headwaters to subcatchments.
+
+    Post-processes debris flow simulation results by:
+    1. Scaling headwater timeseries by allocation fractions
+    2. Mapping headwater IDs to subcatchment IDs (SiteID)
+    3. Summing across headwaters to get timeseries per subcatchment
+
+    Parameters:
+    -----------
+    debris_timeseries : pd.DataFrame
+        DataFrame with headwater IDs as columns and datetime index (12 minute resolution).
+        Values are sediment loads (kg).
+    hw_allocations : pd.DataFrame
+        DataFrame from allocate_headwaters_to_subcatchments() with area fractions.
+    time_resolution : str, optional
+        Original time resolution of the debris timeseries. Used for logging.
+        Default is '12min'.
+
+    Returns:
+    --------
+    pd.DataFrame
+        Aggregated timeseries with subcatchment SiteIDs as columns and datetime index.
+        Values are total sediment loads per subcatchment (kg).
+
+    Notes:
+    ------
+    The returned DataFrame maintains the original 12-minute resolution.
+    Use resample() to aggregate to hourly, daily, or other resolutions.
+
+    Example:
+    --------
+    >>> # Get 12-minute aggregated results
+    >>> df_by_sc = aggregate_debris_to_subcatchments(debris_ts, hw_alloc)
+    >>>
+    >>> # Resample to hourly
+    >>> df_hourly = df_by_sc.resample('H').sum()
+    >>>
+    >>> # Resample to daily
+    >>> df_daily = df_by_sc.resample('D').sum()
+    """
+    # Scale timeseries by allocation fractions
+    scaled = scale_debris_timeseries_by_allocation(debris_timeseries, hw_allocations)
+
+    # Create mapping from hw_ID to SiteID
+    sc_map = hw_allocations.set_index('hw_ID')['SiteID'].to_dict()
+
+    # Rename columns from hw_ID to SiteID
+    scaled = scaled.rename(columns=sc_map)
+
+    # Group by subcatchment and sum
+    aggregated = scaled.groupby(level=0, axis=1).sum()
+
+    logger.info(
+        f'Aggregated debris timeseries from {len(scaled.columns)} headwaters '
+        f'(at {time_resolution} resolution) to {len(aggregated.columns)} subcatchments.'
+    )
+
+    return aggregated
+
+
+###############################################################################
+def resample_debris_timeseries(
+    debris_timeseries: pd.DataFrame,
+    freq: str = 'H'
+    ) -> pd.DataFrame:
+    """
+    Resample debris timeseries to a coarser temporal resolution.
+
+    Parameters:
+    -----------
+    debris_timeseries : pd.DataFrame
+        DataFrame with datetime index and subcatchment columns.
+        Values are sediment loads (kg).
+    freq : str, optional
+        Resampling frequency. Options: 'H' (hourly), 'D' (daily), 'W' (weekly),
+        'MS' (month start), 'YS' (year start), etc. Default is 'H' (hourly).
+
+    Returns:
+    --------
+    pd.DataFrame
+        Resampled timeseries with aggregated (summed) values at the new resolution.
+
+    Example:
+    --------
+    >>> df_hourly = resample_debris_timeseries(df_12min, 'H')
+    >>> df_daily = resample_debris_timeseries(df_12min, 'D')
+    """
+    resampled = debris_timeseries.resample(freq).sum()
+
+    logger.info(
+        f'Resampled debris timeseries to {freq} resolution. '
+        f'Shape: {debris_timeseries.shape} -> {resampled.shape}'
+    )
+
+    return resampled
+
+
+###############################################################################
+def postprocess_debris_flow(
+    proj: FireImpactsProject,
+    catchment: str,
+    debris_timeseries: pd.DataFrame,
+    area_fraction_threshold: float = 0.1,
+    resample_freq: str = None,
+    save: bool = True
+    ) -> dict:
+    """
+    Complete post-processing workflow for debris flow simulation results.
+
+    Aggregates headwater-scaled debris flow results to the user's subcatchment map
+    for reporting. This involves:
+    1. Spatial overlay of headwater and subcatchment layers
+    2. Allocation of each headwater to its containing subcatchment
+    3. Scaling debris timeseries by area fractions
+    4. Aggregation to subcatchment timeseries
+    5. Optional resampling to coarser temporal resolution
+
+    Parameters:
+    -----------
+    proj : FireImpactsProject
+        The FireImpactsProject instance.
+    catchment : str
+        The catchment identifier.
+    debris_timeseries : pd.DataFrame
+        DataFrame with headwater IDs as columns, datetime index, and sediment loads (kg).
+        Expected to be at 12-minute resolution from debris_flow() function.
+    area_fraction_threshold : float, optional
+        Minimum fraction of headwater area for allocation. Default is 0.1.
+    resample_freq : str, optional
+        Resample to this frequency. None (default) keeps original 12-minute resolution.
+        Options: 'H' (hourly), 'D' (daily), etc.
+    save : bool, optional
+        Whether to save results to CSV files. Default is True.
+
+    Returns:
+    --------
+    dict
+        Dictionary with keys:
+        - 'aggregated': Aggregated timeseries by subcatchment at original resolution
+        - 'resampled': Resampled timeseries (only if resample_freq is specified)
+        - 'allocations': DataFrame showing hw-to-subcatchment allocations
+
+    Notes:
+    ------
+    Small misalignments in boundary layers are handled by:
+    - Performing spatial overlay to find all intersecting areas
+    - Computing area fractions for each intersection
+    - Keeping only the largest intersection per headwater
+    - Filtering out allocations below area_fraction_threshold
+
+    Example:
+    --------
+    >>> # Run debris flow simulation
+    >>> df_results = debris_flow(proj, rainfall_intensity_seq)
+    >>> debris_ts = df_results[1]  # Get timeseries component
+    >>>
+    >>> # Post-process and aggregate to subcatchments
+    >>> results = postprocess_debris_flow(
+    ...     proj, catchment_name, debris_ts,
+    ...     resample_freq='H', save=True
+    ... )
+    >>>
+    >>> # Access aggregated hourly results by subcatchment
+    >>> hourly_by_sc = results['resampled']
+    """
+    # Allocate headwaters to subcatchments
+    hw_allocations = allocate_headwaters_to_subcatchments(
+        proj, catchment, area_fraction_threshold
+    )
+
+    # Aggregate to subcatchments at original resolution
+    aggregated = aggregate_debris_to_subcatchments(debris_timeseries, hw_allocations)
+
+    # Prepare output dictionary
+    output = {
+        'aggregated': aggregated,
+        'allocations': hw_allocations
+    }
+
+    # Optionally resample
+    if resample_freq is not None:
+        resampled = resample_debris_timeseries(aggregated, resample_freq)
+        output['resampled'] = resampled
+
+    # Save results
+    if save:
+        out_path = proj.catchment_path(catchment, 'DebrisFlow')
+        os.makedirs(out_path, exist_ok=True)
+
+        # Save aggregated timeseries
+        agg_file = os.path.join(out_path, 'debris_flow_aggregated_by_subcatchment.csv')
+        aggregated.to_csv(agg_file)
+        logger.info(f'Saved aggregated debris timeseries to {agg_file}')
+
+        # Save allocations
+        alloc_file = os.path.join(out_path, 'headwater_to_subcatchment_allocations.csv')
+        hw_allocations.to_csv(alloc_file, index=False)
+        logger.info(f'Saved headwater allocations to {alloc_file}')
+
+        # Save resampled if applicable
+        if resample_freq is not None:
+            resampled_file = os.path.join(
+                out_path,
+                f'debris_flow_aggregated_by_subcatchment_{resample_freq}.csv'
+            )
+            output['resampled'].to_csv(resampled_file)
+            logger.info(f'Saved resampled ({resample_freq}) debris timeseries to {resampled_file}')
+
+    logger.info(f'Post-processing complete for catchment: {catchment}')
+
+    return output
 
 ###############################################################################
 def debris_flow(
