@@ -370,7 +370,7 @@ class FireImpactsProject(object):
                 )
         # If there is already a folder and the user as said it's ok to
         #clear its contents:
-        if clear and os.path.exists(project_path):
+        if clear and os.path.exists(project_path) and not exist_ok:
             logger.info('Clearing existing project folder: %s',project_path)
             # Remove the directory and all of its contents:
             shutil.rmtree(project_path)
