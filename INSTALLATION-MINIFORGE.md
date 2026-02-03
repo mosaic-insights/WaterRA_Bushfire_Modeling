@@ -1,6 +1,6 @@
 # Installing WaterRA Bushfire Modeling on Windows
 
-This guide provides step-by-step instructions for installing the WaterRA Bushfire Modeling package on Windows using Miniforge and the `env-base313.yml` environment file.
+This guide provides step-by-step instructions for installing the WaterRA Bushfire Modeling package on Windows using Miniforge and the `environment.yml` environment file.
 
 ## Prerequisites
 
@@ -30,9 +30,11 @@ mamba --version
 
 This should display mamba version information.
 
-## Step 2: Create Clean Environment from env-base313.yml
+## Step 2: Create Clean Environment from environment.yml
 
 ### Navigate to Project Directory
+
+For example
 
 ```powershell
 cd "c:\src\projects\WaterRA_Bushfire_Modeling"
@@ -41,7 +43,7 @@ cd "c:\src\projects\WaterRA_Bushfire_Modeling"
 ### Create Environment
 
 ```powershell
-mamba env create -f env-base313.yml
+mamba env create -f environment.yml
 ```
 
 This creates a new environment named `bushfire-py313` with:
@@ -104,7 +106,7 @@ print("All libraries imported successfully!")
 
 ## Important Notes
 
-- **Environment Management:** The `env-base313.yml` uses Python 3.13 with carefully pinned versions to avoid compatibility issues
+- **Environment Management:** The `environment.yml` uses Python 3.13 with carefully pinned versions to avoid compatibility issues
 - **Special Dependencies:** 
   - `dea-tools` requires `pg_config` during installation (handled automatically via pip)
   - `pysheds` is installed from a custom GitHub repository
