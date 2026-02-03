@@ -601,7 +601,8 @@ def calc_I12_crit_columns(
     join_keys_in_data = [
         ARID_MEAN_ADJ, DNBR_MEAN_ADJ, SLOPE_DEG_MEAN_ADJ
         ]
-    # Split HFlookup_I12 into two subsets based on 'years' and merge
+    
+    # Split HFlookup_I12 into two subsets based on 'years' and merge 
     #fire_impact_data with each subset:
     HFlookup_year_1 = hf_lookup[hf_lookup["years"] < 1]
     merged_year_1 = pd.merge(
@@ -612,7 +613,7 @@ def calc_I12_crit_columns(
         how="left"
     ).rename(columns={
         HF_YEARS_THRESH: "TSF_Year_1",
-        HF_I12_CRIT: "I12_crit_mean_Year_1"
+        HF_I12_CRIT: I12_CRIT_Y + '1'
         })
 
     HFlookup_year_2 = hf_lookup[hf_lookup["years"] >= 1]
@@ -624,13 +625,13 @@ def calc_I12_crit_columns(
         how="left"
     ).rename(columns={
         HF_YEARS_THRESH: "TSF_Year_2",
-        HF_I12_CRIT: "I12_crit_mean_Year_2"
+        HF_I12_CRIT: I12_CRIT_Y + '2'
         })
 
     # Combine the results
     fire_impact_data = pd.merge(
         merged_year_1,
-        merged_year_2[[hw_id_field,"TSF_Year_2", "I12_crit_mean_Year_2"]],
+        merged_year_2[[hw_id_field,"TSF_Year_2", I12_CRIT_Y + '2']],
         on=[hw_id_field],
         how="left"
     ).drop(columns=join_keys_in_lookup, errors="ignore")
@@ -1089,52 +1090,72 @@ def debris_flow(
     """
     # Iterate through simulations and calculate the number of events,
     #rainfall values, and event dates for both Year 1 and Year 2
-
     if catchment is None:
         return proj.for_each_catchment(lambda c: debris_flow(proj,rainfall,c))
 
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
-
+    
+    # Check to make sure units are as expected:
     if 'units' not in rainfall.attrs:
-        logger.warning("Rainfall data has no units attribute, assuming units are correct (mm/hr)")
+        logger.warning(
+            "Rainfall data has no units attribute, assuming units are "
+            "correct (mm/hr)")
     elif rainfall.attrs['units'] != 'mm/h':
-        logger.error("Rainfall data has units '%s', expected 'mm/h'", rainfall.attrs['units'])
-        raise ValueError("Rainfall data has units '%s', expected 'mm/h'"%rainfall.attrs['units'])
+        raise ValueError(
+            "Rainfall data has units '%s', expected 'mm/h'",
+            rainfall.attrs['units']
+            )
 
-    NUM_YEARS=2
-    result = prep_debris_flow_simulation(proj, catchment)
-    event_ts = pd.DataFrame(0,index=rainfall.index, columns=result['hw_ID'])
+    # Get a dataframe with all the values, for each headwater, needed 
+    #to calculate debris flow:
+    working_deb_flow_data = prep_debris_flow_simulation(proj, catchment)
 
-    years = range(1, NUM_YEARS + 1)
-    # for sim in ds_12min['simulation'].values:
-        # Initialize a dictionary to store results for each year
-    year_results = {year: {"event_counts": [], "rainfall_events": [], "event_dates": []} for year in years}
+    #------ This code may be superseded by recorders: ------------------
+    event_ts = pd.DataFrame(
+        data=0, #All debris flows start at 0
+        index=rainfall.index, # One row for each timestamp
+        columns=working_deb_flow_data[HW_ID] # One column for each HW
+        )
+
+    years = range(1, NUM_SIM_YEARS + 1)
+    # Initialize a dictionary to store results for each year:
+    year_results = {
+        year: {
+            "event_counts": [], "rainfall_events": [], "event_dates": []
+            } for year in years
+        }
     t0 = rainfall.index[0]
 
     # Iterate through each year
     for year in years:
+        # Add a year to the date-time stamp for the start of the 
+        #rainfall values; 
         t1 = t0 + pd.Timedelta(days=365)
-        threshold_col = f"I12_crit_mean_Year_{year}"
+        # Make the field name:
+        threshold_col = I12_CRIT_Y + str(year)
+        # Get all the rainfall values where the index falls between 
+        #that of the start and end of the current year:
         rain_year = rainfall[(rainfall.index >= t0) & (rainfall.index < t1)]
+        # Increment the timestamp for the next loop:
         t0 = t1
-
         # Iterate through each row in fire_impact_data
-        for idx, row in result.iterrows():
+        for idx, row in working_deb_flow_data.iterrows():
             threshold = row[threshold_col]
-            hw_id = row['hw_ID']
+            hw_id = row[HW_ID]
             if np.isnan(threshold):  # Skip rows with NaN thresholds
                 year_results[year]["event_counts"].append(0)
                 year_results[year]["rainfall_events"].append([])
                 year_results[year]["event_dates"].append([])
                 continue
 
-            # Select rainfall and coordinates of time (day, subday_12mins) for the current simulation
+            # Select rainfall and coordinates of time 
+            #(day, subday_12mins) for the current simulation:
             rain_flat = rain_year.values
 
             # Find events where rainfall exceeds the threshold
             indices = np.where(rain_flat >= threshold)[0]
             events = rain_flat[indices]
-            # event_dates_row = [(days_flat[i], subdays_flat[i]) for i in indices]
+            # Get only the rows where there's an event:
             event_dates_row = rain_year.index[indices]
 
             # Append results for the current year
@@ -1145,10 +1166,14 @@ def debris_flow(
                 event_ts.at[d, hw_id] += 1
 
         # Add the number of events as a new column for the current year
-        result[f"Year{year}_num_events"] = year_results[year]["event_counts"]
+        working_deb_flow_data[
+            f"Year{year}_num_events"
+            ] = year_results[year]["event_counts"]
 
         # Determine the maximum number of events for this year and simulation
-        max_events = max(len(ev) for ev in year_results[year]["rainfall_events"])
+        max_events = max(
+            len(ev) for ev in year_results[year]["rainfall_events"]
+            )
 
         # Organize columns for this year and simulation
         sim_columns = {}
@@ -1164,9 +1189,9 @@ def debris_flow(
 
         # Add all columns for the current year and simulation to the DataFrame
         for col_name, col_values in sim_columns.items():
-            result[col_name] = col_values
+            working_deb_flow_data[col_name] = col_values
     # Write the outputs as a new dataframe (debris flow)
-    Debris_Flow_Data = result.copy()
+    Debris_Flow_Data = working_deb_flow_data.copy()
 
     res_file_name = 'DebrisFlowData.csv'
     if save:
@@ -1217,43 +1242,201 @@ def run_debris_flow_sim(
     for recorder in recorders.values():
         recorder.reset()
 
-
-
+###############################################################################
+def post_debris_flow_mass_adjustment(
+    debris_flow_data:pd.DataFrame,
+    ids_with_events:list[str],
+    event_year:int,
+    mass_col:str=CLY_M_ACC_KG
+    ):
+    """
+    Placeholder function for adjusting the mass available for 
+    subsequent debris flows in the same headwater after an event
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    return debris_flow_data
 
 ###############################################################################
 def generate_debris_flow(
     rainfall:pd.Series,
-    elevation_arr:ArrayLike,
-    gradient_arr:ArrayLike,
-    flow_direction_arr:ArrayLike,
-    flow_accumulation_arr:ArrayLike,
-    clay_frac_arr_0_5:ArrayLike,
-    clay_frac_arr_5_15:ArrayLike,
-    condition_by_hw:pd.DataFrame,
-    debris_thresh_lookup:pd.DataFrame,
-    debris_constit_lookup:pd.DataFrame,
-    transform,
-    rio_meta,
+    debris_flow_data:pd.DataFrame,
     id_field:str,
     out_path:str
     ):
     """
+    Generator function that produces an iterable of (timestep, dict) 
+    tuples for each timestep entry the provided rainfall data. Dict is 
+    a lookup of all relevant debris flow results for that timestep.
 
     Parameters:
-    - rainfall: Series of rainfall intensity (mm/hr) values at
-    12-minute intervales
-    - elevation_arr: Hydrologically-enforced DEM data
-    - gradient_arr: Array of gradient (rise/run) values
-    - flow_direction_arr: Array of flow direction integer values (d8)
-    - flow_accumulation_arr: Array of flow accumulation values
-    - clay_frac_arr_0_5: Array of values giving the fraction of clay in
-    the top 5cm of soil
-    - clay_frac_arr_5_15: Array of clay fraction for 5-15cm soil depths
-    - condition_by_hw: Dataframe with a row for each headwater
-    identifiable by a hw_ID field (must match id_field parameter), and
-    the following calculated values for each headwater:
-        - X_EndP: The x-coordinate of the headwater end/outlet
-        - Y_EndP: The y-coordinate of the headwater end/outlet
+    - rainfall: Series of rainfall values which MUST be intensity in 
+    mm/hr recorded at 12-minute intervals
+        - So I think it matters whether the first timestamp in the 
+        rainfall data can be considered to be immediately after the 
+        fire ends. Do we ask for a fire end date? That might be key.
+    - debris_flow_data: Dataframe of debris flow input variables by 
+    headwater, as created by prep_debris_flow_simulation()
+
+    Yields:
+    - tuple of (timestep, result) where:
+        - timestep is the datetime stamp for the current 12-minute 
+        interval
+        - result is a dictionary with the following values:
+            - total rain (converted from intensity to depth)
+            - number of events year 1
+            - mass of debris from events year 1 (tonnes)
+            - number of events year 2
+            - mass of debris from events year 2 (tonnes)
+    --------------------------------------------------------------------
+    Notes:
+    - Currently this generator does not check which year the current 
+    timestep is part of, so the results contain debris flow values for 
+    both years. It's assumed that the function using this generator 
+    will know which year to grab.
+        - This also means that any reset of debris flow mass as a 
+        result of an event should be handled by the function using 
+        this generator? Or maybe it has to be inside here....
+    - The function running this generator should subset the headwaters 
+    by subcatchment if that's required, before running.
+    TODO: 
+    - We also need to engineer this to accept spatially varying 
+    rainfall at some point, but this can probably be processed before 
+    this function by headwater so a relatively minor adjustment.
+    --------------------------------------------------------------------
+    """
+    # Convert to Series if we've got a dataframe, to ensure consistency:
+    if isinstance(rainfall, pd.DataFrame):
+        rainfall = pd.Series(data=rainfall['rainfall'], index=rainfall.index)
+
+    working_copy = debris_flow_data.copy()
+
+    year_1_thresh_col = I12_CRIT_Y + '1'
+    year_2_thresh_col = I12_CRIT_Y + '2'
+    # Get a smaller subset of the debris flow data - just what we need:
+    subset = working_copy[[
+        id_field,
+        CLY_M_ACC_KG,
+        year_1_thresh_col,
+        year_2_thresh_col,
+        ]]
+
+    # Go through the timesteps
+    for timestep in rainfall.index:
+        rain_intensity_12min = rainfall[timestep]
+        rain_depth_over_12_min = rain_intensity_12min * 5
+
+        # Define the basic structure of the output of this generator:
+        result = {
+            'total_rain': rain_depth_over_12_min,
+            'debris_flow_event_y1': 0,
+            'debris_flow_mass_t_y1': 0.0,
+            'debris_flow_event_y2': 0,
+            'debris_flow_mass_t_y2': 0.0
+            }
+
+        # If there's no rain at all, skip and continue:
+        if rain_intensity_12min == 0:
+            yield (timestep, result)
+            continue
+        
+        # Check if the rainfall intensity exceeds the threshold for 
+        #any of the headwaters, for either year:
+        mask = (
+            subset[year_1_thresh_col] < rain_intensity_12min
+            | subset[year_2_thresh_col] < rain_intensity_12min
+            )
+        if not mask.any():
+            yield (timestep, result)
+            continue
+
+        # Now handle what happens if the rain intensity IS greater than 
+        #the debris flow threshold for at least one of the years:
+        mask_y1 = subset[year_1_thresh_col] < rain_intensity_12min
+        if mask_y1.any():
+            # The number of debris flow events is the number of rows 
+            #where the condition is true i.e. raifnall is greater than 
+            #threshold:
+            y1_event_count = mask_y1.sum()
+            # Get just the rows from the workind df where there's an 
+            #event:
+            y1_event_deets = subset.loc[mask_y1]
+            # Get the sum of mass for all those rows in kg then tonnes:
+            y1_mass_kg = np.nansum(y1_event_deets[CLY_M_ACC_KG])
+            y1_mass_t = y1_mass_kg * KG_TO_TONNES
+            # Update the values in the result dictionary:
+            result['debris_flow_event_y1'] = y1_event_count
+            result['debris_flow_mass_t_y1'] = y1_mass_t
+        # Same for year 2:
+        mask_y2 = subset[year_2_thresh_col] < rain_intensity_12min
+        if mask_y2.any():
+            y2_event_count = mask_y2.sum()
+            y2_event_deets = subset.loc[mask_y2]
+            y2_mass_kg = np.nansum(y2_event_deets[CLY_M_ACC_KG])
+            y2_mass_t = y2_mass_kg * KG_TO_TONNES
+            result['debris_flow_event_y2'] = y2_event_count
+            result['debris_flow_mass_t_y2'] = y2_mass_t
+
+        yield (timestep, result)
+
+###############################################################################
+def record_headwaters_timeseries(
+    proj:FireImpactsProject,
+    variable_name:str,
+    agg_type:str='sum',
+    label_field=None,
+    agg_count:int=1
+    ):
+    """
+    Build a debris flow recorder that summarises debris flow mass over 
+    time for each headwater
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
+    result = None
+    index = None
+
+    intermediate=None
+    intermediate_count = 0
+    ###########################################################################
+    def hw_timeseries_recorder(timestep, catchment, **kwargs):
+        """
+        Primary closure function for building a timeseries of 
+        aggregated values all headwaters in a catchment
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        
+        def agg(d):
+            """
+            Handle the requested aggregation
+            """
+            if agg_type == 'sum':
+                return np.nansum(d)
+            elif agg_type == 'mean':
+                return np.nanmean(d)
+            elif agg_type == 'max':
+                return np.nanmax(d)
+            else:
+                raise ValueError(f'Aggregation: {agg_type} not known')
+            
+    ###########################################################################
+    def reset():
+        """
+        Secondary closure function to revert all encapsulated variables 
+        to starting values.
+        """
+        pass
+
+    ###########################################################################
+    def finalise():
+        """
+        Secondary closure function to give the final results
+        """
+        pass
+    
+    # Add the two secondary closure functions as method-like 
+    #attachments to the main one
+    hw_timeseries_recorder.reset = reset
+    hw_timeseries_recorder.finalise = finalise
+    return hw_timeseries_recorder

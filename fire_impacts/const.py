@@ -1,12 +1,13 @@
 
 #------- Conversions: --------------------------------------------------
 # Basic units:
-M_TO_KM=1e-3
-M2_TO_HA=1e-4
-PERCENT_TO_FRACTION=1e-2
-MILLIGRAMS_TO_KILOGRAMS=1e-6
+M_TO_KM = 1e-3
+M2_TO_HA = 1e-4
+PERCENT_TO_FRACTION = 1e-2
+MILLIGRAMS_TO_KILOGRAMS = 1e-6
 APPROX_KM_PER_DEGREE = 111
-APPROX_DEGREES_TO_METRES=111000
+APPROX_DEGREES_TO_METRES = 111000
+KG_TO_TONNES = 1e-3
 
 #------ General lookups: -----------------------------------------------
 CRS_METRE_UNITS={'m','meter','meters','metre','metres'}
@@ -39,14 +40,15 @@ HILLSLOPE_PARAMETERS=dict(
     ad=0.3*4.5e-4,
     bd=0.36,
     rock=HILLSLOPE_ROCK_FRACTION
-)
+    )
 CHANNEL_PARAMETERS=dict(
     ae=4.1e-4,
     be=0.52,
     ad=3.7e-7,
     bd=1.06,
     rock=CHANNEL_ROCK_FRACTION
-)
+    )
+NUM_SIM_YEARS = 2
 
 #------ Dtype standards: -----------------------------------------------
 
@@ -79,6 +81,7 @@ TOT_EM_ACC_KG = 'Total erosion mass accumulation (kg)'
 TOT_EM_ACC_KG_HA = 'Total erosion mass accumulation (kg/ha)'
 SED_M_ACC_KG = 'Sediment mass accumulation (kg)'
 # Headwaters:
+HW_ID = 'hw_ID'
 HW_ENDP_X = 'X_EndP'
 HW_ENDP_Y = 'Y_EndP'
 # Debris flow constituents lookup:
@@ -92,12 +95,15 @@ HF_GRADIENT_THRESH = 'slope'
 HF_I12_CRIT = 'I12_crit_mean'
 # Summary stats (fire_impact_data) table:
 adjusted_suffix = '_adjusted'
+year_suffix = '_Year_'
 ARID_MEAN = 'Aridity_mean'
 ARID_MEAN_ADJ = ARID_MEAN + adjusted_suffix
 DNBR_MEAN = 'dNBR_mean'
 DNBR_MEAN_ADJ = DNBR_MEAN + adjusted_suffix
 SLOPE_DEG_MEAN = 'Slope_mean'
 SLOPE_DEG_MEAN_ADJ = SLOPE_DEG_MEAN + adjusted_suffix
+I12_CRIT_Y = HF_I12_CRIT + year_suffix
+
 
 
 #------- Directory folder names: ---------------------------------------
