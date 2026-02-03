@@ -107,11 +107,17 @@ I12_CRIT_Y = HF_I12_CRIT + year_suffix
 
 
 #------- Directory folder names: ---------------------------------------
+TOPOGRAPHY_FOLDER_NAME = 'Topography'
+FIRE_SEVERITY_FOLDER_NAME = 'FireSeverity'
+SOILS_FOLDER_NAME = 'Soils'
+ERODIBILITY_FOLDER_NAME = 'Erodibility'
+DELIVERY_FOLDER_NAME = 'Delivery'
+SUBCATCHMENTS_FOLDER_NAME = 'Subcatchments'
 PER_CATCHMENT_FOLDERS = [
-    'Topography',
-    'FireSeverity',
-    'Soils',
-    'Erodibility',
-    'Delivery',
-    'Subcatchments'
-]
+    TOPOGRAPHY_FOLDER_NAME,
+    FIRE_SEVERITY_FOLDER_NAME,
+    SOILS_FOLDER_NAME,
+    ERODIBILITY_FOLDER_NAME,
+    DELIVERY_FOLDER_NAME,
+    SUBCATCHMENTS_FOLDER_NAME
+    ]

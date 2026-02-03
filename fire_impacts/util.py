@@ -768,3 +768,4 @@ def get_zonal_stats(gdf, raster_path,label):
             nodata=src.nodata or -9999
             )
     return stats
+

@@ -1208,7 +1208,7 @@ def debris_flow(
 ###############################################################################
 def run_debris_flow_sim(
     project:FireImpactsProject,
-    rainfall,
+    rainfall:pd.DataFrame,
     catchment=None,
     recorders=None
     ):
@@ -1234,6 +1234,14 @@ def run_debris_flow_sim(
         return project.for_each_catchment(
             lambda c: run_debris_flow_sim(project,rainfall,c,recorders)
             )
+    # Only get rainfall values from the fire's end date onwards:
+    fire_end_dt = project.get_fire_end_date(catchment)
+    rainfall_trimmed = rainfall.loc[fire_end_dt:]
+
+    # Check if timeseries covers a full 2 years since fire; raise error 
+    #if not:
+    
+
     # If no recorders were passed, use an empty dictionary so the rest
     #of the code works consistently:
     if recorders is None:
@@ -1324,7 +1332,7 @@ def generate_debris_flow(
     # Go through the timesteps
     for timestep in rainfall.index:
         rain_intensity_12min = rainfall[timestep]
-        rain_depth_over_12_min = rain_intensity_12min * 5
+        rain_depth_over_12_min = rain_intensity_12min / 5
 
         # Define the basic structure of the output of this generator:
         result = {

@@ -412,6 +412,19 @@ def calculate_fire_severity(
     # Calculate dNBR
     logger.info(f'Calculating dNBR for {catchment}')
     delta_NBR = prefire_NBR - postfire_NBR
+
+    # Create a Series for the fire metadata (can add entries as
+    #relevant):
+    fire_meta = pd.DataFrame(
+        data={
+            'Value': [pd.to_datetime(fire_start_date), pd.to_datetime(fire_end_date)]
+            },
+        index=['start_date', 'end_date']
+        )
+    fire_meta.index.name = 'Key'
+    fire_path = os.path.join(catchment_folder, 'FireMeta.csv')
+    fire_meta.to_csv(fire_path, date_format='%Y-%m-%d')
+    logger.info(f'Saved fire metadata to {fire_path}')
     
     # Write the dNBR raster to the catchment folder:
     delta_fire_label = 'dNBR'

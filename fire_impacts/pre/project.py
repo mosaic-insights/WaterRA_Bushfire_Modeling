@@ -1237,6 +1237,23 @@ class FireImpactsProject(object):
             bbox_to_anchor=(1.0, 1.0)
             )
         return sfig
+    
+    def get_fire_end_date(self, catchment):
+        """
+        Get the end date of the fire for a oarticular catchment as a 
+        pandas datetime
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        fire_meta_path = self.catchment_path(
+            catchment,
+            constants.FIRE_SEVERITY_FOLDER_NAME,
+            'FireMeta.csv'
+            )
+        fire_meta = pd.read_csv(fire_meta_path, index_col=0)
+        end_date_iso = fire_meta.loc['end_date','Value']
+        return pd.to_datetime(end_date_iso)
+
 
 ###########################################################################
 def plot_catchment_boundary(
