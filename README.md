@@ -11,22 +11,6 @@ The package is designed for, and is being tested on, Australian conditions.
 
 The library can be installed using `pip` and assumes that you have a functioning 'scientific Python' installation, such as you might get by installing Anaconda Python.
 
-### Install core library
-
-1. Download the provided zip file and unzip to a convenient location.
-2. Open a command prompt with your Python data science environment activated (eg open 'Anaconda Command Prompt')
-3. Switch to the installation directory and run
-
- ```
- pip install .
- ```
-
- Alternatively, to keep the downloaded copy of the code editable after installation, use:
-
- ```
- pip install -e .
- ```
-
 
 ### Dependencies
 
@@ -42,7 +26,23 @@ In environments without conda, install with pip:
 pip install -r requirements.txt
 ```
 
-**Note:** The library uses a number of packages for processing remote sensing data, principally the Digital Earth Australia suite. At present, the installation of these libraries may require the user to install the PostgreSQL database client. This requirement will be relaxed in future versions of the dependencies, which will simplify the installation of the Fire Impacts library.
+If you don't currently have a Python environment, we recommend using [Miniforge](https://github.com/conda-forge/miniforge/releases) as a starting point. See [INSTALLATION-MINIFORGE.md](INSTALLATION-MINIFORGE.md) for instructions on installing this package and the required dependencies in Miniforge.
+
+### Install core library
+
+1. Download the provided zip file and unzip to a convenient location.
+2. Open a command prompt with your Python data science environment activated (eg open 'Anaconda Command Prompt')
+3. Switch to the installation directory and run
+
+ ```
+ pip install .
+ ```
+
+ Alternatively, to keep the downloaded copy of the code editable after installation, use:
+
+ ```
+ pip install -e .
+ ```
 
 ## Usage
 

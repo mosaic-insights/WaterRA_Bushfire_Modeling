@@ -1,0 +1,33 @@
+
+
+name: bushfire-py313
+channels:
+  - conda-forge
+dependencies:
+  # Core Python
+  - python=3.13
+  - jupyterlab_widgets=3.0.15
+  - jupyterlab
+  - matplotlib
+  - numpy=2.4.2
+  - pandas=2.3.3
+  - scipy=1.17.0
+  - rasterio=1.4.4
+  - geopandas=1.1.2
+  - pytest
+  - pystac-client
+  - odc-stac
+  - seaborn
+  - elevation
+  - dask[distributed]
+  - boto3
+  - typer # cli support
+  - jupytext
+  # - pysheds
+  - pip
+  - pip:
+    - dea-tools # requires pg_config to build from source!
+    - cql2 # Required by calculate_fire_severity() method
+    - https://github.com/joelrahman/pysheds/archive/refs/heads/master.zip
+  # - anaconda
+
