@@ -5,6 +5,7 @@ channels:
   - conda-forge
 dependencies:
   # Core Python
+  - vc14_runtime
   - python=3.13
   - jupyterlab_widgets=3.0.15
   - jupyterlab
@@ -30,4 +31,5 @@ dependencies:
     - cql2 # Required by calculate_fire_severity() method
     - https://github.com/joelrahman/pysheds/archive/refs/heads/master.zip
   # - anaconda
+
 
