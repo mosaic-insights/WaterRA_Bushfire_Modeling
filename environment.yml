@@ -7,7 +7,7 @@ dependencies:
   # Core Python
   - vc14_runtime
   - python=3.13
-  - pyarrow=23.0.0=*cpu*
+  - pyarrow-core=23.0.0=*cpu*
   - libparquet=23.0.0=*cpu*
   - jupyterlab_widgets=3.0.15
   - jupyterlab
