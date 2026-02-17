@@ -5,14 +5,17 @@ channels:
   - conda-forge
 dependencies:
   # Core Python
+  - vc14_runtime
   - python=3.13
+  - pyarrow-core=23.0.0=*cpu*
+  - libparquet=23.0.0=*cpu*
   - jupyterlab_widgets=3.0.15
   - jupyterlab
   - matplotlib
   - numpy=2.4.2
   - pandas=2.3.3
   - scipy=1.17.0
-  - rasterio=1.4.4
+  - rasterio=1.5.0
   - geopandas=1.1.2
   - pytest
   - pystac-client
@@ -23,11 +26,13 @@ dependencies:
   - boto3
   - typer # cli support
   - jupytext
-  # - pysheds
+  # - pysheds # Using patched version for now due to numpy 2.0 issue.
   - pip
   - pip:
     - dea-tools # requires pg_config to build from source!
     - cql2 # Required by calculate_fire_severity() method
     - https://github.com/joelrahman/pysheds/archive/refs/heads/master.zip
+    - https://github.com/flowmatters/veneer-py/archive/master.zip # For eWater Source interaction
   # - anaconda
+
 
