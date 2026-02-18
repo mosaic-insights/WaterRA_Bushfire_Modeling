@@ -84,6 +84,8 @@ SED_M_ACC_KG = 'Sediment mass accumulation (kg)'
 HW_ID = 'hw_ID'
 HW_ENDP_X = 'X_EndP'
 HW_ENDP_Y = 'Y_EndP'
+# Subcatchments:
+SC_ID = 'sc_ID'
 # Debris flow constituents lookup:
 PCLE_CTUENT_NAME = 'Particulate constituent'
 AVG_CTUENT_MGPKG = 'Average amount (mgkg-1)'

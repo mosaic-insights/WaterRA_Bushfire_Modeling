@@ -20,15 +20,15 @@ import matplotlib.pyplot as plt
 # Get the top-level util specifically using importlib:
 import importlib
 toputil = importlib.import_module('fire_impacts.util') 
-constants = importlib.import_module('fire_impacts.const')
+const = importlib.import_module('fire_impacts.const')
 logger = logging.getLogger(__name__)
 
 # These are the default directories that need to exist inside every 
 #catchments directory:
-PER_CATCHMENT_FOLDERS = constants.PER_CATCHMENT_FOLDERS
+PER_CATCHMENT_FOLDERS = const.PER_CATCHMENT_FOLDERS
 
-STATS = constants.STATS
-APPROX_KM_PER_DEGREE = constants.APPROX_KM_PER_DEGREE  
+STATS = const.STATS
+APPROX_KM_PER_DEGREE = const.APPROX_KM_PER_DEGREE  
 
 # State exactly what dtypes we're happy to save rasters in:
 default_dtypes_raster = {
@@ -37,7 +37,7 @@ default_dtypes_raster = {
     }
 # Convert numpy one-character dtype.kind attributes into more general 
 #descriptors that will map in default_dtypes_raster:
-numpy_kind_to_desc = constants.numpy_kind_to_desc
+numpy_kind_to_desc = const.numpy_kind_to_desc
 
 
 ###############################################################################
@@ -300,7 +300,11 @@ class FireImpactsProject(object):
 
         # Get only the useful columns, plus geometry:
         good_cols = id_cols + [subcatch_clipped.geometry.name]
-        out_gdf = subcatch_clipped[good_cols]
+        int_gdf = subcatch_clipped[good_cols]
+
+        #Use the index as the internal integer subcatchment id (sc_ID)
+        out_gdf = int_gdf.reset_index(drop=False, names=self.subcatchment_id)
+
         # Save the clipped subcatchments to the subcatchments folder:
         save_path = self.catchment_path(catchment_name, 'Subcatchments')
         key_file_name = key_name + '.shp'
@@ -729,11 +733,13 @@ class FireImpactsProject(object):
         """
         Load useful default field names to be accessed later
         ----------------------------------------------------------------
+        Notes:
+        - This may no longer be needed with the const.py module
         ----------------------------------------------------------------
         """
         # ID fields:
-        self.headwater_id = 'hw_ID'
-        self.subcatchment_id = 'sc_ID'
+        self.headwater_id = const.HW_ID
+        self.subcatchment_id = const.SC_ID
 
     ###########################################################################
     def plot_catchment_raster(
@@ -1247,7 +1253,7 @@ class FireImpactsProject(object):
         """
         fire_meta_path = self.catchment_path(
             catchment,
-            constants.FIRE_SEVERITY_FOLDER_NAME,
+            const.FIRE_SEVERITY_FOLDER_NAME,
             'FireMeta.csv'
             )
         fire_meta = pd.read_csv(fire_meta_path, index_col=0)

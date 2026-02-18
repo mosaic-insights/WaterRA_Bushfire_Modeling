@@ -268,6 +268,7 @@ def prep_debris_flow_simulation(
         dem_meta,
         id_field
         )
+
 ###############################################################################
 def net_erosion(
     threshold_met:np.ndarray,
@@ -776,7 +777,7 @@ def allocate_headwaters_to_subcatchments(
     boundary misalignments.
     """
     headwaters = proj.get_headwaters(catchment)
-    subcatchments = proj.catchment_boundary(catchment)
+    subcatchments = proj.get_subcatchments(catchment)
 
     # Perform spatial overlay
     hw_intersection = gpd.overlay(headwaters, subcatchments)
@@ -794,7 +795,7 @@ def allocate_headwaters_to_subcatchments(
     hw_allocations = hw_allocations[hw_allocations['area_fraction'] > area_fraction_threshold]
 
     # Select and return relevant columns
-    result = hw_allocations[['SiteID', 'hw_ID', 'Area_m2', 'area_intersect', 'area_fraction']].copy()
+    result = hw_allocations[[SC_ID, HW_ID, 'Area_m2', 'area_intersect', 'area_fraction']].copy()
 
     logger.info(
         f'Allocated {len(result)} headwaters to subcatchments in {catchment}. '
@@ -830,7 +831,7 @@ def scale_debris_timeseries_by_allocation(
         allocation fractions. Includes only headwaters present in hw_allocations.
     """
     # Extract fractions, limiting to 1.0 (some may be slightly > 1.0 due to rounding)
-    fractions = np.minimum(1.0, hw_allocations.set_index('hw_ID')['area_fraction'])
+    fractions = np.minimum(1.0, hw_allocations.set_index(HW_ID)['area_fraction'])
 
     # Keep only headwaters that have allocations
     scaled = debris_timeseries.copy()
@@ -895,10 +896,13 @@ def aggregate_debris_to_subcatchments(
     >>> df_daily = df_by_sc.resample('D').sum()
     """
     # Scale timeseries by allocation fractions
-    scaled = scale_debris_timeseries_by_allocation(debris_timeseries, hw_allocations)
+    scaled = scale_debris_timeseries_by_allocation(
+        debris_timeseries,
+        hw_allocations
+        )
 
     # Create mapping from hw_ID to SiteID
-    sc_map = hw_allocations.set_index('hw_ID')['SiteID'].to_dict()
+    sc_map = hw_allocations.set_index(HW_ID)[SC_ID].to_dict()
 
     # Rename columns from hw_ID to SiteID
     scaled = scaled.rename(columns=sc_map)

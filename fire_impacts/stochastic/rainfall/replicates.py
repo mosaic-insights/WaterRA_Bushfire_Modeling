@@ -107,7 +107,7 @@ def get_rainfall_replicates(
     centroid = boundary.geometry.centroid
     lat = centroid.y.values[0]
     lon = centroid.x.values[0]
-    dem,_,_ = read_raster(
+    dem,_ = read_raster(
         proj.catchment_path(
             catchment,
             'Topography',
