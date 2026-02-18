@@ -1,3 +1,4 @@
+import logging
 import requests
 import pandas as pd
 import numpy as np
@@ -5,6 +6,7 @@ from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.pre.util import read_raster
 import xarray as xr
 from ...pre.data_sources import STOCHASTIC_RAINFALL_API
+logger = logging.getLogger(__name__)
 
 def decode_rle(rle):
     values = []
@@ -40,6 +42,7 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
     Returns:
     - Dataset: XArray dataset with datetime index and simulations as columns.
     '''
+    logger.debug(f"Requesting {num_sims} replicates for location (lat: {lat}, lon: {lon}, elev: {elev}) with annual rainfall {annual_rain} mm and mean temperature {mean_temp} °C for {num_years} years.")
     api_response = requests.get(
         api_url,
         params=dict(
@@ -52,7 +55,8 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
             count=num_sims),
         timeout=600 # 10 minutes
     )
-    assert api_response.status_code==200
+    logger.debug(f"API response status code: {api_response.status_code}")
+    assert api_response.status_code==200, f"API request failed with status code {api_response.status_code}: {api_response.text}"
     result = hg_to_data_frame(api_response.json())
     result_x = result.to_xarray().to_array()
     result_x.attrs['units']='mm'
