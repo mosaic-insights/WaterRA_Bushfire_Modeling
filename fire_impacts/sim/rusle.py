@@ -137,7 +137,7 @@ def _rusle_parameter_grids(project:FireImpactsProject, catchment:str):
         project.catchment_path(
             catchment,
             'FireSeverity',
-            'dNBR.tif'
+            'masked_dNBR.tif'
             ),
         transform,
         crs,
