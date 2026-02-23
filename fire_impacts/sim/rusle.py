@@ -168,7 +168,7 @@ def lumped_daily_rusle(project:FireImpactsProject, rainfall, catchment=None):
     elif rainfall.attrs['units'] != 'mm':
         logger.error("Rainfall data has units '%s', expected 'mm'", rainfall.attrs['units'])
         raise ValueError("Rainfall data has units '%s', expected 'mm'"%rainfall.attrs['units'])
-    RUSLE_df = calculate_lumped_rusle(project.subcatchment_boundaries(catchment), rainfall, *_rusle_parameter_grids(project,catchment))
+    RUSLE_df = calculate_lumped_rusle(project.get_subcatchments(catchment), rainfall, *_rusle_parameter_grids(project,catchment))
 
     logger.info('Done')
     return RUSLE_df
@@ -566,7 +566,7 @@ def gridded_total_rusle(project:FireImpactsProject, rainfall, catchment=None):
     result = None
     # Get an iterable of the boundaries of each subcatchment in the
     #project:
-    subcatch_boundaries = project.subcatchment_boundaries(catchment).iloc[0].geometry
+    subcatch_boundaries = project.get_subcatchments(catchment).iloc[0].geometry
 
     total_eroded = None
     total_delivered = None
