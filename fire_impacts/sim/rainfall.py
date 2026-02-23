@@ -128,7 +128,19 @@ def aggregate_rainfall_data(source, rain_data_start=None, rain_data_end=None, ti
     - r_agg (DataFrame): DataFrame with aggregated rainfall by simulation.
     '''
     r_flat = flatten_pyraingen_rainfall(source, rain_data_start, rain_data_end)
-    r_agg = r_flat.resample(time_res)
+
+    # Handle call to resample() slightly differently whether we've got 
+    #a dataframe or xarray:
+    if isinstance(r_flat, pd.DataFrame):
+        r_agg = r_flat.resample(time_res)
+    elif isinstance(r_flat, xr.Dataset):
+        r_agg = r_flat.resample(time=time_res)
+    else:
+        print(
+            f'r_flat is of type {type(r_flat)}. Assuming it is an '
+            'xarray dataset and expects the time argument...'
+            )
+        r_agg = r_flat.resample({'time': time_res})
 
     units = r_flat['rainfall'].attrs['units']
     if units == 'mm':
