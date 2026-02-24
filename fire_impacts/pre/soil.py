@@ -227,7 +227,6 @@ def download_soil_data_stac(
         raise ValueError("API key is required for STAC access.")
 
     grids = find_slga_grids(base_stac_catalog, version=version, api_key=api_key)
-    print(grids)
     logger.info(
         f'Processing catchment: {catchment} with {len(grids)} grids '
         'found'
