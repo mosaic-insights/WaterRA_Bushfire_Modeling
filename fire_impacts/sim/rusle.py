@@ -111,7 +111,7 @@ def _rusle_parameter_grids(project:FireImpactsProject, catchment:str):
     compute_klscp_layer(project,catchment)
 
     # Now read that raster into memory:
-    klscp, transform, crs = read_raster(
+    klscp, klscp_meta = read_raster(
         project.catchment_path(
             catchment,
             'Erodibility',
@@ -119,9 +119,12 @@ def _rusle_parameter_grids(project:FireImpactsProject, catchment:str):
             )
         )
 
+    transform = klscp_meta['transform']
+    crs = klscp_meta['crs']
+
     # Get the Sediment Delivery Ratio (SDR) raster, which is generated
     #ultimately by the calculate_lumped_rusle() function in this module:
-    sdr,_,_ = read_raster(
+    sdr,_ = read_raster(
         project.catchment_path(
             catchment,
             'Delivery',
