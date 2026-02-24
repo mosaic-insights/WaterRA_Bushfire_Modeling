@@ -4,17 +4,9 @@ mask_dnbr.py
 Mask an existing dNBR raster so it only retains values where DEA Land Cover
 is class 112: Natural Terrestrial Vegetation (NTV).
 
-Workflow (same simple logic as src/chm/dea_landuse.py):
-1) Download DEA annual mosaic (full GeoTIFF) to a cache folder (only once).
-2) Clip the DEA mosaic locally to the dNBR extent (bbox polygon) using rasterio.mask.
-3) Reproject the clipped DEA to match the dNBR grid (nearest neighbour).
-4) Mask dNBR: keep only where DEA == natural_code, else set to 0.
-5) Save masked dNBR and the clipped DEA into the FireSeverity folder.
-
 Outputs (per catchment) saved into FireSeverity:
 - masked_dNBR.tif
-- DEA_LC_<year>_<level>_clipped.tif
-(and a cache copy of the raw national DEA tif in FireSeverity/_dea_cache/)
+- DEA_LC_<year>_<level>_match_dNBR.tif   (projected/aligned to dNBR grid)
 """
 
 from __future__ import annotations
@@ -22,18 +14,19 @@ from __future__ import annotations
 # ---------- stdlib ----------
 import os
 import logging
+import tempfile
 from datetime import datetime
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple
 
 # ---------- third-party ----------
 import requests
-import numpy as np
 import geopandas as gpd
 import rioxarray as rxr
 import xarray as xr
 from shapely.geometry import box
 
 import rasterio as rio
+from rasterio.io import MemoryFile
 from rasterio.mask import mask as rio_mask
 
 # ---------- local ----------
@@ -44,54 +37,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DEA_LEVEL = "level3"
 DEA_FALLBACK_NODATA = 255
-DEA_CACHE_SUBDIR = "_dea_cache"
 
 
 # ======================================================================================
-# Helpers (same style as dea_landuse.py)
+# Helpers
 # ======================================================================================
-
-def _url_exists(url: str, timeout: int = 30) -> bool:
-    """Lightweight existence check (no full download)."""
-    headers = {"User-Agent": "python-requests", "Range": "bytes=0-0"}
-    try:
-        r = requests.get(url, headers=headers, allow_redirects=True, timeout=timeout)
-        return r.status_code in (200, 206)
-    except requests.RequestException:
-        return False
-
-
-def _find_latest_available_dea_year(
-    dea_level: str,
-    start_year: Optional[int],
-    lookback: int,
-) -> int:
-    """
-    Probe backwards to find the latest year that exists on the server.
-
-    Example:
-      start_year=2025, lookback=6 -> try 2025..2019
-    """
-    if start_year is None:
-        start_year = datetime.now().year - 1
-
-    for y in range(start_year, start_year - lookback - 1, -1):
-        fname = f"ga_ls_landcover_class_cyear_3_mosaic_{y}--P1Y_{dea_level}.tif"
-        url = f"{DEA_LANDCOVER}/{y}--P1Y/{fname}"
-        logger.info("[probe] DEA LC year %s -> %s", y, url)
-        if _url_exists(url):
-            logger.info("[OK] Found available DEA Land Cover year: %s (level=%s)", y, dea_level)
-            return y
-
-    raise RuntimeError(
-        f"Could not find an available DEA mosaic for level={dea_level} "
-        f"trying years {start_year} back to {start_year - lookback}."
-    )
-
 
 def _stream_download(url: str, out_fp: str, timeout: int = 180, chunk: int = 1024 * 1024) -> None:
     """
-    Streaming download (same pattern as dea_landuse.py).
+    Streaming download.
     Uses a temporary .part file then renames (avoid partial files looking valid).
     """
     out_fp = str(out_fp)
@@ -107,7 +61,6 @@ def _stream_download(url: str, out_fp: str, timeout: int = 180, chunk: int = 102
                 if b:
                     f.write(b)
 
-    # Replace atomically-ish
     if os.path.exists(out_fp):
         os.remove(out_fp)
     os.rename(tmp_fp, out_fp)
@@ -131,23 +84,87 @@ def _build_bbox_polygon_gdf(bounds: Tuple[float, float, float, float], crs) -> g
     return gpd.GeoDataFrame({"id": [1]}, geometry=[geom], crs=crs)
 
 
-def _clip_raster_to_geom(
+def _download_latest_dea_to_temp(
+    tmp_dir: str,
+    dea_level: str,
+    start_year: Optional[int],
+    lookback: int,
+    timeout: int = 180,
+    chunk: int = 1024 * 1024,
+) -> Tuple[int, str]:
+    """
+    Download DEA mosaic into a TEMP directory only (no persistent cache).
+    Tries start_year, if 404 then tries previous years.
+
+    Returns (year, dea_local_path_in_tmp_dir)
+
+    NOTE:
+      This still writes a file (because rasterio needs random access),
+      but it lives only inside tmp_dir, which will be deleted automatically.
+    """
+    if start_year is None:
+        start_year = datetime.now().year - 1
+
+    os.makedirs(tmp_dir, exist_ok=True)
+    last_err: Exception | None = None
+
+    for y in range(start_year, start_year - lookback - 1, -1):
+        remote_fname = f"ga_ls_landcover_class_cyear_3_mosaic_{y}--P1Y_{dea_level}.tif"
+        url = f"{DEA_LANDCOVER}/{y}--P1Y/{remote_fname}"
+        out_fp = os.path.join(tmp_dir, remote_fname)
+
+        # If something already exists in the temp dir (rare), reuse it.
+        if _valid_tif(out_fp):
+            logger.info("[temp] Using existing DEA file in temp dir: %s", out_fp)
+            return y, out_fp
+
+        try:
+            logger.info("[download] %s -> %s", url, out_fp)
+            _stream_download(url, out_fp, timeout=timeout, chunk=chunk)
+            logger.info("[done] Downloaded DEA file (temp): %s", out_fp)
+            return y, out_fp
+        except requests.HTTPError as e:
+            last_err = e
+            logger.warning("[HTTP] year=%s failed (%s). Trying older year...", y, e)
+            continue
+        except requests.RequestException as e:
+            last_err = e
+            logger.warning("[Network] year=%s failed (%s). Trying older year...", y, e)
+            continue
+        except Exception as e:
+            last_err = e
+            logger.warning("[Error] year=%s failed (%s). Trying older year...", y, e)
+            continue
+
+    raise RuntimeError(
+        f"Could not download any DEA mosaic for level={dea_level} "
+        f"trying years {start_year} back to {start_year - lookback}. "
+        f"Last error: {last_err}"
+    )
+
+
+def _clip_raster_to_geom_in_memory(
     raster_path: str,
     geom_gdf: gpd.GeoDataFrame,
-    out_path: str,
-) -> str:
+    fallback_nodata: int = DEA_FALLBACK_NODATA,
+) -> rxr.rioxarray.RasterArray:
     """
-    Clip raster_path to geom_gdf and write to out_path (crop=True).
-    This is exactly the same style as dea_landuse.py.
+    Clip raster_path to geom_gdf using rasterio.mask, but keep the result in memory
+    (no on-disk clipped GeoTIFF).
+
+    Returns a rioxarray DataArray (squeezable later).
     """
     with rio.open(raster_path) as src:
+        # Reproject the clipping geometry to the raster CRS
         geom_in = geom_gdf.to_crs(src.crs)
+
         geoms = [g for g in geom_in.geometry if g is not None and (not g.is_empty)]
         if not geoms:
             raise RuntimeError("No valid geometry to clip against.")
 
-        nd = src.nodata if src.nodata is not None else DEA_FALLBACK_NODATA
+        nd = src.nodata if src.nodata is not None else fallback_nodata
 
+        # Clip/crop
         img, tr = rio_mask(
             src,
             geoms,
@@ -156,6 +173,7 @@ def _clip_raster_to_geom(
             filled=True,
         )
 
+        # Build an in-memory GeoTIFF so rioxarray can open it cleanly with CRS/transform
         meta = src.meta.copy()
         meta.update(
             {
@@ -166,11 +184,14 @@ def _clip_raster_to_geom(
             }
         )
 
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with rio.open(out_path, "w", **meta) as dst:
-        dst.write(img)
+        with MemoryFile() as memfile:
+            with memfile.open(**meta) as dst:
+                dst.write(img)
+            # Re-open with rioxarray from the in-memory bytes
+            with memfile.open() as memsrc:
+                da = rxr.open_rasterio(memsrc, masked=True)
 
-    return out_path
+    return da
 
 
 # ======================================================================================
@@ -191,10 +212,13 @@ def mask_dnbr(
 
     Saves to each catchment FireSeverity folder:
       - masked_dNBR.tif
-      - DEA_LC_<year>_<level>_clipped.tif
-    """
+      - DEA_LC_<year>_<level>_match_dNBR.tif   (projected/aligned to dNBR grid)
 
-    # Optional: silence our module logs (does NOT silence rasterio/gdal logs)
+    IMPORTANT:
+      - Does NOT save any persistent DEA cache.
+      - Does NOT save a clipped-in-DEA-CRS file.
+      - DEA mosaic is downloaded into a temp directory and deleted automatically.
+    """
     if quiet:
         logger.setLevel(logging.WARNING)
 
@@ -225,6 +249,7 @@ def mask_dnbr(
             "Run severity.calculate_fire_severity(...) first."
         )
 
+    # Read dNBR
     dnbr = rxr.open_rasterio(dnbr_path, masked=True).squeeze()
     if dnbr.rio.crs is None:
         raise RuntimeError(f"dNBR has no CRS. Please ensure {dnbr_path} has a valid CRS.")
@@ -238,57 +263,43 @@ def mask_dnbr(
     logger.info("mask_dnbr(): dNBR bounds=%s", dnbr_bounds)
 
     # -------------------------------
-    # Find latest available DEA year
+    # Download DEA to TEMP only (no cache), clip in memory, reproject-match, save projected
     # -------------------------------
-    latest_year = _find_latest_available_dea_year(
-        dea_level=dea_level,
-        start_year=dea_start_year,
-        lookback=dea_lookback,
-    )
+    with tempfile.TemporaryDirectory(prefix="dea_tmp_") as tmp_dir:
+        latest_year, raw_dea_path = _download_latest_dea_to_temp(
+            tmp_dir=tmp_dir,
+            dea_level=dea_level,
+            start_year=dea_start_year,
+            lookback=dea_lookback,
+            timeout=180,
+            chunk=1024 * 1024,
+        )
 
-    remote_fname = f"ga_ls_landcover_class_cyear_3_mosaic_{latest_year}--P1Y_{dea_level}.tif"
-    dea_url = f"{DEA_LANDCOVER}/{latest_year}--P1Y/{remote_fname}"
+        # Clip DEA to dNBR bbox (in memory; no file saved)
+        dea_da = _clip_raster_to_geom_in_memory(
+            raster_path=raw_dea_path,
+            geom_gdf=dnbr_bbox_gdf,
+            fallback_nodata=DEA_FALLBACK_NODATA,
+        ).squeeze()
 
-    # -------------------------------
-    # Download raw DEA (cached)
-    # -------------------------------
-    cache_dir = os.path.join(sev_folder, DEA_CACHE_SUBDIR)
-    raw_dea_path = os.path.join(cache_dir, remote_fname)
+        # Ensure nodata is set (important for categorical masking)
+        try:
+            if dea_da.rio.nodata is None:
+                dea_da = dea_da.rio.write_nodata(DEA_FALLBACK_NODATA)
+        except Exception:
+            pass
 
-    if not _valid_tif(raw_dea_path):
-        logger.info("[download] %s -> %s", dea_url, raw_dea_path)
-        _stream_download(dea_url, raw_dea_path, timeout=180, chunk=1024 * 1024)
-        logger.info("[done] Downloaded DEA file: %s", raw_dea_path)
-    else:
-        logger.info("[cache] Using existing DEA file: %s", raw_dea_path)
+        # Reproject to match dNBR grid (nearest for categorical classes)
+        dea_match = dea_da.rio.reproject_match(
+            dnbr,
+            resampling=rio.warp.Resampling.nearest,
+        )
 
-    # -------------------------------
-    # Clip DEA to dNBR bbox (saved!)
-    # -------------------------------
-    dea_clipped_name = f"DEA_LC_{latest_year}.tif"
-    dea_clipped_path = os.path.join(sev_folder, dea_clipped_name)
-
-    if not _valid_tif(dea_clipped_path):
-        logger.info("[clip] Writing clipped DEA: %s", dea_clipped_path)
-        _clip_raster_to_geom(raw_dea_path, dnbr_bbox_gdf, dea_clipped_path)
-        logger.info("[done] Clipped DEA saved: %s", dea_clipped_path)
-    else:
-        logger.info("[cache] Using existing clipped DEA: %s", dea_clipped_path)
-
-    # -------------------------------
-    # Read clipped DEA and match to dNBR grid
-    # -------------------------------
-    dea_da = rxr.open_rasterio(dea_clipped_path, masked=True).squeeze()
-
-    # Ensure nodata is set
-    try:
-        if dea_da.rio.nodata is None:
-            dea_da = dea_da.rio.write_nodata(DEA_FALLBACK_NODATA)
-    except Exception:
-        pass
-
-    # Reproject to match dNBR grid (nearest for categorical classes)
-    dea_match = dea_da.rio.reproject_match(dnbr, resampling=rio.warp.Resampling.nearest)
+        # Save ONLY the projected/aligned DEA
+        dea_match_path = os.path.join(sev_folder, f"DEA_LC_{latest_year}.tif")
+        logger.info("[write] %s", dea_match_path)
+        dea_match.rio.to_raster(dea_match_path, compress="deflate")
+        logger.info("[OK] Aligned DEA saved: %s", dea_match_path)
 
     # -------------------------------
     # Mask: keep only natural_code
@@ -298,6 +309,9 @@ def mask_dnbr(
     if nd is not None:
         keep = keep & (dea_match != nd)
 
+    # IMPORTANT:
+    # - You currently set masked-out pixels to 0.
+    #   If you'd rather set them to nodata (cleaner), tell me and I’ll switch it.
     dnbr_masked = xr.where(keep, dnbr, 0).astype(dnbr.dtype)
     dnbr_masked = dnbr_masked.rio.write_crs(dnbr_crs)
 
