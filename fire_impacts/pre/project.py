@@ -707,6 +707,7 @@ class FireImpactsProject(object):
         param_dict = {
             'slope': self.vis_slope,
             'flow_acc': self.vis_flow_accum,
+            'masked_dnbr': self.vis_dNBR,
             'dnbr': self.vis_dNBR,
             'i12_crit': self.vis_i12_crit,
             'num_events': self.vis_num_debris_flow_events,

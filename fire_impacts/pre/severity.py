@@ -14,6 +14,7 @@ import logging
 from .project import FireImpactsProject
 from .util import metres_to_approx_degrees, clip_raster
 from fire_impacts import util as toputil # points to fire_impacts.util
+from . import mask_dnbr as mdnbr
 from fire_impacts.util import date_rel
 from .data_sources import DEA_STAC, SENTINEL_2_COLLECTIONS, LANDSAT_COLLECTIONS
 logger = logging.getLogger(__name__)
@@ -435,9 +436,18 @@ def calculate_fire_severity(
         delta_fire_label,
         shapefile_path
         )
+    
+    # Write the dNBR with non-relevant land covers masked out:
+    mdnbr.mask_dnbr(project=project, catchment=catchment)
+
     logger.info('Processes are completed')
 
+###############################################################################
 def extract_image_metadata(items, valid_times, resolution_input, fire_status):
+    """
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
     valid_times_str = [pd.to_datetime(time).isoformat() + 'Z' for time in valid_times]
     metadata = [
         {
@@ -453,5 +463,10 @@ def extract_image_metadata(items, valid_times, resolution_input, fire_status):
     ]
     return metadata
 
+###############################################################################
 def save_metadata_to_csv(metadata, folder, filename):
+    """
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
     pd.DataFrame(metadata).to_csv(os.path.join(folder, filename))

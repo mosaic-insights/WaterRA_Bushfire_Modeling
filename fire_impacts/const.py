@@ -106,7 +106,18 @@ SLOPE_DEG_MEAN = 'Slope_mean'
 SLOPE_DEG_MEAN_ADJ = SLOPE_DEG_MEAN + adjusted_suffix
 I12_CRIT_Y = HF_I12_CRIT + year_suffix
 
-
+#------ Output file names: ---------------------------------------------
+RUSLE_OP_PEAK_Y1_NAME = 'peak_erosion_y1'
+RUSLE_OP_PEAK_Y2_NAME = 'peak_erosion_y2'
+RUSLE_OP_TOTAL_Y1_NAME = 'erosion_y1'
+RUSLE_OP_TOTAL_Y2_NAME = 'erosion_y2'
+RUSLE_OP_TIMESERIES_NAME = 'daily_time_series'
+RUSLE_OUTPUT_RASTER_NAMES = [
+    RUSLE_OP_PEAK_Y1_NAME,
+    RUSLE_OP_PEAK_Y2_NAME,
+    RUSLE_OP_TOTAL_Y1_NAME,
+    RUSLE_OP_TOTAL_Y2_NAME
+    ]
 
 #------- Directory folder names: ---------------------------------------
 TOPOGRAPHY_FOLDER_NAME = 'Topography'
@@ -115,11 +126,13 @@ SOILS_FOLDER_NAME = 'Soils'
 ERODIBILITY_FOLDER_NAME = 'Erodibility'
 DELIVERY_FOLDER_NAME = 'Delivery'
 SUBCATCHMENTS_FOLDER_NAME = 'Subcatchments'
+RESULTS_FOLDER_NAME = 'Results'
 PER_CATCHMENT_FOLDERS = [
     TOPOGRAPHY_FOLDER_NAME,
     FIRE_SEVERITY_FOLDER_NAME,
     SOILS_FOLDER_NAME,
     ERODIBILITY_FOLDER_NAME,
     DELIVERY_FOLDER_NAME,
-    SUBCATCHMENTS_FOLDER_NAME
+    SUBCATCHMENTS_FOLDER_NAME,
+    RESULTS_FOLDER_NAME
     ]

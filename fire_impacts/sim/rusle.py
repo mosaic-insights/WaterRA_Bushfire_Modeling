@@ -8,12 +8,14 @@ from rasterio.warp import reproject, Resampling
 import os
 import logging
 import time
+from fire_impacts import const as c
 from fire_impacts.const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS
 from fire_impacts.pre.util import read_aligned, read_raster
 from fire_impacts.util import load_package_data
 logger = logging.getLogger(__name__)
 
 from fire_impacts.pre import FireImpactsProject
+from fire_impacts.pre.project import save_catchment_raster
 
 DNBR_SEVERITY_THRESHOLD = 400
 EMPIRICAL_COEFFICIENT = 0.082
@@ -456,7 +458,9 @@ def run_usle_simulation(
     project:FireImpactsProject,
     rainfall,
     catchment=None,
-    recorders=None
+    recorders=None,
+    save_rasters:bool=True,
+    save_timeseries:bool=True
     ):
     """
     Run the USLE simulation for a given project and rainfall data,
@@ -469,6 +473,10 @@ def run_usle_simulation(
     process all catchments.
     - recorders (dict): OPTIONAL: Dictionary of recorder functions to
     use during the simulation.
+    - save_rasters (bool): Whether the output rasters should be saved 
+    as GeoTIFF files to the results folder for the current catchment
+    - save_timeseries (bool): Whether the daily timeseries should be 
+    saved as a csv file to the results folder for the current catchment
 
     Returns:
     - results (dict): Dictionary of recorded results from the
@@ -551,6 +559,25 @@ def run_usle_simulation(
     #number of timesteps (48 for daily aggregation on half-hourly data).
     for key, recorder in recorders.items():
         results[key] = recorder.finalize()
+
+    if save_rasters:
+        template_raster = project.catchment_path(
+            catchment,
+            'Erodibility',
+            'LS_factor.tif'
+            )
+        _, template_meta = read_raster(template_raster)
+        for output_raster in c.RUSLE_OUTPUT_RASTER_NAMES:
+            save_data = results[output_raster]
+            save_catchment_raster(
+                project=project,
+                catchment_name=catchment,
+                file_name=output_raster,
+                section=c.RESULTS_FOLDER_NAME,
+                data=save_data,
+                meta=template_meta
+                )
+
 
     # Attach a pointer to all the rusle parameters (mostly grids) used
     #for these calcs:
