@@ -1075,8 +1075,9 @@ def debris_flow(
     proj:FireImpactsProject,
     rainfall,
     catchment:str=None,
-    save:bool=True
-    ):
+    save:bool=True,
+    save_daily_catchment_timeseries:bool=True
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run debris flow simulation for a given catchment or all catchments
     in the project.
@@ -1205,8 +1206,22 @@ def debris_flow(
             'Saved debris flow by headweater results table to '
             f'{Debris_Flow_Data_path}'
             )
+    
+    # Code to save a timeseries of debris flow event totals for the 
+    #whole catchment:
+    if save_daily_catchment_timeseries:
+        resampled = resample_debris_timeseries(event_ts, 'D')
+        resampled['catchment_debris_flows'] = resampled.sum(axis=1)
+        resamp_tot = resampled['catchment_debris_flows']
+        out_name = proj.catchment_path(
+            catchment,
+            RESULTS_FOLDER_NAME,
+            DEBRIS_OP_TIMESERIES_NAME + '.csv'
+            )
+        resamp_tot.to_csv(out_name)
 
     logger.info('Done!')
+    
     return Debris_Flow_Data, event_ts
 
 ###############################################################################
@@ -1405,5 +1420,5 @@ def record_headwaters_timeseries(
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-
+    pass
 

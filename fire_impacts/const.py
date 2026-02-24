@@ -107,6 +107,7 @@ SLOPE_DEG_MEAN_ADJ = SLOPE_DEG_MEAN + adjusted_suffix
 I12_CRIT_Y = HF_I12_CRIT + year_suffix
 
 #------ Output file names: ---------------------------------------------
+# RUSLE:
 RUSLE_OP_PEAK_Y1_NAME = 'peak_erosion_y1'
 RUSLE_OP_PEAK_Y2_NAME = 'peak_erosion_y2'
 RUSLE_OP_TOTAL_Y1_NAME = 'erosion_y1'
@@ -118,8 +119,9 @@ RUSLE_OUTPUT_RASTER_NAMES = [
     RUSLE_OP_TOTAL_Y1_NAME,
     RUSLE_OP_TOTAL_Y2_NAME
     ]
-
-RUSLE_OP_TIMESERIES_NAME = 'daily_time_series'
+RUSLE_OP_TIMESERIES_NAME = 'erosion_daily_time_series'
+# Debris flow:
+DEBRIS_OP_TIMESERIES_NAME = 'debris_daily_time_series'
 
 #------- Directory folder names: ---------------------------------------
 TOPOGRAPHY_FOLDER_NAME = 'Topography'
