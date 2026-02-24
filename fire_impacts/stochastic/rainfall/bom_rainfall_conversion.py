@@ -336,15 +336,16 @@ def produceSubDailyNetCDF(fnameNC,subDailyData,dayVector,**kwargs):
     subdays = SubDailync.createVariable('subday','f8',('subday',),
         zlib=True, complevel=9, shuffle=True, 
     )
+    SCALE_FACTOR = 1.0 # was 0.1
     rainfalls = SubDailync.createVariable('rainfall','f4',
         ('simulation','day','subday'), zlib=True, complevel=9, 
-        shuffle=True, fill_value=-999.9
+        shuffle=True, fill_value=-9999.0 * SCALE_FACTOR,
     )
 
     ## Writing Data
     days[:] = dayVector
     subdays[:] = subDayVec
-    rainfalls[:,:,:] = subDailyData
+    rainfalls[:,:,:] = subDailyData * SCALE_FACTOR
 
     ## Add Attributes
     # Global
