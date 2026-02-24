@@ -9,7 +9,7 @@ import os
 import logging
 from .project import FireImpactsProject
 from .util import clip_and_reproject_raster, reproject_raster, retrieve_grid_from_wcs_for_bounds
-from .data_sources import ASRIS_WCS, TERN_SLGA_STAC
+from .data_sources import ASRIS_WCS, TERN_SLGA_STAC, ARIDITY_GRID_COARSE
 from contextlib import contextmanager
 import tempfile
 logger = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ def download_soil_data_wcs(project:FireImpactsProject, catchment:str=None, wcs_u
 ###############################################################################
 def extract_aridity_data(
     project:FireImpactsProject,
-    aridity_raster:str,
+    aridity_raster:str=None,
     catchment=None
     ):
     """
@@ -95,6 +95,8 @@ def extract_aridity_data(
     shapefile = project.boundary_files[catchment]
 
     # Save the clipped aridity data to the appropriate folder
+    if aridity_raster is None:
+        aridity_raster = ARIDITY_GRID_COARSE
     output_path = project.catchment_path(catchment,'Soils','Aridity.tif')
 
     clip_and_reproject_raster(
@@ -102,7 +104,6 @@ def extract_aridity_data(
         shapefile,
         output_path
         )
-
 
     logger.info("Aridity extraction completed.")
 
