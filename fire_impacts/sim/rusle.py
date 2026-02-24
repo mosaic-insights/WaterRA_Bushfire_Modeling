@@ -578,6 +578,13 @@ def run_usle_simulation(
                 meta=template_meta
                 )
 
+    if save_timeseries:
+        out_name = project.catchment_path(
+            catchment,
+            c.RESULTS_FOLDER_NAME,
+            c.RUSLE_OP_TIMESERIES_NAME + '.csv'
+            )
+        results[c.RUSLE_OP_TIMESERIES_NAME].to_csv(out_name)
 
     # Attach a pointer to all the rusle parameters (mostly grids) used
     #for these calcs:

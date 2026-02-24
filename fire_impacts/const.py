@@ -119,6 +119,8 @@ RUSLE_OUTPUT_RASTER_NAMES = [
     RUSLE_OP_TOTAL_Y2_NAME
     ]
 
+RUSLE_OP_TIMESERIES_NAME = 'daily_time_series'
+
 #------- Directory folder names: ---------------------------------------
 TOPOGRAPHY_FOLDER_NAME = 'Topography'
 FIRE_SEVERITY_FOLDER_NAME = 'FireSeverity'
