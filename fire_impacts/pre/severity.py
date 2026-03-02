@@ -377,6 +377,7 @@ def calculate_fire_severity(
         use_mask=True
         )
     # Write the pre-fire nbr to disk:
+    logger.info('About to call write_raster_xarray() for pre-fire...')
     write_raster_xarray(
         prefire_NBR,
         gdf.crs,
@@ -384,7 +385,7 @@ def calculate_fire_severity(
         pre_fire_name,
         shapefile_path
         )
-
+    logger.info('Exited write_raster_xarray() for pre-fire...')
     post_fire_label = 'Postfire'
     post_fire_name = f'{post_fire_label}_{nbr_label}'
     # Calculate Post-fire NBR
