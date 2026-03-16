@@ -1,6 +1,7 @@
 
 
 DEA_STAC="https://explorer.dea.ga.gov.au/stac"
+DEA_STATUS_URL='https://status.dea.ga.gov.au/'
 TERN_SLGA_STAC='https://data.tern.org.au/model-derived/slga/NationalMaps/SoilAndLandscapeGrid/catalog.json'
 ASRIS_WCS='https://www.asris.csiro.au/arcgis/services/TERN/${LAYER}_ACLEP_AU_NAT_C/MapServer/WCSServer?SERVICE=WCS&REQUEST=GetCapabilities'
 STOCHASTIC_RAINFALL_API='https://stochastic-rain.apps.hydrograph.au/rainfall'

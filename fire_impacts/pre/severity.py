@@ -16,7 +16,7 @@ from .util import metres_to_approx_degrees, clip_raster
 from fire_impacts import util as toputil # points to fire_impacts.util
 from . import mask_dnbr as mdnbr
 from fire_impacts.util import date_rel
-from .data_sources import DEA_STAC, SENTINEL_2_COLLECTIONS, LANDSAT_COLLECTIONS
+from .data_sources import DEA_STAC, DEA_STATUS_URL, SENTINEL_2_COLLECTIONS, LANDSAT_COLLECTIONS
 logger = logging.getLogger(__name__)
 
 CATALOG=None
@@ -33,7 +33,16 @@ def init_catalog(url:str=DEA_STAC):
     """
     global CATALOG
     if CATALOG is None:
-        CATALOG = pystac_client.Client.open(url)
+        try:
+            CATALOG = pystac_client.Client.open(url)
+        except Exception as e:
+            logger.error(f"Failed to connect to STAC API at {url}: {e}")
+            if url == DEA_STAC:
+                logger.error(
+                    "This is the default Digital Earth Australia (DEA) STAC URL. DEA may be experiencing issues. Please check "
+                    f"{DEA_STATUS_URL} and try again later."
+                )
+            raise RuntimeError(f"Could not initialize STAC catalog from {url}") from e
         odc.stac.configure_rio(
             cloud_defaults=True,
             aws={"aws_unsigned": True}
