@@ -28,13 +28,10 @@ def compute_klscp_layer(
     support_practice_factor:float=1.0
     ):
     """
-    Using previously-generated C, K, and LS factor rasters, generate
-    a raster layer of the KLSCP values for the catchment.
+    Using previously-generated C, K, and LS factor rasters, compute
+    KLSCP values for the catchment in memory.
 
-    Returns: None
-
-    Writes: A KLSCP raster (.tif) to the Erodibility folder of the
-    current project/catchment.
+    Returns: (klscp_array, metadata_dict)
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
@@ -54,7 +51,7 @@ def compute_klscp_layer(
         'LS_factor.tif'
         )
 
-    # Calculate values for the new layer and write them to a new raster:
+    # Calculate values for the new layer:
     with rasterio.open(c_factor_path) as c_factor, \
          rasterio.open(k_factor_path) as k_factor, \
          rasterio.open(ls_factor_path) as ls_factor:
@@ -66,29 +63,14 @@ def compute_klscp_layer(
 
         # Copy the profile metadata before exiting the `with` block.
         #We pick a layer where the nodata value is np.nan:
-        new_meta_profile = ls_factor.meta.copy()
+        meta = ls_factor.meta.copy()
 
-        # Perform the multiplication for RUSLE base layer
-        base = c_array * k_array * ls_array
-        base = base * support_practice_factor
+    # Perform the multiplication for RUSLE base layer
+    base = (c_array * k_array * ls_array * support_practice_factor).astype(np.float32)
 
-        # Save the result as a raster layer
-        base_raster_path = proj.catchment_path(
-            catchment,
-            'Erodibility',
-            'KLSCP.tif'
-            )
-        # Update the metadata:
-        new_meta_profile.update(
-            dtype=rasterio.float32,
-            count=1,
-            compress='lzw'
-            )
+    meta.update(dtype=rasterio.float32, count=1, compress='lzw')
 
-        # Write the new array with the new metadata to the relevant
-        #project folder:
-        with rasterio.open(base_raster_path, 'w', **new_meta_profile) as dst:
-            dst.write(base, 1)
+    return base, meta
 
 ###############################################################################
 def _rusle_parameter_grids(project:FireImpactsProject, catchment:str):
@@ -111,17 +93,8 @@ def _rusle_parameter_grids(project:FireImpactsProject, catchment:str):
     cell_area_m2 = project.cell_area(catchment)
     cell_area_ha = cell_area_m2 * M2_TO_HA  # Convert to hectares
 
-    # Generate a KLSCP raster to simplify analysis:
-    compute_klscp_layer(project,catchment)
-
-    # Now read that raster into memory:
-    klscp, klscp_meta = read_raster(
-        project.catchment_path(
-            catchment,
-            'Erodibility',
-            'KLSCP.tif'
-            )
-        )
+    # Compute KLSCP layer in memory:
+    klscp, klscp_meta = compute_klscp_layer(project,catchment)
 
     transform = klscp_meta['transform']
     crs = klscp_meta['crs']
