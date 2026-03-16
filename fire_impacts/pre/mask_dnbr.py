@@ -14,7 +14,6 @@ from __future__ import annotations
 # ---------- stdlib ----------
 import os
 import logging
-import tempfile
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -43,101 +42,49 @@ DEA_FALLBACK_NODATA = 255
 # Helpers
 # ======================================================================================
 
-def _stream_download(url: str, out_fp: str, timeout: int = 180, chunk: int = 1024 * 1024) -> None:
-    """
-    Streaming download.
-    Uses a temporary .part file then renames (avoid partial files looking valid).
-    """
-    out_fp = str(out_fp)
-    tmp_fp = out_fp + ".part"
-
-    os.makedirs(os.path.dirname(out_fp), exist_ok=True)
-
-    headers = {"User-Agent": "python-requests"}
-    with requests.get(url, stream=True, headers=headers, timeout=timeout) as r:
-        r.raise_for_status()
-        with open(tmp_fp, "wb") as f:
-            for b in r.iter_content(chunk_size=chunk):
-                if b:
-                    f.write(b)
-
-    if os.path.exists(out_fp):
-        os.remove(out_fp)
-    os.rename(tmp_fp, out_fp)
-
-
-def _valid_tif(fp: str) -> bool:
-    """Quick sanity check: exists, non-empty, rasterio can open."""
-    try:
-        if (not os.path.exists(fp)) or os.path.getsize(fp) == 0:
-            return False
-        with rio.open(fp) as src:
-            _ = src.count
-        return True
-    except Exception:
-        return False
-
-
 def _build_bbox_polygon_gdf(bounds: Tuple[float, float, float, float], crs) -> gpd.GeoDataFrame:
     """Create a GeoDataFrame polygon from raster bounds."""
     geom = box(bounds[0], bounds[1], bounds[2], bounds[3])
     return gpd.GeoDataFrame({"id": [1]}, geometry=[geom], crs=crs)
 
 
-def _download_latest_dea_to_temp(
-    tmp_dir: str,
+def _find_latest_dea_url(
     dea_level: str,
     start_year: Optional[int],
     lookback: int,
-    timeout: int = 180,
-    chunk: int = 1024 * 1024,
+    timeout: int = 30,
 ) -> Tuple[int, str]:
     """
-    Download DEA mosaic into a TEMP directory only (no persistent cache).
-    Tries start_year, if 404 then tries previous years.
+    Find the URL of the latest available DEA Land Cover mosaic.
+    Tries start_year first, then falls back to previous years using HEAD requests.
 
-    Returns (year, dea_local_path_in_tmp_dir)
-
-    NOTE:
-      This still writes a file (because rasterio needs random access),
-      but it lives only inside tmp_dir, which will be deleted automatically.
+    Returns (year, url)
     """
     if start_year is None:
         start_year = datetime.now().year - 1
 
-    os.makedirs(tmp_dir, exist_ok=True)
     last_err: Exception | None = None
 
     for y in range(start_year, start_year - lookback - 1, -1):
         remote_fname = f"ga_ls_landcover_class_cyear_3_mosaic_{y}--P1Y_{dea_level}.tif"
         url = f"{DEA_LANDCOVER}/{y}--P1Y/{remote_fname}"
-        out_fp = os.path.join(tmp_dir, remote_fname)
-
-        # If something already exists in the temp dir (rare), reuse it.
-        if _valid_tif(out_fp):
-            logger.info("[temp] Using existing DEA file in temp dir: %s", out_fp)
-            return y, out_fp
 
         try:
-            logger.info("[download] %s -> %s", url, out_fp)
-            _stream_download(url, out_fp, timeout=timeout, chunk=chunk)
-            logger.info("[done] Downloaded DEA file (temp): %s", out_fp)
-            return y, out_fp
+            resp = requests.head(url, timeout=timeout, allow_redirects=True)
+            resp.raise_for_status()
+            logger.info("[found] DEA Land Cover year=%s: %s", y, url)
+            return y, url
         except requests.HTTPError as e:
             last_err = e
-            logger.warning("[HTTP] year=%s failed (%s). Trying older year...", y, e)
+            logger.warning("[HTTP] year=%s not available (%s). Trying older year...", y, e)
             continue
         except requests.RequestException as e:
             last_err = e
             logger.warning("[Network] year=%s failed (%s). Trying older year...", y, e)
             continue
-        except Exception as e:
-            last_err = e
-            logger.warning("[Error] year=%s failed (%s). Trying older year...", y, e)
-            continue
 
     raise RuntimeError(
-        f"Could not download any DEA mosaic for level={dea_level} "
+        f"Could not find any DEA mosaic for level={dea_level} "
         f"trying years {start_year} back to {start_year - lookback}. "
         f"Last error: {last_err}"
     )
@@ -212,12 +159,10 @@ def mask_dnbr(
 
     Saves to each catchment FireSeverity folder:
       - masked_dNBR.tif
-      - DEA_LC_<year>_<level>_match_dNBR.tif   (projected/aligned to dNBR grid)
+      - DEA_LC_<year>.tif   (projected/aligned to dNBR grid)
 
-    IMPORTANT:
-      - Does NOT save any persistent DEA cache.
-      - Does NOT save a clipped-in-DEA-CRS file.
-      - DEA mosaic is downloaded into a temp directory and deleted automatically.
+    The DEA Land Cover mosaic is accessed remotely via HTTP range requests
+    (GDAL vsicurl), so only the blocks covering the catchment are downloaded.
     """
     if quiet:
         logger.setLevel(logging.WARNING)
@@ -263,43 +208,39 @@ def mask_dnbr(
     logger.info("mask_dnbr(): dNBR bounds=%s", dnbr_bounds)
 
     # -------------------------------
-    # Download DEA to TEMP only (no cache), clip in memory, reproject-match, save projected
+    # Find latest DEA URL and read only the relevant window via HTTP range requests
     # -------------------------------
-    with tempfile.TemporaryDirectory(prefix="dea_tmp_") as tmp_dir:
-        latest_year, raw_dea_path = _download_latest_dea_to_temp(
-            tmp_dir=tmp_dir,
-            dea_level=dea_level,
-            start_year=dea_start_year,
-            lookback=dea_lookback,
-            timeout=180,
-            chunk=1024 * 1024,
-        )
+    latest_year, dea_url = _find_latest_dea_url(
+        dea_level=dea_level,
+        start_year=dea_start_year,
+        lookback=dea_lookback,
+    )
 
-        # Clip DEA to dNBR bbox (in memory; no file saved)
-        dea_da = _clip_raster_to_geom_in_memory(
-            raster_path=raw_dea_path,
-            geom_gdf=dnbr_bbox_gdf,
-            fallback_nodata=DEA_FALLBACK_NODATA,
-        ).squeeze()
+    # Clip DEA to dNBR bbox (reads only needed blocks via GDAL vsicurl)
+    dea_da = _clip_raster_to_geom_in_memory(
+        raster_path=dea_url,
+        geom_gdf=dnbr_bbox_gdf,
+        fallback_nodata=DEA_FALLBACK_NODATA,
+    ).squeeze()
 
-        # Ensure nodata is set (important for categorical masking)
-        try:
-            if dea_da.rio.nodata is None:
-                dea_da = dea_da.rio.write_nodata(DEA_FALLBACK_NODATA)
-        except Exception:
-            pass
+    # Ensure nodata is set (important for categorical masking)
+    try:
+        if dea_da.rio.nodata is None:
+            dea_da = dea_da.rio.write_nodata(DEA_FALLBACK_NODATA)
+    except Exception:
+        pass
 
-        # Reproject to match dNBR grid (nearest for categorical classes)
-        dea_match = dea_da.rio.reproject_match(
-            dnbr,
-            resampling=rio.warp.Resampling.nearest,
-        )
+    # Reproject to match dNBR grid (nearest for categorical classes)
+    dea_match = dea_da.rio.reproject_match(
+        dnbr,
+        resampling=rio.warp.Resampling.nearest,
+    )
 
-        # Save ONLY the projected/aligned DEA
-        dea_match_path = os.path.join(sev_folder, f"DEA_LC_{latest_year}.tif")
-        logger.info("[write] %s", dea_match_path)
-        dea_match.rio.to_raster(dea_match_path, compress="deflate")
-        logger.info("[OK] Aligned DEA saved: %s", dea_match_path)
+    # Save ONLY the projected/aligned DEA
+    dea_match_path = os.path.join(sev_folder, f"DEA_LC_{latest_year}.tif")
+    logger.info("[write] %s", dea_match_path)
+    dea_match.rio.to_raster(dea_match_path, compress="deflate")
+    logger.info("[OK] Aligned DEA saved: %s", dea_match_path)
 
     # -------------------------------
     # Mask: keep only natural_code
