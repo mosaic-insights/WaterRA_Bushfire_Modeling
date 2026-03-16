@@ -1080,9 +1080,11 @@ def _compute_periods(start, end, timestep_type):
 def record_multi_period_grid(variable, fn, periods):
     """Build a recorder that accumulates a summary grid per time period.
 
-    On ``finalize()``, returns a 2-D numpy array if there is a single
-    period, or a 3-D ``xarray.DataArray`` (dims: ``time``, ``y``, ``x``)
-    when there are multiple periods.
+    Always returns an ``xarray.DataArray`` with georeferenced
+    ``easting`` and ``northing`` coordinates (derived from the affine
+    transform passed at each timestep).  Single-period results are 2-D
+    ``(northing, easting)``; multi-period results are 3-D
+    ``(time, northing, easting)``.
 
     Parameters
     ----------
@@ -1096,9 +1098,12 @@ def record_multi_period_grid(variable, fn, periods):
     # Accumulators — one entry per period
     grids = [None] * len(periods)
     counts = [0] * len(periods)
+    captured_transform = [None]  # mutable container for nonlocal capture
 
     def recorder(timestep, **kwargs):
         data = kwargs[variable]
+        if captured_transform[0] is None and 'transform' in kwargs:
+            captured_transform[0] = kwargs['transform']
         for i, (ps, pe) in enumerate(periods):
             if timestep < ps or timestep > pe:
                 continue
@@ -1114,8 +1119,21 @@ def record_multi_period_grid(variable, fn, periods):
         for i in range(len(periods)):
             grids[i] = None
             counts[i] = 0
+        captured_transform[0] = None
+
+    def _build_spatial_coords(shape):
+        """Build easting/northing coordinate arrays from the transform."""
+        t = captured_transform[0]
+        if t is None:
+            return {}
+        rows, cols = shape
+        easting = np.array([t.c + (col + 0.5) * t.a for col in range(cols)])
+        northing = np.array([t.f + (row + 0.5) * t.e for row in range(rows)])
+        return {'easting': easting, 'northing': northing}
 
     def finalize():
+        import xarray as xr
+
         # Determine grid shape from the first non-None accumulator
         shape = None
         for g in grids:
@@ -1134,16 +1152,22 @@ def record_multi_period_grid(variable, fn, periods):
                 g = g / counts[i]
             arrays.append(g)
 
-        if len(arrays) == 1:
-            return arrays[0]
+        spatial = _build_spatial_coords(shape)
 
-        import xarray as xr
-        coords = [ps for ps, _ in periods]
+        if len(arrays) == 1:
+            return xr.DataArray(
+                arrays[0],
+                dims=['northing', 'easting'],
+                coords=spatial,
+            )
+
+        time_coords = [ps for ps, _ in periods]
         stacked = np.stack(arrays, axis=0)
+        coords = {'time': time_coords, **spatial}
         return xr.DataArray(
             stacked,
-            dims=['time', 'y', 'x'],
-            coords={'time': coords},
+            dims=['time', 'northing', 'easting'],
+            coords=coords,
         )
 
     recorder.reset = reset
@@ -1182,10 +1206,10 @@ def default_rusle_recorders(
     produces one entry in the recorder dict, keyed as
     ``'{variable}_{fn}_{timestep}'`` (e.g. ``'RUSLE_sum_yearly'``).
 
-    When a temporal aggregation has multiple periods (e.g. yearly over a
-    2-year simulation), the recorder finalizes to a 3-D
-    ``xarray.DataArray`` with dims ``(time, y, x)``.  Single-period
-    results (e.g. ``'total'``) finalize to a 2-D numpy array.
+    All grid results are ``xarray.DataArray`` objects with georeferenced
+    ``easting`` and ``northing`` coordinates.  Multi-period results
+    (e.g. yearly over a 2-year simulation) have an additional ``time``
+    dimension.  Single-period results (e.g. ``'total'``) are 2-D.
 
     Parameters
     ----------
