@@ -427,6 +427,20 @@ def record_subcatchment_timeseries(
     return timeseries_recorder
 
 ###############################################################################
+def record_grid_transform():
+    t = None
+    def get_transform(timestep,transform,**kwargs): ###,**kwargs):
+        nonlocal t
+        t = transform
+        return t
+    def r(): pass
+    def f(): return t
+    get_transform.reset = r
+    get_transform.finalize = f
+
+    return get_transform
+
+###############################################################################
 def run_usle_simulation(
     project:FireImpactsProject,
     rainfall,
@@ -541,7 +555,9 @@ def run_usle_simulation(
             )
         _, template_meta = read_raster(template_raster)
         for output_raster in c.RUSLE_OUTPUT_RASTER_NAMES:
-            save_data = results[output_raster]
+            save_data = results.get(output_raster)
+            if save_data is None:
+                continue
             save_catchment_raster(
                 project=project,
                 catchment_name=catchment,
@@ -552,12 +568,15 @@ def run_usle_simulation(
                 )
 
     if save_timeseries:
-        out_name = project.catchment_path(
-            catchment,
-            c.RESULTS_FOLDER_NAME,
-            c.RUSLE_OP_TIMESERIES_NAME + '.csv'
-            )
-        results[c.RUSLE_OP_TIMESERIES_NAME].to_csv(out_name)
+        for key, df in results.items():
+            if not isinstance(df, pd.DataFrame):
+                continue
+            out_name = project.catchment_path(
+                catchment,
+                c.RESULTS_FOLDER_NAME,
+                key + '.csv'
+                )
+            df.to_csv(out_name)
 
     # Attach a pointer to all the rusle parameters (mostly grids) used
     #for these calcs:
@@ -892,4 +911,446 @@ def compute_particulates(rusle_df,constituents_df=None):
         rusle_df[column_name] = (rusle_df['RUSLE_SDR (Low severity)'] * low_severity) + (rusle_df['RUSLE_SDR (High severity)'] * high_severity)
     return rusle_df
 
+# ----- Functions for running RUSLE simulations for rainfall replicates in parallel with Dask -----
+def run_rusle_replicate(
+    proj,
+    rainfall_30min,
+    replicate_idx,
+    recorder_factory=None,
+):
+    """Run the RUSLE simulation for a single rainfall replicate.
 
+    Parameters
+    ----------
+    proj : FireImpactsProject
+        Current project.
+    rainfall_30min : xarray.Dataset
+        Rainfall replicates dataset with a ``replicate`` dimension.
+    replicate_idx : int
+        Index of the replicate to run.
+    recorder_factory : callable or None
+        A factory ``(project, start, end) -> dict`` of recorders, as
+        returned by :func:`default_rusle_recorders`.  When *None*, a
+        default factory is created via ``default_rusle_recorders()``.
+
+    Returns
+    -------
+    dict
+        Keyed by catchment name, values are the recorder results dict
+        for that catchment.
+    """
+    rain_seq = rainfall_30min.rainfall[:, replicate_idx].to_pandas()
+
+    if recorder_factory is None:
+        recorder_factory = default_rusle_recorders()
+
+    start = rain_seq.index[0]
+    end = rain_seq.index[-1]
+
+    replicate_results = {}
+    for c_name in proj.catchments:
+        recorders = recorder_factory(proj, start, end)
+        replicate_results[c_name] = run_usle_simulation(
+            proj,
+            rain_seq,
+            catchment=c_name,
+            recorders=recorders,
+            save_rasters=False,
+            save_timeseries=False,
+        )
+
+    return replicate_results
+
+
+def run_rusle_all_replicates(
+    proj,
+    rainfall_30min,
+    n_workers=None,
+    scheduler='threads',
+    replicate_indices=None,
+    recorder_factory=None,
+):
+    """Run RUSLE simulations for selected rainfall replicates in parallel with Dask.
+
+    Parameters
+    ----------
+    proj : FireImpactsProject
+        Current project.
+    rainfall_30min : xarray.Dataset
+        Rainfall replicates dataset with a ``replicate`` dimension.
+    n_workers : int or None
+        Number of dask workers.
+    scheduler : str
+        Dask scheduler name (e.g. ``'threads'`` or ``'processes'``).
+    replicate_indices : iterable of int or None
+        Which replicates to run.  Default: all.
+    recorder_factory : callable or None
+        A factory ``(project, start, end) -> dict`` as returned by
+        :func:`default_rusle_recorders`.  When *None*, a default factory
+        is created via ``default_rusle_recorders()``.
+
+    Returns
+    -------
+    dict
+        Mapping replicate index (int) to simulation outputs.
+
+    Examples
+    --------
+    Run all replicates with percentile timeseries (lighter output)::
+
+        factory = default_rusle_recorders(timeseries_mode='percentiles')
+        results = run_rusle_all_replicates(
+            proj, rainfall, recorder_factory=factory
+        )
+    """
+    import dask
+
+    if recorder_factory is None:
+        recorder_factory = default_rusle_recorders()
+
+    if replicate_indices is None:
+        replicate_indices = list(range(rainfall_30min.dims['replicate']))
+    else:
+        replicate_indices = list(replicate_indices)
+
+    tasks = [
+        dask.delayed(run_rusle_replicate)(
+            proj,
+            rainfall_30min,
+            i,
+            recorder_factory=recorder_factory,
+        )
+        for i in replicate_indices
+    ]
+
+    computed = dask.compute(*tasks, scheduler=scheduler, num_workers=n_workers)
+    return {i: result for i, result in zip(replicate_indices, computed)}
+
+
+
+###############################################################################
+_PERIOD_OFFSETS = {
+    'yearly': pd.DateOffset(years=1),
+    'monthly': pd.DateOffset(months=1),
+}
+
+
+def _compute_periods(start, end, timestep_type):
+    """Compute non-overlapping time period boundaries.
+
+    Parameters
+    ----------
+    start, end : pd.Timestamp
+    timestep_type : str
+        ``'total'``, ``'yearly'``, or ``'monthly'``.
+
+    Returns
+    -------
+    list of (period_start, period_end) tuples.  For non-final periods
+    ``period_end`` is offset by -1 s so that the boundary timestep is
+    not double-counted.
+    """
+    if timestep_type == 'total':
+        return [(start, end)]
+
+    offset = _PERIOD_OFFSETS.get(timestep_type)
+    if offset is None:
+        raise ValueError(
+            f"Unsupported grid_timestep '{timestep_type}'. "
+            "Use 'total', 'yearly', or 'monthly'."
+        )
+
+    periods = []
+    period_start = start
+    while period_start < end:
+        period_end = period_start + offset
+        if period_end > end:
+            period_end = end
+        periods.append((period_start, period_end))
+        period_start = period_end
+
+    # Offset non-final period ends by 1 s to avoid double-counting
+    return [
+        (ps, pe - pd.Timedelta(seconds=1)) if i < len(periods) - 1 else (ps, pe)
+        for i, (ps, pe) in enumerate(periods)
+    ]
+
+
+###############################################################################
+def record_multi_period_grid(variable, fn, periods):
+    """Build a recorder that accumulates a summary grid per time period.
+
+    On ``finalize()``, returns a 2-D numpy array if there is a single
+    period, or a 3-D ``xarray.DataArray`` (dims: ``time``, ``y``, ``x``)
+    when there are multiple periods.
+
+    Parameters
+    ----------
+    variable : str
+        Key to extract from the per-timestep data dict.
+    fn : str
+        ``'sum'``, ``'max'``, or ``'mean'``.
+    periods : list of (start, end) tuples
+        Each pair is a ``(pd.Timestamp, pd.Timestamp)`` half-open interval.
+    """
+    # Accumulators — one entry per period
+    grids = [None] * len(periods)
+    counts = [0] * len(periods)
+
+    def recorder(timestep, **kwargs):
+        data = kwargs[variable]
+        for i, (ps, pe) in enumerate(periods):
+            if timestep < ps or timestep > pe:
+                continue
+            counts[i] += 1
+            if grids[i] is None:
+                grids[i] = data.copy()
+            elif fn == 'max':
+                np.maximum(grids[i], data, out=grids[i])
+            else:
+                grids[i] += data
+
+    def reset():
+        for i in range(len(periods)):
+            grids[i] = None
+            counts[i] = 0
+
+    def finalize():
+        # Determine grid shape from the first non-None accumulator
+        shape = None
+        for g in grids:
+            if g is not None:
+                shape = g.shape
+                break
+        if shape is None:
+            return None
+
+        arrays = []
+        for i in range(len(periods)):
+            g = grids[i]
+            if g is None:
+                g = np.zeros(shape, dtype=np.float32)
+            elif fn == 'mean' and counts[i] > 0:
+                g = g / counts[i]
+            arrays.append(g)
+
+        if len(arrays) == 1:
+            return arrays[0]
+
+        import xarray as xr
+        coords = [ps for ps, _ in periods]
+        stacked = np.stack(arrays, axis=0)
+        return xr.DataArray(
+            stacked,
+            dims=['time', 'y', 'x'],
+            coords={'time': coords},
+        )
+
+    recorder.reset = reset
+    recorder.finalize = finalize
+    return recorder
+
+
+###############################################################################
+# Model timestep used to convert timeseries_timestep to an agg_count
+_MODEL_TIMESTEP = pd.Timedelta(minutes=30)
+
+
+def default_rusle_recorders(
+    include_grids=True,
+    grid_variables=('RUSLE',),
+    grid_fns=('sum', 'max'),
+    grid_timesteps=('yearly',),
+    include_timeseries=True,
+    timeseries_variables=('RUSLE',),
+    timeseries_fn='sum',
+    timeseries_timestep='24h',
+    timeseries_label_field=None,
+    timeseries_mode='full',
+    include_transform=True,
+):
+    """Configure RUSLE output recorders and return a factory function.
+
+    The returned factory creates a fresh dictionary of recorder closures
+    each time it is called, so every simulation run (or dask task) gets
+    independent state.  Because the configuration closure captures only
+    plain Python values (no project object), it is trivially serializable
+    for dask.
+
+    The grid recorders are built from the cartesian product of
+    ``grid_variables × grid_fns × grid_timesteps``.  Each combination
+    produces one entry in the recorder dict, keyed as
+    ``'{variable}_{fn}_{timestep}'`` (e.g. ``'RUSLE_sum_yearly'``).
+
+    When a temporal aggregation has multiple periods (e.g. yearly over a
+    2-year simulation), the recorder finalizes to a 3-D
+    ``xarray.DataArray`` with dims ``(time, y, x)``.  Single-period
+    results (e.g. ``'total'``) finalize to a 2-D numpy array.
+
+    Parameters
+    ----------
+    include_grids : bool
+        Whether to include grid summary recorders.  Default ``True``.
+        When ``False``, ``grid_variables``, ``grid_fns``, and
+        ``grid_timesteps`` are ignored.
+    grid_variables : tuple of str
+        Variables from the RUSLE generator to record in summary grids.
+        Default ``('RUSLE',)``.
+    grid_fns : tuple of str
+        Summary functions to apply per period.  Supported: ``'sum'``,
+        ``'max'``, ``'mean'``.  Default ``('sum', 'max')``.
+    grid_timesteps : tuple of str
+        Temporal aggregation levels.  Supported: ``'total'``, ``'yearly'``,
+        ``'monthly'``.  Default ``('yearly',)``.
+    include_timeseries : bool
+        Whether to include subcatchment timeseries recorders.  Default
+        ``True``.  When ``False``, all ``timeseries_*`` parameters are
+        ignored.
+    timeseries_variables : tuple of str
+        Variables to record as subcatchment timeseries.  One recorder is
+        created per variable.  Default ``('RUSLE',)``.
+    timeseries_fn : str
+        Spatial aggregation function for the timeseries.  Default ``'sum'``.
+    timeseries_timestep : str or pd.Timedelta
+        Output timestep for timeseries rows, e.g. ``'24h'``, ``'1h'``,
+        ``'12h'``.  Converted to an aggregation count based on the 30-min
+        model timestep.  Default ``'24h'`` (daily).
+    timeseries_label_field : str or None
+        Column in the subcatchment boundaries to use as zone labels.
+    timeseries_mode : str
+        ``'full'`` returns the complete DataFrame; ``'percentiles'``
+        finalizes to a DataFrame of 101 percentiles (0–100) per
+        subcatchment, suitable for exceedance probability plots and
+        much lighter than the full timeseries for ensemble runs;
+        ``'none'`` skips the timeseries entirely (equivalent to
+        ``include_timeseries=False``).
+    include_transform : bool
+        Whether to include the ``record_grid_transform`` recorder.
+
+    Returns
+    -------
+    factory : callable
+        ``factory(project, start, end) -> dict`` of recorder callables
+        ready for :func:`run_usle_simulation`.  *project* is a
+        ``FireImpactsProject`` (needed only when timeseries recorders are
+        included).  *start* and *end* can be any type accepted by
+        ``pd.Timestamp`` (string, datetime, Timestamp).  Period boundaries
+        are computed automatically from the simulation period.
+
+    Examples
+    --------
+    Default usage (yearly sum + max grids for RUSLE, daily timeseries)::
+
+        make_recorders = default_rusle_recorders()
+        recorders = make_recorders(proj, '2020-01-01', '2021-12-31')
+        results = run_usle_simulation(proj, rain, 'MyCatchment',
+                                      recorders=recorders)
+
+    Multiple variables, monthly + total grids, hourly timeseries::
+
+        make_recorders = default_rusle_recorders(
+            grid_variables=('RUSLE', 'SDR'),
+            grid_timesteps=('monthly', 'total'),
+            timeseries_variables=('RUSLE', 'SDR'),
+            timeseries_timestep='1h',
+        )
+
+    Grids only, no timeseries::
+
+        make_recorders = default_rusle_recorders(include_timeseries=False)
+
+    Timeseries only, no grids::
+
+        make_recorders = default_rusle_recorders(include_grids=False)
+
+    For ensemble runs with dask (percentiles for exceedance plots)::
+
+        make_recorders = default_rusle_recorders(timeseries_mode='percentiles')
+        run_rusle_all_replicates(proj, rainfall, recorder_factory=make_recorders)
+    """
+    if timeseries_mode == 'none':
+        include_timeseries = False
+
+    # Convert timeseries_timestep to an agg_count
+    ts_delta = pd.Timedelta(timeseries_timestep)
+    agg_count = max(1, int(ts_delta / _MODEL_TIMESTEP))
+
+    def factory(project, start, end):
+        start = pd.Timestamp(start)
+        end = pd.Timestamp(end)
+
+        recorders = {}
+
+        # --- Grid recorders: product of variables × fns × timesteps ---
+        if include_grids:
+            for ts_type in grid_timesteps:
+                periods = _compute_periods(start, end, ts_type)
+                for variable in grid_variables:
+                    for fn in grid_fns:
+                        key = f'{variable}_{fn}_{ts_type}'
+                        recorders[key] = record_multi_period_grid(
+                            variable, fn, periods,
+                        )
+
+        # --- Transform recorder ---
+        if include_transform:
+            recorders['the_transform'] = record_grid_transform()
+
+        # --- Subcatchment timeseries ---
+        if include_timeseries:
+            _add_timeseries_recorders(project, recorders)
+
+        return recorders
+
+    def _add_timeseries_recorders(project, recorders):
+        for ts_var in timeseries_variables:
+            base_ts = record_subcatchment_timeseries(
+                project,
+                ts_var,
+                fn=timeseries_fn,
+                label_field=timeseries_label_field,
+                agg_count=agg_count,
+            )
+            # Key includes variable name when there are multiple variables,
+            # otherwise uses the standard constant for backward compatibility.
+            if len(timeseries_variables) == 1:
+                ts_key = c.RUSLE_OP_TIMESERIES_NAME
+            else:
+                ts_key = f'{ts_var}_{c.RUSLE_OP_TIMESERIES_NAME}'
+
+            if timeseries_mode == 'full':
+                recorders[ts_key] = base_ts
+
+            elif timeseries_mode == 'percentiles':
+                def _make_percentiles(base):
+                    def pct_recorder(timestep, **data):
+                        return base(timestep, **data)
+
+                    def _reset():
+                        base.reset()
+
+                    def _finalize():
+                        df = base.finalize()
+                        if df is None or df.empty:
+                            return pd.DataFrame()
+                        pctiles = np.arange(101)
+                        result = df.apply(
+                            lambda col: np.percentile(col, pctiles)
+                        )
+                        result.index = pctiles
+                        result.index.name = 'percentile'
+                        return result
+
+                    pct_recorder.reset = _reset
+                    pct_recorder.finalize = _finalize
+                    return pct_recorder
+
+                recorders[ts_key + '_percentiles'] = _make_percentiles(base_ts)
+
+            else:
+                raise ValueError(
+                    f"Unsupported timeseries_mode='{timeseries_mode}'. "
+                    "Use 'full', 'percentiles', or 'none'."
+                )
+
+    return factory
