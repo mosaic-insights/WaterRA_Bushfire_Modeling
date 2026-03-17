@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 import datetime as dt
 import xarray as xr
 import pandas as pd
@@ -160,99 +161,233 @@ def convert_rainfall_to_dataframe(source):
 def import_measured_rainfall(
     excel_path:str,
     rain_col:str,
+    out_time_res:str,
     datetime_col:str='Datetime',
-    attributes:dict=None
-    ):
+    in_measure:str='intensity',
+    in_units:str='mm/h',
+    out_measure:str='depth',
+    out_units:str='mm',
+    save_daily_timeseries:bool=True,
+    daily_ts_loc:str|None=None
+    ) -> pd.DataFrame:
     """
-    Import an excel file of rainfall observations into an xarray in the 
-    format the module is expecting.
+    Import an excel file of rainfall observations
 
     Parameters:
     - excel_path (str): path to an excel file with timestamps and 
-    observed rainfall values (mm)
+    observed rainfall values
     - rain_col (str): name of the column in the excel file holding the
     rainfall values
+    - out_time_res (str): Time resolution desired for the resulting 
+    dataframe. Should match the formats expected by the rule argument 
+    for pd.DataFrame.resample() e.g. '30min' '12min' 
     - datetime_col (str): Name of the date-time stamp column in the 
     excel file
-    - attributes (dict): Dictionary of metadata attributes describing
-    the dataset
+    - in_measure (str): Measurement used in the input data. Should be 
+    either 'depth' or 'intensity'
+    - in_units (str): Units of the input measurement. For depth it 
+    should always be mm, and intensity should always be mm/h
+    - out_measure (str): whether the output values should be depth or 
+    intensity
+    - out_units (str): units of output values; should be mm for depth 
+    or mm/h for intensity
+    
+    - save_daily_timeseries (bool): whether the timeseries should be saved to 
+    the Results folder
 
     Returns:
-    - rain_array (xarray Dataset): an xarray which mimics the pyraingen
-    output that aggregate_rainfall_data is expecting.
+    - rain_data (DataFrame): Dataframe with a DateTime index and 
+    rainfall values for the requested measure/units and resampled to 
+    the requested frequency.
     --------------------------------------------------------------------
     Notes:
     - Currently only coding this for a single-station Excel file
     --------------------------------------------------------------------
     """
+    input_meas = in_measure.lower().strip()
+    input_unit = in_units.lower().strip()
+    output_meas = out_measure.lower().strip()
+    output_unit = out_units.lower().strip()
+
+    allowed_measures = ['intensity', 'depth']
+    allowed_units = ['mm', 'mm/h']
+
+    # Checks to make sure request has been coded for:
+    if input_meas not in allowed_measures:
+        raise ValueError(
+            'Imported rainfall values must be intensity or depth '
+            f'measurements, but {in_measure} was requested.'
+            )
+    if input_unit not in allowed_units:
+        raise ValueError(
+            'imported rainfall units must be either "mm" for depth or '
+            f'"mm/h" for intensity. {in_units} were requested for '
+            f'{in_measure}'
+            )
+    if output_meas not in allowed_measures:
+        raise ValueError(
+            f'Output was requested in {out_measure} values but must be '
+            f'one of {allowed_measures}.'
+            )
+    if output_unit not in allowed_units:
+        raise ValueError(
+            f'Output was requested for {out_measure} in {out_units}, '
+            'but must be either "depth" in "mm" or "intensity" in '
+            '"mm/h"'
+            )
+    
+    # Read in excel and make sure it has the relevant columns:
     df = pd.read_excel(excel_path)
-    df['day'] = df[datetime_col].dt.strftime('%Y-%m-%d')
-    subday_fmt = '%H:%M'
-    df['subday'] = df[datetime_col].dt.strftime(subday_fmt)
-    df['simulation'] = 0
-
-    # Convert day to numpy, then to Julian date:
-    day_arr = df['day'].to_numpy(dtype=str)
-    julian_day_arr = convert_to_julian(day_arr)
-    df['day'] = julian_day_arr
-
-    # Convert subday to numpy for efficient vectorised operations:
-    subd_arr = df['subday'].to_numpy(dtype=str)
-
-    # Extract fraction of day for subday:
-    h, _, m = np.strings.partition(subd_arr, ':')
-    sec_in_day = 24 * 60 * 60
-    hour_secs = h.astype(int) * 60 * 60
-    minute_secs = m.astype(int) * 60
-    tot_secs = hour_secs + minute_secs
-    subday_dim_coord = (tot_secs / sec_in_day).astype(np.float64)
-    df['subday'] = subday_dim_coord
-
-    # Convert the dimensional columns to a MultiIndex in prep for
-    #converting to xarray:
-    df.index = pd.MultiIndex.from_frame(
-        df[['day', 'subday', 'simulation']]
-        )
-
-    # Get rid of all columns but the actual rainfall one, because their
-    #values are now stored in the MultiIndex:
-    df2 = df.drop(columns=['day', 'subday', 'simulation', datetime_col])
-
-    # Use groupby to get rid of any duplicates in the MultiIndex. There
-    #shouldn't theoretically be any, but if there are two or more 
-    #records for the same day/subday/simulation, this will convert to
-    #just one record with the mean rainfall value of the inputs:
-    df3 = df2.groupby(level=df2.index.names, sort=False).mean()
-
-    # Rename rainfall column to what the module is expecting:
-    expected_rain_col = 'rainfall'
-    df3 = df3.rename(columns={rain_col: expected_rain_col})
+    if rain_col not in df.columns:
+        raise ValueError(
+            f'Could not find {rain_col} in columns of imported Excel '
+            f'rainfall file. Actual columns: {df.columns}'
+            )
+    if datetime_col not in df.columns:
+        raise ValueError(
+            f'Could not find {datetime_col} in columns of imported '
+            f'Excel rainfall file. Actual columns: {df.columns}'
+            )
     
-    if attributes is not None:
-        attribute_dict = attributes
+    # Convert the datetime column to datetime objects and make it the 
+    #index.
+    df2 = df.set_index(pd.to_datetime(df[datetime_col]), drop=True)[[rain_col]]
+    
+    # Resample to the requested frequency:
+    df_out, new_col_name = resample_rainfall_timeseries(
+        rainfall_data=df2,
+        data_col_name=rain_col,
+        out_time_res=out_time_res,
+        out_measure=output_meas,
+        input_measure=input_meas
+        )
+    
+    if save_daily_timeseries:
+        df_daily, _ = resample_rainfall_timeseries(
+            df_out,
+            data_col_name=new_col_name,
+            out_time_res='d',
+            out_measure='depth',
+            input_measure=input_meas
+            )
+        name_ext = os.path.join(
+            daily_ts_loc,
+            'daily_rain_depth_ts.csv'
+            )
+        df_daily.to_csv(name_ext)
+    
+    return df_out[[new_col_name]]
+
+###############################################################################
+def get_stamps_per_hour(ts:pd.DataFrame) -> float:
+    """
+    Look at a Datetime index and extract the number of timestamps per 
+    hour
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    # Ensure sorted index:
+    ts2 = ts.sort_index()
+    
+    # Get the time differences ignoring na values:
+    deltas = ts2.index.to_series().diff().dropna()
+    # Exclude any 0-delta (duplicate) timesteps:
+    deltas = deltas[deltas > pd.Timedelta(0)]
+    # Throw an error if there are no deltas > 0:
+    if deltas.empty:
+        raise ValueError(
+            'All timestamp deltas are 0 i.e. all timestamps are '
+            'duplicates'
+            )
+
+    # Get the number of seconds:
+    median_seconds = deltas.median().total_seconds()
+
+    # Convert from seconds to hours:
+    stamps_per_hour = 3600 / median_seconds
+
+    return stamps_per_hour
+
+###############################################################################
+def depth_to_intensity(depth:pd.DataFrame, depth_col:str) -> pd.Series:
+    """
+    --------------------------------------------------------------------
+    Notes:
+    - Returns intensity values in mm/hr
+    --------------------------------------------------------------------
+    """
+    hourly_steps = get_stamps_per_hour(depth)
+    intensity = depth[depth_col] * hourly_steps
+    return intensity
+
+###############################################################################
+def intensity_to_depth(intensity:pd.DataFrame, int_col:str) -> pd.Series:
+    """
+    --------------------------------------------------------------------
+    Notes:
+    - Assumes intensity values are in mm/hr.
+    --------------------------------------------------------------------
+    """
+    hourly_steps = get_stamps_per_hour(intensity)
+    depth = intensity[int_col] / hourly_steps
+    return depth
+
+###############################################################################
+def resample_rainfall_timeseries(
+    rainfall_data:pd.DataFrame,
+    data_col_name:str,
+    out_time_res:str,
+    out_measure:str,
+    input_measure:str
+    ) -> tuple[pd.DataFrame, str]:
+    """
+    Resample rainfall values to the requested frequency and return a 
+    timeseries dataframe
+    --------------------------------------------------------------------
+    Assumptions:
+    - Intensity values are all in mm/hr
+    - Depth values are all per-timestamp and not cumulative
+    --------------------------------------------------------------------
+    """
+    depth_col_name = 'depth_mm'
+    int_col_name = 'intensity_mm_hr'
+    rain_data = rainfall_data.copy()
+    if input_measure == 'intensity':
+        # Convert to depth first before resampling:
+        rain_data[depth_col_name] = intensity_to_depth(
+            rain_data, data_col_name
+            )
+    elif input_measure == 'depth':
+        rain_data[depth_col_name] = rainfall_data[data_col_name]
     else:
-        hist = (
-            'Initial receipt date unknown. '
-            f'Converted to xarray {datetime.now()}'
-        )
-        unspec = 'Not provided'
-        attribute_dict = {
-            'Title': unspec,
-            'History': hist,
-            'Source': unspec,
-            'Institution': unspec,
-            'Conventions': unspec 
-            }
+        raise ValueError(
+            'Input measure must be either "depth" or "intensity"; '
+            f'received {input_measure}.'
+            )
 
-    # Convert to an xarray Dataset with the MultiIndex levels as 
-    #dimenstions:
-    ds = df3.to_xarray()
+    # Get just depth values as the requested output frequency:
+    rain_inter = rain_data[[depth_col_name]].resample(out_time_res).sum()
+
+    # If the target measure is depth we're already there:
+    if out_measure == 'depth':
+        return rain_inter, depth_col_name
+    # Otherwise we need to convert back to intensity:
+    elif out_measure == 'intensity':
+        # Multiply the depth measured for each timestamp
+        rain_inter[int_col_name] = depth_to_intensity(
+            rain_inter,
+            depth_col_name
+            )
+        return rain_inter, int_col_name
+    else:
+        raise ValueError(
+            'Output measure must be either "depth" or "intensity"; '
+            f'{out_measure} was requested.'
+            )
     
-    # Adjust so simulation is a non-coordinate dimension to match 
-    #expected pyraingen output:
-    ds = ds.drop_indexes('simulation')
-    ds = ds.reset_coords('simulation', drop=True)
 
 
-    ds.attrs = attribute_dict
-    return ds
+
+
+
+    
