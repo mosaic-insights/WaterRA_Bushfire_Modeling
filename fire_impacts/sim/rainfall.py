@@ -4,6 +4,7 @@ import datetime as dt
 import xarray as xr
 import pandas as pd
 import numpy as np
+from fire_impacts import const as c
 
 def convert_from_julian(dates):
     from pyraingen.jdtodatevec import jdToDateVec
@@ -167,6 +168,7 @@ def import_measured_rainfall(
     in_units:str='mm/h',
     out_measure:str='depth',
     out_units:str='mm',
+    mult_factor=1,
     save_daily_timeseries:bool=True,
     daily_ts_loc:str|None=None
     ) -> pd.DataFrame:
@@ -191,7 +193,9 @@ def import_measured_rainfall(
     intensity
     - out_units (str): units of output values; should be mm for depth 
     or mm/h for intensity
-    
+    - mult_factor (float): For testing purposes, factor by which the 
+    rainfall values should be multiplied. Mainly used to force debris 
+    flow events for testing, should be left at 1 in most cases
     - save_daily_timeseries (bool): whether the timeseries should be saved to 
     the Results folder
 
@@ -252,6 +256,8 @@ def import_measured_rainfall(
     # Convert the datetime column to datetime objects and make it the 
     #index.
     df2 = df.set_index(pd.to_datetime(df[datetime_col]), drop=True)[[rain_col]]
+    # Multiply the rainfall values by the requested factor:
+    df2[rain_col] *= mult_factor
     
     # Resample to the requested frequency:
     df_out, new_col_name = resample_rainfall_timeseries(
@@ -263,16 +269,17 @@ def import_measured_rainfall(
         )
     
     if save_daily_timeseries:
-        df_daily, _ = resample_rainfall_timeseries(
+        df_daily, inter_col_name = resample_rainfall_timeseries(
             df_out,
             data_col_name=new_col_name,
             out_time_res='d',
             out_measure='depth',
             input_measure=input_meas
             )
+        df_daily = df_daily.rename(columns={inter_col_name: 'rain_depth_mm'})
         name_ext = os.path.join(
             daily_ts_loc,
-            'daily_rain_depth_ts.csv'
+            c.RAIN_DAILY_DEPTH_TIMESERIES_NAME + '.csv'
             )
         df_daily.to_csv(name_ext)
     

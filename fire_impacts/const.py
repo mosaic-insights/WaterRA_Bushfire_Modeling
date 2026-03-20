@@ -80,6 +80,8 @@ CLY_M_ACC_KG = 'Clay mass accumulation (kg)'
 TOT_EM_ACC_KG = 'Total erosion mass accumulation (kg)'
 TOT_EM_ACC_KG_HA = 'Total erosion mass accumulation (kg/ha)'
 SED_M_ACC_KG = 'Sediment mass accumulation (kg)'
+DEBRIS_MASS_FIELD = CLY_M_ACC_KG
+CATCH_TOTAL_DEBRIS_TONNES = 'Total debris flow mass (tonnes)'
 # Headwaters:
 HW_ID = 'hw_ID'
 HW_ENDP_X = 'X_EndP'
@@ -122,6 +124,8 @@ RUSLE_OUTPUT_RASTER_NAMES = [
 RUSLE_OP_TIMESERIES_NAME = 'erosion_daily_time_series'
 # Debris flow:
 DEBRIS_OP_TIMESERIES_NAME = 'debris_daily_time_series'
+# Rainfall:
+RAIN_DAILY_DEPTH_TIMESERIES_NAME = 'rain_depth_daily_time_series'
 
 #------- Directory folder names: ---------------------------------------
 TOPOGRAPHY_FOLDER_NAME = 'Topography'

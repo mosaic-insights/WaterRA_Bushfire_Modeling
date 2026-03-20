@@ -1206,19 +1206,32 @@ def debris_flow(
             'Saved debris flow by headweater results table to '
             f'{Debris_Flow_Data_path}'
             )
-    
     # Code to save a timeseries of debris flow event totals for the 
     #whole catchment:
     if save_daily_catchment_timeseries:
-        resampled = resample_debris_timeseries(event_ts, 'D')
-        resampled['catchment_debris_flows'] = resampled.sum(axis=1)
-        resamp_tot = resampled['catchment_debris_flows']
+        # Get a dataframe of just the debris mass for each headwater:
+        mass_df = Debris_Flow_Data[
+            [HW_ID, DEBRIS_MASS_FIELD]
+            ].set_index(HW_ID, drop=True)
+        # Multiply the number of events in each timestep by the mass 
+        #of debris in that headwater (pandas magic) to get a figure for 
+        #debris mass delivered:
+        flow_mass = event_ts.mul(mass_df[DEBRIS_MASS_FIELD], axis=1)
+        # Sum the result across all headwaters for each row, and 
+        #convert to tonnes:
+        flow_mass[CATCH_TOTAL_DEBRIS_TONNES] = flow_mass.sum(axis=1) / 1e3
+        # Now resample to daily totals:
+        flow_mass = flow_mass[[CATCH_TOTAL_DEBRIS_TONNES]].resample('D').sum()
         out_name = proj.catchment_path(
             catchment,
             RESULTS_FOLDER_NAME,
             DEBRIS_OP_TIMESERIES_NAME + '.csv'
             )
-        resamp_tot.to_csv(out_name)
+        logger.info(
+            'Saved daily catchment-level debris flow mass totals to '
+            f'{out_path}'
+            )
+        flow_mass.to_csv(out_name)
 
     logger.info('Done!')
     

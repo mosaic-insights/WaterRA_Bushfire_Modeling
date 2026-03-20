@@ -1269,6 +1269,7 @@ class FireImpactsProject(object):
             )
         return sfig
     
+    ###########################################################################
     def get_fire_end_date(self, catchment):
         """
         Get the end date of the fire for a oarticular catchment as a 
