@@ -559,7 +559,7 @@ def run_usle_simulation(
     #number of timesteps (48 for daily aggregation on half-hourly data).
     for key, recorder in recorders.items():
         results[key] = recorder.finalize()
-
+    
     if save_rasters:
         template_raster = project.catchment_path(
             catchment,
@@ -568,6 +568,12 @@ def run_usle_simulation(
             )
         _, template_meta = read_raster(template_raster)
         for output_raster in c.RUSLE_OUTPUT_RASTER_NAMES:
+            if output_raster not in results.keys():
+                logger.info(
+                    f'{output_raster} was not recorded. Trying next '
+                    'output type...'
+                    )
+                continue
             save_data = results[output_raster]
             save_catchment_raster(
                 project=project,
@@ -584,7 +590,10 @@ def run_usle_simulation(
             c.RESULTS_FOLDER_NAME,
             c.RUSLE_OP_TIMESERIES_NAME + '.csv'
             )
-        results[c.RUSLE_OP_TIMESERIES_NAME].to_csv(out_name)
+        output = pd.DataFrame(data=results[c.RUSLE_OP_TIMESERIES_NAME])
+        output.index.name='Datetime'
+        output.columns = ['total_mass_eroded_tonnes']
+        output.to_csv(out_name)
 
     # Attach a pointer to all the rusle parameters (mostly grids) used
     #for these calcs:
