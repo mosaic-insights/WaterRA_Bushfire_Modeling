@@ -879,7 +879,7 @@ class FireImpactsProject(object):
     def get_saved_data(
         self,
         catchment:str,
-        type:str,
+        type:str|None,
         name:str,
         format:str='csv'
         ) -> pd.DataFrame:
@@ -889,7 +889,12 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         """
         # Get the subfolder for the requested catchment:
-        data_table_loc = self.catchment_path(catchment, type)
+        if type is None:
+            data_table_loc = self.catchment_path(catchment)
+        # If a data type has been requested e.g. DebrisFlow, go to that
+        #subfolder:
+        else:
+            data_table_loc = self.catchment_path(catchment, type)
         # Get the actual path the the file: 
         data_table_path = os.path.join(
             data_table_loc,
@@ -956,7 +961,7 @@ class FireImpactsProject(object):
     def plot_headwaters(
         self,
         catchment:str,
-        colour_col:str,
+        colour_col:str|None=None,
         table:pd.DataFrame | None=None,
         data_type:str='DebrisFlow',
         existing_figure=None,
@@ -988,33 +993,50 @@ class FireImpactsProject(object):
         # Get the headwater polygons:
         headwaters_gdf = self.get_headwaters(catchment)
 
+        if data_type == 'DebrisFlow':
+            data_folder = data_type
+            data_file_name = 'DebrisFlowData'
+        else:
+            data_folder = None
+            data_file_name = 'Soil_Slope_Aridity_dNBR_headwaters'
+        
         # Get the non-spatial data
         non_geo_data = self.get_table_safely(
             colour_col=colour_col,
-            data_type=data_type,
-            data_file='DebrisFlowData',
+            data_type=data_folder,
+            data_file=data_file_name,
             catchment=catchment,
             allow_basic=False,
             table=table
             )
         
-        # Get a subset of just the ID coloumn and the colour column:
-        id_col = self.headwater_id
-        ng_for_join = non_geo_data[[id_col, colour_col]]
-
-        vis_params = self.get_vis_params(colour_col)
+        if colour_col in non_geo_data.columns:
+            # Get a subset of just the ID coloumn and the colour column:
+            id_col = self.headwater_id
+            ng_for_join = non_geo_data[[id_col, colour_col]]
+            actual_colour_col = colour_col
+            column_for_title = colour_col
+        else:
+            id_col = None
+            ng_for_join = None
+            actual_colour_col = None
+            column_for_title = '(plain)'
+        if colour_col is not None:
+            vis_params = self.get_vis_params(colour_col)
+        else:
+            vis_params = self.get_vis_params('Nothing')
 
         ax_title = toputil.make_axes_title(
             catchment,
             'Headwaters',
             vis_params['title_varname'],
-            colour_col
+            column_for_title
             )
         
         self.plot_catchment_polygons(
             catchment=catchment,
             polygons=headwaters_gdf,
-            colour_col=colour_col,
+            colour_col=actual_colour_col,
             vis_params=vis_params,
             title=ax_title,
             non_geo_data=ng_for_join,
@@ -1121,10 +1143,12 @@ class FireImpactsProject(object):
         #column is not there:
         if non_geo_data is not None:
             if colour_col not in non_geo_data.columns:
-                raise ValueError(
+                logger.warning(
                     'project.plot_subcatchments() was asked to colour '
                     f'the map based on {colour_col}, but data table '
-                    f'only had the following:\n {non_geo_data.columns}'
+                    f'only had the following:\n {non_geo_data.columns}. '
+                    'plotting will proceed but with all symbols the ' \
+                    'same.'
                     )
         return non_geo_data
 
