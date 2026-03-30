@@ -1,3 +1,5 @@
+from warnings import deprecated
+
 from affine import Affine
 import numpy as np
 import pandas as pd
@@ -585,6 +587,7 @@ def run_usle_simulation(
     return results
 
 ###############################################################################
+@deprecated("This function is deprecated and will be removed in a future version. Please use run_usle_simulation() with appropriate recorders instead.")
 def gridded_total_rusle(project:FireImpactsProject, rainfall, catchment=None):
     """
     --------------------------------------------------------------------
@@ -616,6 +619,7 @@ def gridded_total_rusle(project:FireImpactsProject, rainfall, catchment=None):
     return total_eroded, total_delivered, params[-1]
 
 ###############################################################################
+@deprecated("This function is deprecated and will be removed in a future version. Please use run_usle_simulation() with appropriate recorders instead.")
 def calculate_lumped_rusle(
     subcatchments:gpd.GeoDataFrame,
     rainfall:pd.DataFrame,
@@ -811,6 +815,7 @@ def generate_rusle(
 
         yield (timestep, result)
 
+@deprecated("This function is deprecated and will be removed in a future version. Please use run_usle_simulation() with appropriate recorders instead.")
 def generate_rusle_for_feature(geometry:list, rainfall:pd.DataFrame, klscp:np.array, sdr:np.array, dnbr:np.array, cell_area_ha:float, transform:Affine):
     '''
     Calculates RUSLE and SDR erosion values for sub-catchments based on rainfall simulations.
