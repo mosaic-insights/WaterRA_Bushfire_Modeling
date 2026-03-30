@@ -64,6 +64,14 @@ def get_flow_layers(
             'Existing flow direction raster found at '
             f'{try_flowdir_path}. Reading this in instead of computing '
             'new raster.'
+
+            )
+        PYSHEDS_D8_NODATA_VAL = np.int32(0)
+        flow_dir_meta['nodata'] = PYSHEDS_D8_NODATA_VAL
+        flow_dir_array = np.where(
+            flow_dir_array < NODATA_VAL_INT,
+            PYSHEDS_D8_NODATA_VAL,
+            flow_dir_array
             )
         flow_dir_data = topography.rio_to_pysheds(
             flow_dir_array,
@@ -94,6 +102,7 @@ def get_flow_layers(
             f'{try_flowacc_path}. Reading this in instead of computing '
             'new raster.'
             )
+        flow_acc_meta['nodata'] = np.int32(flow_acc_meta['nodata'])
         flow_acc_data = topography.rio_to_pysheds(
             flow_acc_array,
             flow_acc_meta,
