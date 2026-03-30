@@ -250,19 +250,12 @@ def mask_dnbr(
     if nd is not None:
         keep = keep & (dea_match != nd)
 
-    # IMPORTANT:
-    # - You currently set masked-out pixels to 0.
-    #   If you'd rather set them to nodata (cleaner), tell me and I’ll switch it.
-    dnbr_masked = xr.where(keep, dnbr, 0).astype(dnbr.dtype)
+    # Set non-vegetation pixels to NaN so they are excluded from
+    # downstream erosion calculations (e.g. water bodies inside the
+    # catchment boundary).
+    dnbr_masked = xr.where(keep, dnbr, float('nan')).astype('float32')
     dnbr_masked = dnbr_masked.rio.write_crs(dnbr_crs)
-
-    # Keep original dNBR nodata if present
-    try:
-        dnbr_nd = dnbr.rio.nodata
-        if dnbr_nd is not None:
-            dnbr_masked = dnbr_masked.rio.write_nodata(dnbr_nd)
-    except Exception:
-        pass
+    dnbr_masked = dnbr_masked.rio.write_nodata(float('nan'))
 
     out_path = os.path.join(sev_folder, "masked_dNBR.tif")
     logger.info("[write] %s", out_path)
