@@ -10,10 +10,17 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def compute_adjusted_k_c(proj: FireImpactsProject, catchment: str, c_factor_fn: str = None, k_factor_fn: str = None):
+def compute_adjusted_k_c(
+        proj: FireImpactsProject,
+        catchment: str,
+        c_factor_fn: str = None,
+        k_factor_fn: str = None,
+        compute_lsi_factor: bool = True,
+        compute_sdr: bool = True):
     if catchment is None:
         proj.for_each_catchment(lambda c: compute_adjusted_k_c(
-            proj, c, c_factor_fn, k_factor_fn))
+            proj, c, c_factor_fn, k_factor_fn,
+            compute_lsi_factor, compute_sdr))
         return
 
     # bounds = proj.catchment_bounds(catchment)
@@ -73,6 +80,17 @@ def compute_adjusted_k_c(proj: FireImpactsProject, catchment: str, c_factor_fn: 
 
     with rio.open(proj.catchment_path(catchment, 'Erodibility', 'K_factor_adjusted.tif'), 'w', **out_meta) as dest:
         dest.write(K, 1)
+
+    # Compute remaining RUSLE input rasters. Both LS_factor.tif and SDR.tif
+    # are required before running simulations. They are computed here so that
+    # a single call to compute_adjusted_k_c leaves the project fully prepared
+    # for RUSLE simulation. Each can be suppressed via its keyword argument if
+    # the caller wants to run them separately with custom parameters.
+    if compute_lsi_factor:
+        compute_lsi(proj, catchment)
+    if compute_sdr:
+        compute_sediment_delivery_ratio(proj, catchment)
+
 
 def _topographic_indices(project: FireImpactsProject,catchment: str):
     dem_path = project.catchment_path(catchment, 'Topography', 'DEM.tif')
