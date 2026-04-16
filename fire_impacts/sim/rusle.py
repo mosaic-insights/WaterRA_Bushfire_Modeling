@@ -1,4 +1,24 @@
-from warnings import deprecated
+# warnings.deprecated was added in Python 3.13. Provide a compatible
+# fallback for older environments that emits a DeprecationWarning.
+try:
+    from warnings import deprecated
+except ImportError:
+    import functools
+    import warnings as _warnings
+
+    def deprecated(msg):
+        """Backport shim for warnings.deprecated (Python < 3.13)."""
+        def decorator(func):
+            @functools.wraps(func)
+            def wrapper(*args, **kwargs):
+                _warnings.warn(
+                    f"{func.__name__} is deprecated: {msg}",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                return func(*args, **kwargs)
+            return wrapper
+        return decorator
 
 from affine import Affine
 import numpy as np
