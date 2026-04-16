@@ -26,7 +26,6 @@ import os
 # There are a few things that you will need, however:
 #
 # * A catchment boundary for your area of interest (eg Shapefile, GeoJSON)
-# * A suitable, high resolution DEM for the area. The 1" SRTM derived DEM-H is a good option for most cases.
 # * The date of a fire event within the catchment,
 # * Several other datasets that you will need to manually download and store locally
 #
@@ -34,25 +33,66 @@ import os
 # %% [markdown]
 # ## Installation
 #
-# You will need a Python installation with the various libaries installed.
+# You will need Python with a set of scientific libraries installed, plus the `fire_impacts` package itself. There are two ways to set up the environment, described below. **Method 1 is recommended** — it creates a fully self-contained environment and is less likely to run into conflicts.
 #
-# As a starting point, a base scientific Python installation that includes `numpy`, `pandas`, `jupyter`, `matplotlib`. For Windows users, the easiest way to set up such an environment is to use Anaconda Python, or miniconda.
+# #### A note on environments
 #
-# This base environment should be extended with specific libraries that are used by the fire impacts library. These are listed in `requirements.txt` and can be installed using `pip` from a command prompt:
+# A Python *environment* is an isolated copy of Python with its own set of installed libraries. Using an environment means the packages needed for this project won't interfere with anything else on your computer. The instructions below use [Miniforge](https://github.com/conda-forge/miniforge), a lightweight tool for managing Python environments in scientific work. If you don't already have it installed, download and install Miniforge first. Miniforge includes `mamba`, a faster drop-in replacement for the `conda` command that is recommended for resolving complex environments like this one.
+#
+#
+# ### Method 1 — Create a new environment from `environment.yml` (recommended)
+#
+# The file `environment.yml` in this repository describes a complete Python environment: the Python version, all required libraries, and their versions. Mamba will create this environment for you in one step.
+#
+# Open a **Miniforge Prompt** (Windows) or terminal (Mac/Linux), navigate to the folder containing this repository, and run:
 #
 # ```
-# cd <directory-with-library>
+# mamba env create -f environment.yml
+# ```
+#
+# This will take a few minutes. When it finishes, activate the new environment:
+#
+# ```
+# conda activate bushfire-py313
+# ```
+#
+# You will need to activate the environment each time you open a new terminal or Miniforge Prompt before working with this project.
+#
+# > **Note:** `environment.yml` includes a patched version of the `pysheds` library (installed directly from GitHub) to fix a compatibility issue with NumPy 2.0. It also installs `dea-tools`, which requires the PostgreSQL development headers (`pg_config`) to be available on your system. On Windows this is usually satisfied automatically via conda-forge; if the install fails at that step, see the [dea-tools documentation](https://github.com/GeoscienceAustralia/dea-notebooks).
+#
+#
+# ### Method 2 — Install into an existing Python environment using `requirements.txt`
+#
+# Use this method if you already have a working scientific Python installation (with `numpy`, `pandas`, `matplotlib`, and `jupyter`) and want to add the project's extra dependencies to it.
+#
+# A `requirements.txt` file is a plain text list of Python packages. The `pip` tool reads this file and installs each one.
+#
+# Open a Miniforge Prompt or terminal, activate your existing environment if you have one, navigate to the folder containing this repository, and run:
+#
+# ```
 # pip install -r requirements.txt
 # ```
 #
-# Finally, the fire impacts library itself should be installed. If you have cloned the git repository, you can install from your local copy. From the command prompt:
+# > **Note:** `requirements.txt` installs the standard `pysheds` release from PyPI. If you encounter errors related to `pysheds` and NumPy, install the patched version manually:
+# > ```
+# > pip install https://github.com/joelrahman/pysheds/archive/refs/heads/master.zip
+# > ```
+#
+#
+# ### Installing the `fire_impacts` package itself
+#
+# Whichever method you used above, the final step is the same: install the `fire_impacts` library from your local copy of the repository. The `-e` flag installs it in *editable* mode, meaning any changes to the source code take effect immediately without reinstalling.
+#
+# From the repository folder, run:
 #
 # ```
-# cd <directory-with-library>
 # pip install -e .
 # ```
 #
-# When the installation has completed, the following import statements should run without error
+#
+# #### Checking the installation
+#
+# When the installation is complete, all the following imports should run without error.
 
 # %%
 from fire_impacts import FireImpactsProject
@@ -103,8 +143,8 @@ proj = FireImpactsProject('\\zz_TempDump\\fire_impacts_example_project',clear=Tr
 # **Note:** The boundary coverage should include a coordinate reference system (CRS). This is the CRS that will be used for all other data stored in relation to this catchment in the project.
 
 # %%
-example_catchment_name = 'example_small_catchment'
-proj.add_catchment(f'..\\test_data\\{example_catchment_name}.json')
+example_catchment_name = 'EgSmallCatchment_7899'
+proj.add_catchment(f'..\\test_data\\{example_catchment_name}.shp')
 
 # %%
 proj.catchments
@@ -137,43 +177,52 @@ proj.catchments
 #
 # * Headwater catchment delineation, used to model the areas likely to trigger debris flow, and
 # * Slope and hillslope length, used in the parameterisation of erosion modelling.
-#
-# You will need a suitable DEM. We have provided a DEM for the example catchment, but if you are using your own catchment you need a DEM covering the entire catchment.
-#
-# If using the [national 1" DEM](https://ecat.ga.gov.au/geonetwork/srv/eng/catalog.search#/metadata/72759), use the hydrologically enforced DEM (DEM-H).
-#
 
 # %% [markdown]
 # ### Digital Elevation Model (DEM)
+# By default, the package will download the Geoscience Australia hydrologically-enforced DEM ([national 1" DEM](https://ecat.ga.gov.au/geonetwork/srv/eng/catalog.search#/metadata/72759)), which has a horizontal spatial resolution of 1 arc second (approx. 30 metres).
+#
+# > **Option**: If you have a specific DEM you wish to use, you can provide the path\filename.ext as the second argument of `topography.extract_catchment_dems()`. Make sure the DEM covers the entire catchment area.
+#
 
 # %%
-# Point python to the DEM. For any case other than this example catchment, update the path to point to your actual DEM:
-DEM_FILENAME='..\\test_data\\example_dem.tif'
-# Extract the catchment only from the input DEM:
-topography.extract_catchment_dems(proj,DEM_FILENAME)
+# If you have a specific DEM you want to use, point python to it. 
+#We have a DEM for the example catchment included in the test date for this package.
+optional_DEM_filename = '..\\test_data\\example_dem.tif'
+# Get a DEM. To use your own DEM, replace None with the filename path:
+topography.extract_catchment_dems(proj,None)
 # Visualise the processed DEM:
 proj.plot_catchment_raster('Topography','DEM.tif')
 
 # %% [markdown]
 # ### Headwaters
-# We will see the headwaters visualised later on in this notebook.
+# This package will automatically derived headwaters from the DEM.
 
 # %%
 # Just call the extract_headwaters() method from the topography module:
 headwaters = topography.extract_headwaters(proj)
 
+# %% [markdown]
+# Headwaters can be visualised straightaway as a map using `FireImpactsProject.plot_headwaters()`. You can also view a quick summary of the headwaters in table form using the built-in `.head()` method.
+
 # %%
-# See a snapshot of what the table of headwaters looks like:
-headwaters['example_small_catchment'].head()
+# Plot the raw headwaters to see what they look like:
+proj.plot_headwaters(example_catchment_name)
+
+# See a snapshot of what they look like in tabular form:
+headwaters[example_catchment_name].head()
 
 # %% [markdown]
 # ### Slope
+# A slope layer is calculated when the headwaters are defined. You can view it easily:
 
 # %%
+# View the slope raster which was derived from the DEM:
 proj.plot_catchment_raster('Topography','Slope')
 
 # %% [markdown]
 # ### Flow Accumulation
+# Similarly, hydrology rasters such as flow accumulation are also saved and can be viewed in the same way:
 
 # %%
 proj.plot_catchment_raster('Topography','Flow_accumulation')
@@ -197,7 +246,7 @@ proj.plot_catchment_raster('Topography','Flow_accumulation')
 # Fire severity data requires measuring Normalised Burn Ration (NBR) before and after a fire, to produce a measure of change called delta-NBR (abbreviated as dNBR or ΔNBR).
 #
 # This package automatically finds and downloads relevant satellite-based NBR datasets and computes fire severity for your catchment. 
-# > **Note**: Currently, our example small catchment does not have a known fire date, so dNBR values will not be high. This will be updated in a future release to use an actual or simulated fire for this area.
+# > **Note**: The fire start and end dates here correspond to an actual fire that took place in this area.
 
 # %%
 fire_start_date = '2019-01-15'  # Set fire start date (the date that fire started)
@@ -221,7 +270,15 @@ proj.plot_catchment_raster('FireSeverity', 'dNBR')
 # Soil data are required for RUSLE (erosion) and debris flow simulations.
 #
 # ### Required Inputs
-# Many of these will be downloaded and processed automatically by the package, but you will need a **TERN API KEY** to access them. We suggest creating your API key then saving it as an Environment Variable under your user profile (for Windows). We assume this has already been set up for the purpose of this example notebook.
+# Many of these will be downloaded and processed automatically by the package, but you will need a **TERN API KEY** to access them. The following instructions show you how to obtain an API and save it on Windows in such a way that python will be able to access it:
+# 1. Create a TERN account - [Instructions for creating a TERN account (TERN Youtube channel)](https://youtu.be/HTlc0xk4zf8?si=z_vEqToQDwnK4-KI)
+# 2. Generate an API key - [Generating an API key](https://youtu.be/HTlc0xk4zf8?si=z_vEqToQDwnK4-KI)
+# 3. Save the full API key as a user-level environment variable:
+#    1. *System Properties > Advanced > Environment Variables > User variables > New*
+#    2. *Variable name*: `'TERN_API_KEY'` or similar
+#    3. *Variable value*: Paste the full API key here
+#    4. *OK*
+# 5. Use `os.environ.get()` with your variable name so python can see what it is, without having to store the key itself in this notebook.
 #
 # You will also need an **Aridity raster** file, which is included for the example catchment but will need to be obtained for your catchment of interest before loading the subsequent datasets or running the simulations.
 
@@ -232,7 +289,7 @@ API_KEY = os.environ.get('TERN_API_KEY')
 soil.download_soil_data_stac(proj, api_key=API_KEY)
 
 # Existing aridity raster location:
-ARIDITY=r'..\\test_data\\Aridity_PT.tif'
+ARIDITY=r'..\\test_data\\AridityPT_EgSmallCatchment_7899.tif'
 # Extract aridity data for each catchment:
 soil.extract_aridity_data(proj, aridity_raster=ARIDITY)
 
@@ -254,8 +311,8 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 
 # %%
 # Point to your provided rasters:
-c_factor_path='..\\test_data\\c_factor_g94.tif'
-k_factor_path='..\\test_data\\k_factor_g94.tif'
+c_factor_path='..\\test_data\\Soil_RusleFactor_C_EgSmallCatchment_7899.tif'
+k_factor_path='..\\test_data\\Soil_RusleFactor_K_EgSmallCatchment_7899.tif'
 
 # Compute adjusted K- and C-factors ready for erosion simulation:
 rusle.compute_adjusted_k_c(proj, catchment=example_catchment_name, c_factor_fn=c_factor_path, k_factor_fn=k_factor_path)
@@ -273,10 +330,10 @@ summary = project.summary_stats(proj)
 # The *summary stats* table shows these inputs for each headwater. You can view them in table form easily...
 
 # %%
-summary['example_small_catchment'].head()
+summary[example_catchment_name].head()
 
 # %% [markdown]
-# ...and also in a map, where we can see the shape of those headwaters now:
+# ...and also in a map, where we can see the same headwaters now coloured differently based on the severity of the fire in that area:
 
 # %%
-proj.plot_headwaters(example_catchment_name, colour_col='dNBR_mean', table=summary['example_small_catchment'])
+proj.plot_headwaters(example_catchment_name, colour_col='dNBR_mean', table=summary[example_catchment_name])
