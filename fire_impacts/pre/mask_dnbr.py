@@ -52,41 +52,104 @@ def _find_latest_dea_url(
     dea_level: str,
     start_year: Optional[int],
     lookback: int,
-    timeout: int = 30,
+    timeout: int = 10,
 ) -> Tuple[int, str]:
     """
     Find the URL of the latest available DEA Land Cover mosaic.
-    Tries start_year first, then falls back to previous years using HEAD requests.
 
-    Returns (year, url)
+    Tries start_year first, then falls back year-by-year on HTTP 404.
+    Fails immediately with an informative error for connectivity problems
+    or unexpected HTTP status codes — those are not year-specific issues
+    and retrying other years would not help.
+
+    Parameters:
+    - dea_level: DEA Land Cover level string (e.g. 'level3')
+    - start_year: most recent year to try; defaults to current year - 1
+    - lookback: how many years back to try before giving up
+    - timeout: per-request connect/read timeout in seconds
+
+    Returns:
+    - (year, url) tuple for the first available mosaic found
     """
     if start_year is None:
         start_year = datetime.now().year - 1
 
-    last_err: Exception | None = None
+    years_tried = []
 
     for y in range(start_year, start_year - lookback - 1, -1):
-        remote_fname = f"ga_ls_landcover_class_cyear_3_mosaic_{y}--P1Y_{dea_level}.tif"
+        remote_fname = (
+            f"ga_ls_landcover_class_cyear_3_mosaic_{y}--P1Y_{dea_level}.tif"
+        )
         url = f"{DEA_LANDCOVER}/{y}--P1Y/{remote_fname}"
+        years_tried.append(y)
 
         try:
             resp = requests.head(url, timeout=timeout, allow_redirects=True)
-            resp.raise_for_status()
+        except requests.ConnectionError as e:
+            # The server is unreachable (host down, DNS failure, network
+            # error). No point trying other years — they all use the same
+            # host. Fail immediately with a clear message.
+            raise RuntimeError(
+                f"Could not connect to the DEA Land Cover server. "
+                f"Check your internet connection and try again later.\n"
+                f"  Host: {DEA_LANDCOVER}\n"
+                f"  Detail: {e}"
+            ) from e
+        except requests.Timeout as e:
+            # The server did not respond within the timeout. Same logic as
+            # ConnectionError — retrying other years won't help.
+            raise RuntimeError(
+                f"Connection to the DEA Land Cover server timed out "
+                f"(timeout={timeout}s). The server may be temporarily "
+                f"unavailable. Try again later.\n"
+                f"  Host: {DEA_LANDCOVER}\n"
+                f"  Detail: {e}"
+            ) from e
+        except requests.RequestException as e:
+            # Any other request-level failure (e.g. SSL error). Fail fast.
+            raise RuntimeError(
+                f"Unexpected network error contacting DEA Land Cover "
+                f"server: {e}"
+            ) from e
+
+        # Inspect the HTTP status code directly rather than relying on
+        # raise_for_status(), so we can give a specific message per code.
+        if resp.status_code == 200:
             logger.info("[found] DEA Land Cover year=%s: %s", y, url)
             return y, url
-        except requests.HTTPError as e:
-            last_err = e
-            logger.warning("[HTTP] year=%s not available (%s). Trying older year...", y, e)
+        elif resp.status_code == 404:
+            # This year's file does not exist yet — try the next older year.
+            logger.info(
+                "DEA Land Cover mosaic not yet available for year=%s "
+                "(HTTP 404). Trying older year...", y
+            )
             continue
-        except requests.RequestException as e:
-            last_err = e
-            logger.warning("[Network] year=%s failed (%s). Trying older year...", y, e)
-            continue
+        elif resp.status_code in (401, 403):
+            raise RuntimeError(
+                f"Access denied to DEA Land Cover server "
+                f"(HTTP {resp.status_code}) for year={y}.\n"
+                f"  URL: {url}\n"
+                f"This is a permissions issue, not a year-availability "
+                f"issue. Check that the DEA data catalogue is publicly "
+                f"accessible."
+            )
+        else:
+            raise RuntimeError(
+                f"Unexpected HTTP {resp.status_code} response from DEA "
+                f"Land Cover server for year={y}.\n"
+                f"  URL: {url}\n"
+                f"This may indicate a server-side problem or a change in "
+                f"the URL structure. Try again later or check:\n"
+                f"  {DEA_LANDCOVER}"
+            )
 
+    # Reached here only if every year returned HTTP 404. The server is
+    # reachable but no mosaic was found — the URL pattern may have changed.
     raise RuntimeError(
-        f"Could not find any DEA mosaic for level={dea_level} "
-        f"trying years {start_year} back to {start_year - lookback}. "
-        f"Last error: {last_err}"
+        f"DEA Land Cover mosaic not found for any year in "
+        f"{years_tried[0]}\u2013{years_tried[-1]} (all returned HTTP 404).\n"
+        f"The URL structure may have changed. Check the DEA catalogue:\n"
+        f"  {DEA_LANDCOVER}"
     )
 
 
