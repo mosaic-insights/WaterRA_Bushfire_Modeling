@@ -109,17 +109,26 @@ SLOPE_DEG_MEAN_ADJ = SLOPE_DEG_MEAN + adjusted_suffix
 I12_CRIT_Y = HF_I12_CRIT + year_suffix
 
 #------ Output file names: ---------------------------------------------
-# RUSLE:
+# RUSLE erosion:
 RUSLE_OP_PEAK_Y1_NAME = 'peak_erosion_y1'
 RUSLE_OP_PEAK_Y2_NAME = 'peak_erosion_y2'
 RUSLE_OP_TOTAL_Y1_NAME = 'erosion_y1'
 RUSLE_OP_TOTAL_Y2_NAME = 'erosion_y2'
 RUSLE_OP_TIMESERIES_NAME = 'daily_time_series'
+# Sediment delivered to streams (RUSLE × SDR ratio):
+DELIVERED_OP_PEAK_Y1_NAME = 'peak_delivered_y1'
+DELIVERED_OP_PEAK_Y2_NAME = 'peak_delivered_y2'
+DELIVERED_OP_TOTAL_Y1_NAME = 'delivered_y1'
+DELIVERED_OP_TOTAL_Y2_NAME = 'delivered_y2'
 RUSLE_OUTPUT_RASTER_NAMES = [
     RUSLE_OP_PEAK_Y1_NAME,
     RUSLE_OP_PEAK_Y2_NAME,
     RUSLE_OP_TOTAL_Y1_NAME,
-    RUSLE_OP_TOTAL_Y2_NAME
+    RUSLE_OP_TOTAL_Y2_NAME,
+    DELIVERED_OP_PEAK_Y1_NAME,
+    DELIVERED_OP_PEAK_Y2_NAME,
+    DELIVERED_OP_TOTAL_Y1_NAME,
+    DELIVERED_OP_TOTAL_Y2_NAME,
     ]
 RUSLE_OP_TIMESERIES_NAME = 'erosion_daily_time_series'
 # Debris flow:

@@ -497,7 +497,7 @@ def run_usle_simulation(
     - Each recorder function should accept parameters
     (timestep, **data) and return recorded results.
     - The data dictionary passed to each recorder will contain keys
-    such as 'RUSLE', 'SDR', etc.
+    such as 'RUSLE', 'delivered', etc.
     - Each recorder function should also have 'reset' and 'finalize'
     methods to manage state.
     --------------------------------------------------------------------
@@ -733,11 +733,12 @@ def generate_rusle(
         - 'intensity' (float)
         - 'erosivity' (float)
         - 'RUSLE' (np.array)
-        - 'SDR' (np.array)
+        - 'delivered' (np.array): sediment delivered to streams
+          (RUSLE × SDR ratio), same units as RUSLE
         - 'RUSLE_below_threshold' (np.array)
         - 'RUSLE_above_threshold' (np.array)
-        - 'SDR_below_threshold' (np.array)
-        - 'SDR_above_threshold' (np.array))
+        - 'delivered_below_threshold' (np.array)
+        - 'delivered_above_threshold' (np.array))
     --------------------------------------------------------------------
     Notes:
     - This is a GENERATOR function which will return results as an
@@ -770,11 +771,11 @@ def generate_rusle(
             'intensity': 0.0,
             'erosivity': 0.0,
             'RUSLE': np.zeros_like(klscp, dtype=np.float32),
-            'SDR': np.zeros_like(klscp, dtype=np.float32),
+            'delivered': np.zeros_like(klscp, dtype=np.float32),
             'RUSLE_below_threshold': np.zeros_like(klscp, dtype=np.float32),
             'RUSLE_above_threshold': np.zeros_like(klscp, dtype=np.float32),
-            'SDR_below_threshold': np.zeros_like(klscp, dtype=np.float32),
-            'SDR_above_threshold': np.zeros_like(klscp, dtype=np.float32),
+            'delivered_below_threshold': np.zeros_like(klscp, dtype=np.float32),
+            'delivered_above_threshold': np.zeros_like(klscp, dtype=np.float32),
         }
 
         # Skip calculations if delta_v_r is 0
@@ -801,16 +802,16 @@ def generate_rusle(
         RUSLE = (R * klscp) * cell_area_ha  # Total erosion in tonnes per hectare
         result['RUSLE'] = RUSLE
 
-        # Calculate SDR_RUSLE
-        # TODO: sediment delivered? kg? t?
-        SDR_RUSLE = RUSLE * sdr  # Delivered erosion/sediment
-        result['SDR'] = SDR_RUSLE
+        # Sediment delivered to streams: erosion × SDR ratio.
+        # TODO: confirm units (tonnes?)
+        delivered = RUSLE * sdr
+        result['delivered'] = delivered
 
         # Apply severity masks
         result['RUSLE_below_threshold'] = np.where(dnbr_below_threshold, RUSLE, 0)
         result['RUSLE_above_threshold'] = np.where(dnbr_above_threshold, RUSLE, 0)
-        result['SDR_below_threshold'] = np.where(dnbr_below_threshold, SDR_RUSLE, 0)
-        result['SDR_above_threshold'] = np.where(dnbr_above_threshold, SDR_RUSLE, 0)
+        result['delivered_below_threshold'] = np.where(dnbr_below_threshold, delivered, 0)
+        result['delivered_above_threshold'] = np.where(dnbr_above_threshold, delivered, 0)
 
         # Check if LOG_INTERVAL_SECONDS have elapsed since last log
         current_time = time.time()
@@ -1298,9 +1299,9 @@ def default_rusle_recorders(
     Multiple variables, monthly + total grids, hourly timeseries::
 
         make_recorders = default_rusle_recorders(
-            grid_variables=('RUSLE', 'SDR'),
+            grid_variables=('RUSLE', 'delivered'),
             grid_timesteps=('monthly', 'total'),
-            timeseries_variables=('RUSLE', 'SDR'),
+            timeseries_variables=('RUSLE', 'delivered'),
             timeseries_timestep='1h',
         )
 
