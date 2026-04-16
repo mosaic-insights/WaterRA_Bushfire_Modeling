@@ -744,7 +744,7 @@ def plot_spatial_vector(
     return this_crs, this_cbar, existing_axes
 
 ###########################################################################
-def get_erosion_title(file_or_col:str):
+def get_erosion_title(file_or_col:str, type:str):
     """
     Construct the 'title varname' attribute when plotting the 
     different types of erosion outputs
@@ -765,7 +765,8 @@ def get_erosion_title(file_or_col:str):
     else:
         agg = '-'
 
-    title = f'{agg} Erosion {year}'
+    meas = type.title()
+    title = f'{agg} {meas} {year}'
 
     return title
 

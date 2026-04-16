@@ -683,6 +683,15 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither'
         }
 
+        self.vis_delivered = {
+            'cmap': 'cividis',
+            'measure': 'Sediment Delivery',
+            'units': 'tonnes per cell',
+            'title_varname': '',
+            'norm': 'linear',
+            'cbar_extend': 'neither'
+        }
+
     ###########################################################################
     def get_vis_params(self, file_or_col_name:str):
         """
@@ -713,6 +722,7 @@ class FireImpactsProject(object):
             'num_events': self.vis_num_debris_flow_events,
             'aridity': self.vis_aridity,
             'erosion': self.vis_erosion,
+            'delivered': self.vis_delivered,
             'dem': self.vis_DEM,
             'plain': default_params
             }
@@ -843,13 +853,18 @@ class FireImpactsProject(object):
 
         useful_filename_part = file_name.split('.')[0].lower()
         if 'erosion' in file_name:
-            title = toputil.get_erosion_title(useful_filename_part)
+            title = toputil.get_erosion_title(
+                useful_filename_part, 'erosion'
+                )
+            vis_params['title_varname'] = title
+        elif 'delivered' in file_name:
+            title = toputil.get_erosion_title(
+                useful_filename_part, 'delivered'
+                )
             vis_params['title_varname'] = title
             
         catch_name = toputil.clean_chart_title(catchment)
         chart_title = catch_name + ': ' + vis_params['title_varname']
-
-
 
         ax = figure.axes[axes_index]
         img, this_crs, cbar = toputil.plot_spatial_raster(
