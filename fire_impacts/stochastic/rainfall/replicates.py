@@ -120,6 +120,27 @@ def get_rainfall_replicates(
         )
     elev = np.nanmean(dem)
     rep = get_replicates(
-        lat, lon, elev, mean_annual_rainfall, average_temperature, num_years, num_replicates)
+        lat, lon, elev, mean_annual_rainfall, average_temperature,
+        num_years, num_replicates)
+
+    # The API returns data anchored to an arbitrary internal epoch.
+    # Shift the time axis so the sequence starts at the requested
+    # start date, preserving all rainfall values unchanged.
+    start_ts = pd.Timestamp(start)
+    time_offset = start_ts - pd.Timestamp(rep.time.values[0])
+    rep = rep.assign_coords(time=rep.time + time_offset)
+
+    # Warn if the generated data doesn't cover the full requested range.
+    end_ts = pd.Timestamp(end)
+    data_end = pd.Timestamp(rep.time.values[-1])
+    if data_end < end_ts:
+        logger.warning(
+            "Stochastic rainfall data ends at %s, which is before the "
+            "requested end date %s. The generated num_years=%d may be "
+            "too short to cover the full requested period. Downstream "
+            "aggregation will be truncated.",
+            data_end.date(), end_ts.date(), num_years
+        )
+
     return rep
 
