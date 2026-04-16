@@ -713,7 +713,8 @@ class FireImpactsProject(object):
             'num_events': self.vis_num_debris_flow_events,
             'aridity': self.vis_aridity,
             'erosion': self.vis_erosion,
-            'dem': self.vis_DEM
+            'dem': self.vis_DEM,
+            'plain': default_params
             }
         
         # Return the vis_params attribute if the input string matches:
@@ -1028,7 +1029,7 @@ class FireImpactsProject(object):
         if colour_col is not None:
             vis_params = self.get_vis_params(colour_col)
         else:
-            vis_params = self.get_vis_params('Nothing')
+            vis_params = self.get_vis_params('Plain')
 
         ax_title = toputil.make_axes_title(
             catchment,
