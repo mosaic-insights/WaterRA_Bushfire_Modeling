@@ -1000,17 +1000,21 @@ class FireImpactsProject(object):
             data_folder = None
             data_file_name = 'Soil_Slope_Aridity_dNBR_headwaters'
         
-        # Get the non-spatial data
-        non_geo_data = self.get_table_safely(
-            colour_col=colour_col,
-            data_type=data_folder,
-            data_file=data_file_name,
-            catchment=catchment,
-            allow_basic=False,
-            table=table
-            )
-        
-        if colour_col in non_geo_data.columns:
+        # If no colour column or data table is provided, skip data
+        # loading entirely and render plain shapes.
+        if colour_col is None and table is None:
+            non_geo_data = None
+        else:
+            non_geo_data = self.get_table_safely(
+                colour_col=colour_col,
+                data_type=data_folder,
+                data_file=data_file_name,
+                catchment=catchment,
+                allow_basic=False,
+                table=table
+                )
+
+        if non_geo_data is not None and colour_col in non_geo_data.columns:
             # Get a subset of just the ID coloumn and the colour column:
             id_col = self.headwater_id
             ng_for_join = non_geo_data[[id_col, colour_col]]
