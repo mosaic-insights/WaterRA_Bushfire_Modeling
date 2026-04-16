@@ -523,16 +523,26 @@ def insert_colourbar(axes, normaliser, vis_params):
 ###############################################################################
 def plot_spatial_raster(
     existing_axes,
-    full_raster_path:str,    
+    full_raster_path:str,
     vis_params:dict,
-    title:str, 
-    colourbar:bool=True
+    title:str,
+    colourbar:bool=True,
+    clip_geometry=None
     ):
     """
     Plot a raster in a standardised way
 
     Parameters:
+    - existing_axes: matplotlib axes to plot onto
+    - full_raster_path (str): path to the raster file
     - vis_params (dict): dictionary of visualisation parameters
+    - title (str): title for the axes
+    - colourbar (bool): whether to add a colourbar
+    - clip_geometry (GeoDataFrame): optional boundary to clip the raster
+      to in-memory before plotting. Cells outside the boundary are masked
+      out, and the colourmap range is derived only from in-boundary
+      values. The GeoDataFrame is reprojected to match the raster CRS if
+      needed.
 
     Returns:
     - img, the raster image artist created by this function
@@ -548,13 +558,29 @@ def plot_spatial_raster(
 
     # Open the raster and start building the plot:
     with rio.open(full_raster_path) as src:
-        # Get relevant data and metadata:
-        data = src.read(1)
+        # Optionally clip the raster to the supplied boundary in-memory.
+        # rasterio.mask requires the geometry CRS to match the raster,
+        # so reproject if needed.
+        if clip_geometry is not None:
+            from rasterio.mask import mask as rio_mask
+            boundary = clip_geometry.to_crs(src.crs)
+            shapes = [geom.__geo_interface__
+                      for geom in boundary.geometry]
+            # filled=False returns a numpy masked array, which works
+            # for any dtype (including int). We convert to float and
+            # set masked cells to NaN below.
+            clipped, transform = rio_mask(
+                src, shapes, crop=True, filled=False)
+            data = clipped[0].astype(float)
+            data[clipped[0].mask] = np.nan
+        else:
+            data = src.read(1).astype(float)
+            transform = src.transform
+
+        # Replace any raster nodata value with NaN:
         no_data_value = src.nodata
         if no_data_value is not None:
-            # Replace NoData values with NaN
             data = np.where(data == no_data_value, np.nan, data)
-        transform = src.transform
 
         # Grab the crs while we have it:
         this_crs = src.crs

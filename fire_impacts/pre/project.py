@@ -857,7 +857,8 @@ class FireImpactsProject(object):
             raster_path,
             vis_params,
             title=chart_title,
-            colourbar=True
+            colourbar=True,
+            clip_geometry=gdf
             )
 
         # Get the coordinate reference of the raster so we can
