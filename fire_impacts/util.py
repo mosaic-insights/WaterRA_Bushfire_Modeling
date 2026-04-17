@@ -771,12 +771,26 @@ def get_erosion_title(file_or_col:str, type:str):
     return title
 
 ###############################################################################
-def get_zonal_stats(gdf, raster_path,label):
+def get_zonal_stats(gdf, raster_path, label, stats=None):
     """
-    
+    Compute zonal statistics for a raster against a GeoDataFrame of
+    zones.
+
+    Parameters:
+    - gdf: GeoDataFrame of zone polygons
+    - raster_path (str): path to the raster file
+    - label (str): descriptive label used in log messages
+    - stats (list): OPTIONAL list of stat names recognised by
+      rasterstats (e.g. ['sum'], ['mean', 'max']). Defaults to
+      the module-level STATS list if not provided.
+
+    Returns:
+    - list of dicts, one per zone, with requested stat keys
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
+    if stats is None:
+        stats = STATS
     with rio.open(raster_path) as src:
         logger.info(
             f'Getting zonal stats for raster in {src.crs.to_epsg()}.'
@@ -788,11 +802,13 @@ def get_zonal_stats(gdf, raster_path,label):
         else:
             temp_gdf = gdf
 
-        stats = rs.zonal_stats(
+        # Note: rasterstats handles CRS differences internally, so
+        # temp_gdf and gdf both work here.
+        zstats = rs.zonal_stats(
             gdf,
             raster_path,
-            stats=STATS,
+            stats=stats,
             nodata=src.nodata or -9999
             )
-    return stats
+    return zstats
 

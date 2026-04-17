@@ -133,6 +133,10 @@ RUSLE_OUTPUT_RASTER_NAMES = [
 RUSLE_OP_TIMESERIES_NAME = 'erosion_daily_time_series'
 # Debris flow:
 DEBRIS_OP_TIMESERIES_NAME = 'debris_daily_time_series'
+# Subcatchment summary outputs (aggregated from headwater/raster
+# results):
+RUSLE_SC_SUMMARY_NAME = 'rusle_subcatchment_summary'
+DEBRIS_SC_SUMMARY_NAME = 'DebrisFlowData_subcatchments'
 # Rainfall:
 RAIN_DAILY_DEPTH_TIMESERIES_NAME = 'rain_depth_daily_time_series'
 

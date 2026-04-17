@@ -1069,19 +1069,86 @@ class FireImpactsProject(object):
     ###########################################################################
     def plot_subcatchments(
         self,
-        catchment:str,
-        colour_col:str,
-        data_type:str='',
-        data_file:str='Soil_Slope_Aridity_dNBR_subcatchments',
-        table:pd.DataFrame | None=None,
+        catchment: str,
+        colour_col: str,
+        data_type: str | None = None,
+        data_file: str | None = None,
+        table: pd.DataFrame | None = None,
         existing_figure=None,
         existing_axes=None
         ):
         """
+        Plot subcatchment polygons coloured by a specified data column.
 
+        Parameters:
+        - catchment (str): name of the catchment in the current project
+        - colour_col (str): column name to use for polygon colouring
+        - data_type (str): OPTIONAL subfolder name under the catchment
+          directory where the data CSV lives (e.g. 'Results',
+          'DebrisFlow'). Auto-detected from colour_col if not given.
+        - data_file (str): OPTIONAL CSV file name (without extension).
+          Auto-detected from colour_col if not given.
+        - table (pd.DataFrame): OPTIONAL pre-loaded data table. Skips
+          file loading if provided.
+        - existing_figure: matplotlib figure to plot onto
+        - existing_axes: matplotlib axes to plot onto
         ----------------------------------------------------------------
+        Notes:
+        - Auto-detection rules (applied when data_file is not supplied):
+            - colour_col contains 'erosion' or 'delivered':
+              reads rusle_subcatchment_summary.csv from Results/
+            - colour_col contains 'events', 'debris', 'mass', or
+              'i12': reads DebrisFlowData_subcatchments.csv from
+              DebrisFlow/
+            - otherwise: reads Soil_Slope_Aridity_dNBR_subcatchments
+              from the catchment root (original behaviour)
+        - Shorthand column names are accepted:
+            - 'erosion_y1' resolves to 'erosion_y1_sum'
+            - 'peak_erosion_y1' resolves to 'peak_erosion_y1_mean'
+            - 'mass' resolves to the debris mass column
+              (const.DEBRIS_MASS_FIELD)
+        - Calling convention: (catchment, data_folder, colour_col)
+          is also accepted as a positional form for backwards
+          compatibility, e.g.
+          plot_subcatchments(name, 'DebrisFlow', 'Year1_num_events')
         ----------------------------------------------------------------
         """
+        # Support positional calling convention
+        # (catchment, folder_name, colour_col). If colour_col looks
+        # like a data folder rather than a column name and data_type
+        # has been provided, the user probably passed them in the old
+        # order — swap them:
+        _known_folders = {
+            'DebrisFlow', 'Results', 'Topography', 'Soils',
+            'Erodibility', 'Delivery', 'Subcatchments'
+            }
+        if colour_col in _known_folders and data_type is not None:
+            colour_col, data_type = data_type, colour_col
+
+        # Auto-detect data_file from colour_col when not supplied.
+        # data_type is also set here if not already provided:
+        if data_file is None and table is None:
+            col_lower = colour_col.lower()
+            if any(k in col_lower for k in ('erosion', 'delivered')):
+                # RUSLE and sediment delivery outputs — produced by
+                # aggregate_rusle_to_subcatchments(), in Results/:
+                if data_type is None:
+                    data_type = const.RESULTS_FOLDER_NAME
+                data_file = const.RUSLE_SC_SUMMARY_NAME
+            elif any(k in col_lower
+                     for k in ('events', 'debris', 'mass', 'i12')):
+                # Debris flow outputs — produced by
+                # aggregate_debris_flow_summary_to_subcatchments(),
+                # in DebrisFlow/:
+                if data_type is None:
+                    data_type = 'DebrisFlow'
+                data_file = const.DEBRIS_SC_SUMMARY_NAME
+            else:
+                # Fall back to soil/slope/aridity summary:
+                if data_type is None:
+                    data_type = ''
+                data_file = 'Soil_Slope_Aridity_dNBR_subcatchments'
+
         subcatch_gdf = self.get_subcatchments(catchment)
 
         # Get the non-spatial data
@@ -1094,6 +1161,32 @@ class FireImpactsProject(object):
             table=table
             )
 
+        # Resolve shorthand column names before looking up the data:
+        if non_geo_data is not None:
+            # 'mass' → the actual debris mass delivery column:
+            if colour_col.lower().strip() == 'mass':
+                colour_col = const.DEBRIS_MASS_FIELD
+            # Bare column names → append the default aggregation
+            # suffix. Rules:
+            #   i12 columns   → _min (most vulnerable headwater)
+            #   peak rasters  → _mean
+            #   total rasters → _sum
+            if colour_col not in non_geo_data.columns:
+                _cl = colour_col.lower()
+                if 'i12' in _cl:
+                    suffix = '_min'
+                elif 'peak' in _cl:
+                    suffix = '_mean'
+                else:
+                    suffix = '_sum'
+                candidate = colour_col + suffix
+                if candidate in non_geo_data.columns:
+                    logger.info(
+                        'Column %s not found; resolving to %s.',
+                        colour_col, candidate
+                        )
+                    colour_col = candidate
+
         id_col = self.subcatchment_id
         if non_geo_data is not None:
             ng_for_join = non_geo_data[[id_col, colour_col]]
@@ -1102,13 +1195,74 @@ class FireImpactsProject(object):
 
         vis_params = self.get_vis_params(colour_col)
 
-        ax_title = toputil.make_axes_title(
-            catchment,
-            'Subcatchments',
-            vis_params['title_varname'],
-            colour_col
+        # Copy before modifying — vis_params dicts are shared instance
+        # attributes and must not be mutated in-place:
+        vis_params = vis_params.copy()
+
+        # Set title and units for erosion/delivery columns. The
+        # aggregation suffix on the column name (_sum or _mean) tells
+        # us exactly what was computed, so we can label it precisely:
+        col_lower = colour_col.lower()
+        if 'erosion' in col_lower or 'delivered' in col_lower:
+            var_type = (
+                'Erosion' if 'erosion' in col_lower else 'Delivered'
             )
-        
+            year = (
+                'Year 1' if 'y1' in col_lower
+                else 'Year 2' if 'y2' in col_lower
+                else ''
+            )
+            if colour_col.endswith('_mean'):
+                # Peak rasters: each cell stores the max 30-min value.
+                # Zonal stat is mean across cells — 'mean tonnes per
+                # cell' distinguishes it from a catchment total:
+                agg = 'Peak 30-min'
+                vis_params['units'] = 'mean peak tonnes per cell'
+            else:
+                # Total rasters: each cell stores cumulative tonnes.
+                # Zonal stat is a sum — i.e. total tonnes eroded
+                # within the subcatchment:
+                agg = 'Total'
+                vis_params['units'] = 'total tonnes'
+            vis_params['title_varname'] = (
+                f'{agg} {var_type} {year}'.strip()
+            )
+
+        elif 'i12' in col_lower:
+            # I12 threshold columns: suffix tells us min or mean.
+            # Year is encoded as 'year_1' / 'year_2' in the col name:
+            year = (
+                'Year 1' if 'year_1' in col_lower
+                else 'Year 2' if 'year_2' in col_lower
+                else ''
+            )
+            stat_desc = (
+                'Min' if col_lower.endswith('_min') else 'Mean'
+            )
+            vis_params['title_varname'] = (
+                f'{stat_desc} I12 Threshold {year}'.strip()
+            )
+            # Units are already 'mm/hr' from vis_i12_crit — correct.
+
+        # Build the axes title. When title_varname is fully specified,
+        # use it directly — make_axes_title sniffs year/agg from the
+        # column name and would duplicate them for suffixed columns
+        # like 'peak_erosion_y1_mean'. Fall back to make_axes_title
+        # only for columns with no recognised title_varname:
+        if vis_params.get('title_varname'):
+            catch_label = toputil.clean_chart_title(catchment)
+            ax_title = (
+                f'{catch_label} Subcatchments: '
+                f'{vis_params["title_varname"]}'
+            )
+        else:
+            ax_title = toputil.make_axes_title(
+                catchment,
+                'Subcatchments',
+                vis_params['title_varname'],
+                colour_col
+                )
+
         self.plot_catchment_polygons(
             catchment=catchment,
             polygons=subcatch_gdf,

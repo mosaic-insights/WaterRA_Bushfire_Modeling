@@ -33,7 +33,7 @@ import time
 from fire_impacts import const as c
 from fire_impacts.const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS
 from fire_impacts.pre.util import read_aligned, read_raster
-from fire_impacts.util import load_package_data
+from fire_impacts.util import load_package_data, get_zonal_stats
 logger = logging.getLogger(__name__)
 
 from fire_impacts.pre import FireImpactsProject
@@ -463,6 +463,82 @@ def record_grid_transform():
     return get_transform
 
 ###############################################################################
+def aggregate_rusle_to_subcatchments(
+    project: FireImpactsProject,
+    catchment: str
+    ) -> 'pd.DataFrame | None':
+    """
+    Compute zonal statistics for each saved RUSLE output raster and
+    write a per-subcatchment summary CSV to the Results folder.
+
+    Parameters:
+    - project: FireImpactsProject managing the directory structure
+    - catchment: name of the catchment to process
+
+    Returns:
+    - DataFrame with one row per subcatchment containing aggregated
+      raster values, or None if no subcatchments are defined.
+    -----------------------------------------------------------------------
+    Notes:
+    - 'Total' rasters (erosion_y1, erosion_y2, delivered_y1, etc.)
+      are aggregated using SUM. Each cell value is total tonnes over
+      the simulation period, so summing over a subcatchment gives
+      the total tonnes for that subcatchment — physically sound.
+    - 'Peak' rasters (peak_erosion_y1, etc.) are aggregated using
+      MEAN. Each cell stores the highest 30-min erosion recorded at
+      that cell, but peaks at different cells occur at different times.
+      Summing them would imply all cells peaked simultaneously, which
+      overstates the worst-case event load. Mean gives the average
+      peak intensity per cell, characterising how erosion-prone the
+      subcatchment is on its worst day.
+    -----------------------------------------------------------------------
+    """
+    # Skip gracefully if subcatchments have not been set up yet:
+    try:
+        subcatch_gdf = project.get_subcatchments(catchment)
+    except FileNotFoundError:
+        logger.info(
+            'No subcatchments defined for %s — skipping RUSLE '
+            'subcatchment aggregation.',
+            catchment
+            )
+        return None
+
+    sc_id_col = project.subcatchment_id
+    # Start the summary table with just the subcatchment ID:
+    summary = subcatch_gdf[[sc_id_col]].copy().reset_index(drop=True)
+
+    for raster_name in c.RUSLE_OUTPUT_RASTER_NAMES:
+        raster_path = project.catchment_path(
+            catchment,
+            c.RESULTS_FOLDER_NAME,
+            f'{raster_name}.tif'
+            )
+        if not os.path.exists(raster_path):
+            continue
+
+        # Choose aggregation stat based on raster type (see Notes):
+        stat = 'mean' if 'peak' in raster_name else 'sum'
+
+        zstats = get_zonal_stats(
+            subcatch_gdf, raster_path, raster_name, stats=[stat]
+            )
+        # Column name makes the aggregation method explicit:
+        col_name = f'{raster_name}_{stat}'
+        summary[col_name] = [s[stat] for s in zstats]
+
+    out_path = project.catchment_path(
+        catchment,
+        c.RESULTS_FOLDER_NAME,
+        c.RUSLE_SC_SUMMARY_NAME + '.csv'
+        )
+    summary.to_csv(out_path, index=False)
+    logger.info('Saved RUSLE subcatchment summary to %s', out_path)
+
+    return summary
+
+
+###############################################################################
 def run_usle_simulation(
     project:FireImpactsProject,
     rainfall,
@@ -588,6 +664,10 @@ def run_usle_simulation(
                 data=save_data,
                 meta=template_meta
                 )
+
+        # Aggregate the saved rasters to subcatchments and write a
+        # summary CSV to Results/ (skipped if no subcatchments exist):
+        aggregate_rusle_to_subcatchments(project, catchment)
 
     if save_timeseries:
         out_name = project.catchment_path(

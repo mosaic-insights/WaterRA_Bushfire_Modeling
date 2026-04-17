@@ -1080,6 +1080,121 @@ def postprocess_debris_flow(
     return output
 
 ###############################################################################
+def aggregate_debris_flow_summary_to_subcatchments(
+    proj: FireImpactsProject,
+    catchment: str,
+    debris_flow_data: pd.DataFrame
+    ) -> 'pd.DataFrame | None':
+    """
+    Aggregate headwater-level debris flow summary statistics to
+    subcatchments and save a CSV to the DebrisFlow folder.
+
+    Parameters:
+    - proj: FireImpactsProject for directory management
+    - catchment: name of the catchment being processed
+    - debris_flow_data: per-headwater summary DataFrame produced by
+      debris_flow()
+
+    Returns:
+    - DataFrame with one row per subcatchment, or None if no
+      subcatchments are defined.
+    -----------------------------------------------------------------------
+    Notes:
+    - Event counts (Year1_num_events, Year2_num_events): summed directly
+      across all headwaters within each subcatchment. A debris flow
+      event is a discrete occurrence — no area weighting is applied.
+    - Mass columns (clay, total erosion, sediment): each headwater's
+      mass is multiplied by its area_fraction before summing. A
+      headwater that is 80% within subcatchment X contributes 80% of
+      its debris mass to that subcatchment's total.
+    - Headwaters with no spatial allocation (outside any subcatchment)
+      are excluded from the aggregation.
+    -----------------------------------------------------------------------
+    """
+    # Try to get the headwater→subcatchment spatial mapping:
+    try:
+        hw_alloc = allocate_headwaters_to_subcatchments(proj, catchment)
+    except FileNotFoundError:
+        logger.info(
+            'No subcatchments defined for %s — skipping debris flow '
+            'subcatchment aggregation.',
+            catchment
+            )
+        return None
+
+    # Build lists of columns to aggregate, checking each exists:
+    count_cols = [
+        f'Year{y}_num_events' for y in range(1, NUM_SIM_YEARS + 1)
+        ]
+    mass_cols = [CLY_M_ACC_KG, TOT_EM_ACC_KG, SED_M_ACC_KG]
+    # I12 critical rainfall intensity threshold per headwater. We
+    # aggregate min (most vulnerable headwater in the subcatchment)
+    # and mean (typical threshold) across headwaters:
+    thresh_cols = [
+        I12_CRIT_Y + str(y) for y in range(1, NUM_SIM_YEARS + 1)
+        ]
+
+    avail_count = [
+        col for col in count_cols if col in debris_flow_data.columns
+        ]
+    avail_mass = [
+        col for col in mass_cols if col in debris_flow_data.columns
+        ]
+    avail_thresh = [
+        col for col in thresh_cols if col in debris_flow_data.columns
+        ]
+
+    keep = [HW_ID] + avail_count + avail_mass + avail_thresh
+    working = debris_flow_data[keep].copy()
+
+    # Merge in sc_ID and area_fraction from the spatial allocation:
+    working = pd.merge(
+        working,
+        hw_alloc[[HW_ID, SC_ID, 'area_fraction']],
+        on=HW_ID,
+        how='inner'  # headwaters without an allocation are dropped
+        )
+
+    # Weight mass columns by area_fraction before summing (see Notes):
+    for col in avail_mass:
+        working[col] = working[col] * working['area_fraction']
+
+    # Sum event counts and weighted masses within each subcatchment:
+    agg_cols = avail_count + avail_mass
+    result = (
+        working.groupby(SC_ID)[agg_cols]
+        .sum()
+        .reset_index()
+        )
+
+    # Min and mean I12 threshold per subcatchment. Column names get
+    # a _min or _mean suffix to make the aggregation explicit:
+    if avail_thresh:
+        thresh_agg = (
+            working.groupby(SC_ID)[avail_thresh]
+            .agg(['min', 'mean'])
+            )
+        thresh_agg.columns = [
+            f'{col}_{stat}' for col, stat in thresh_agg.columns
+            ]
+        result = pd.merge(
+            result, thresh_agg.reset_index(), on=SC_ID, how='left'
+            )
+
+    out_path = proj.catchment_path(
+        catchment,
+        'DebrisFlow',
+        DEBRIS_SC_SUMMARY_NAME + '.csv'
+        )
+    result.to_csv(out_path, index=False)
+    logger.info(
+        'Saved debris flow subcatchment summary to %s', out_path
+        )
+
+    return result
+
+
+###############################################################################
 def debris_flow(
     proj:FireImpactsProject,
     rainfall,
@@ -1214,6 +1329,11 @@ def debris_flow(
         logger.info(
             'Saved debris flow by headweater results table to '
             f'{Debris_Flow_Data_path}'
+            )
+        # Aggregate summary stats to subcatchments and save a CSV
+        # in the DebrisFlow folder (skipped if no subcatchments):
+        aggregate_debris_flow_summary_to_subcatchments(
+            proj, catchment, Debris_Flow_Data
             )
     # Code to save a timeseries of debris flow event totals for the 
     #whole catchment:
