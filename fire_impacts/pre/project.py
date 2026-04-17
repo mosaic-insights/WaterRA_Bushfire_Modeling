@@ -692,6 +692,16 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither'
         }
 
+        self.vis_debris_mass = {
+            'cmap': 'cividis',
+            'measure': 'Available Debris Mass',
+            'units': 'Kg',
+            'title_varname': 'Debris Flow Mass',
+            'norm': 'log',
+            'vmin': 0,
+            'cbar_extend': 'neither'
+            }
+
     ###########################################################################
     def get_vis_params(self, file_or_col_name:str):
         """
@@ -701,6 +711,7 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         """
         input_string = file_or_col_name.lower().strip().replace(' ', '_')
+        clay_mass_fmt = const.DEBRIS_MASS_FIELD.lower().strip().replace(' ', '_')
 
         # Fallback values:
         default_params = {
@@ -724,6 +735,7 @@ class FireImpactsProject(object):
             'erosion': self.vis_erosion,
             'delivered': self.vis_delivered,
             'dem': self.vis_DEM,
+            clay_mass_fmt: self.vis_debris_mass,
             'plain': default_params
             }
         
