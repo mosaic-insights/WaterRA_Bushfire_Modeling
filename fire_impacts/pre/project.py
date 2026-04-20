@@ -585,18 +585,19 @@ class FireImpactsProject(object):
         # Check that it exists and if so, return it:
         if os.path.exists(shapefile_path):
             gdf = gpd.read_file(shapefile_path)
-            # Add an auto ID column:
-            gdf[auto_id_col_name] = gdf.index
+            # Add an auto ID column only if one doesn't already exist
+            # in the shapefile (e.g. written by extract_headwaters):
+            if auto_id_col_name not in gdf.columns:
+                gdf[auto_id_col_name] = gdf.index
             return gdf
-        # Otherwise return None
-        else:
-            raise FileNotFoundError(
-                f'Catchment polygons ({poly_file_name}) were requested '
-                f'from project.get_catchment_polygons() for {catchment}, '
-                'but they appear not to be loaded yet. Use '
-                'project.add_subcatchments() or '
-                'topography.extract_headwaters() first.'
-                )
+
+        raise FileNotFoundError(
+            f'Catchment polygons ({poly_file_name}) were requested '
+            f'from project.get_catchment_polygons() for {catchment}, '
+            'but they appear not to be loaded yet. Use '
+            'project.add_subcatchments() or '
+            'topography.extract_headwaters() first.'
+            )
 
     ###########################################################################
     def catchment_bounds(self,catchment:str, buffer_distance_km:float=10):
@@ -1654,25 +1655,128 @@ def find_all_shapefiles(base_directory):
     return shapefiles
 
 ###############################################################################
+def _filter_zones_by_masked_dnbr(
+    project: FireImpactsProject,
+    catchment_name: str,
+    zones_gdf: gpd.GeoDataFrame,
+    id_col: str,
+    masked_nan_threshold: float,
+) -> gpd.GeoDataFrame:
+    """Drop zones where NaN fraction in masked_dNBR exceeds threshold.
+
+    Parameters
+    ----------
+    project : FireImpactsProject
+    catchment_name : str
+    zones_gdf : GeoDataFrame
+        Zone polygons (headwaters or subcatchments) with an *id_col*.
+    id_col : str
+        Column identifying each zone.
+    masked_nan_threshold : float
+        Maximum NaN fraction (0–1) before a zone is excluded.
+
+    Returns
+    -------
+    GeoDataFrame
+        Filtered copy of *zones_gdf*.
+    """
+    import rasterio
+    from rasterio.features import rasterize
+
+    masked_dnbr_path = project.catchment_path(
+        catchment_name, 'FireSeverity', 'masked_dNBR.tif'
+    )
+    if not os.path.exists(masked_dnbr_path):
+        logger.warning(
+            'masked_dNBR.tif not found for %s — skipping NaN '
+            'threshold filtering.', catchment_name
+        )
+        return zones_gdf
+
+    with rasterio.open(masked_dnbr_path) as src:
+        dnbr_data = src.read(1)
+        dnbr_transform = src.transform
+        dnbr_crs = src.crs
+
+    zones_reproj = zones_gdf.to_crs(dnbr_crs)
+
+    exclude_ids = []
+    for idx, zone in zones_reproj.iterrows():
+        zone_mask = rasterize(
+            [zone.geometry],
+            out_shape=dnbr_data.shape,
+            transform=dnbr_transform,
+            fill=0,
+            default_value=1,
+            dtype=np.uint8,
+        )
+        inside = zone_mask == 1
+        n_pixels = int(inside.sum())
+        if n_pixels == 0:
+            continue
+        n_nan = int(np.isnan(dnbr_data[inside]).sum())
+        nan_frac = n_nan / n_pixels
+        if nan_frac > masked_nan_threshold:
+            zone_id = zone[id_col]
+            exclude_ids.append(zone_id)
+            logger.info(
+                'Excluding %s %s from summary stats: %.1f%% of pixels '
+                'are NaN in masked dNBR (threshold %.1f%%)',
+                id_col, zone_id, nan_frac * 100,
+                masked_nan_threshold * 100,
+            )
+
+    if exclude_ids:
+        n_before = len(zones_gdf)
+        zones_gdf = zones_gdf[
+            ~zones_gdf[id_col].isin(exclude_ids)
+        ].copy()
+        logger.info(
+            'Excluded %d of %d zones exceeding %.0f%% NaN threshold '
+            'in masked dNBR for %s.',
+            len(exclude_ids), n_before,
+            masked_nan_threshold * 100, catchment_name,
+        )
+
+    return zones_gdf
+
+
+###############################################################################
 def summary_stats(
     project:FireImpactsProject,
     catchment_name=None,
-    zone_type='headwaters'
+    zone_type='headwaters',
+    masked_nan_threshold:float=0.05,
+    layer_nan_threshold:float=0.05,
     ):
     """
-    Calculate summary statistics for a catchment from pre-processed 
+    Calculate summary statistics for a catchment from pre-processed
     raster data.
 
     Parameters:
-    - project (FireImpactsProject): Project object containing the 
+    - project (FireImpactsProject): Project object containing the
     catchment data.
-    - catchment_name (str): Name of the catchment to process. If not 
+    - catchment_name (str): Name of the catchment to process. If not
     provided, process all catchments in the project.
+    - zone_type (str): 'headwaters' or 'subcatchments'.
+    - masked_nan_threshold (float): For headwaters only — maximum
+    fraction of a headwater's area that may be NaN in masked_dNBR.tif
+    before the headwater is excluded from summary statistics.
+    Default 0.05 (5%).  Headwaters exceeding this threshold (e.g.
+    containing a lake or other non-vegetation) are dropped.
+    - layer_nan_threshold (float): Per-layer, per-zone threshold for
+    missing data.  When a zone has more than this fraction of its
+    overlapping pixels as nodata in a particular raster layer, all
+    statistics for that zone/layer combination are set to NaN.  When
+    below the threshold, statistics are computed from the valid pixels
+    only.  Note: for coarse rasters, ``all_touched=True`` is used
+    automatically, so "overlapping" means any pixel touching the zone.
+    Default 0.05 (5%).
 
     Returns:
-    - pd.DataFrame: DataFrame containing the summary statistics for the 
+    - pd.DataFrame: DataFrame containing the summary statistics for the
     catchment (if catchment_name is provided), OR
-    - dict: Dictionary of DataFrames containing the summary statistics 
+    - dict: Dictionary of DataFrames containing the summary statistics
     for each catchment.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
@@ -1692,19 +1796,29 @@ def summary_stats(
         project = FireImpactsProject(project)
     # Process for all catchments if none was specified:
     if catchment_name is None:
-        return project.for_each_catchment(lambda c:summary_stats(project,c))
-    
+        return project.for_each_catchment(
+            lambda c:summary_stats(
+                project, c, zone_type, masked_nan_threshold,
+                layer_nan_threshold
+                )
+            )
+
     if requested_zone == 'subcatchments':
         id_col_name = project.subcatchment_id
         zones_gdf = project.get_subcatchments(catchment_name)
     else:
         id_col_name = project.headwater_id
-        headwaters_path = project.catchment_path(
-            catchment_name,
-            'Topography',
-            'Headwaters.shp'
-            )
-        zones_gdf = gpd.read_file(headwaters_path)
+        zones_gdf = project.get_headwaters(catchment_name)
+
+        # Filter out headwaters where too much area is NaN in the
+        # masked dNBR grid (e.g. water bodies, non-vegetation).
+        logger.info(
+            'Filtering %s in %s based on NaN fraction in masked dNBR...',
+            zone_type, catchment_name)
+        zones_gdf = _filter_zones_by_masked_dnbr(
+            project, catchment_name, zones_gdf, id_col_name,
+            masked_nan_threshold
+        )
 
     # Initialize a list to store the results
     results = []
@@ -1726,19 +1840,104 @@ def summary_stats(
             if child_fn.endswith('.tif'):
                 sources.append((child_fn.replace('.tif',''),('Soils',fn,child_fn)))
 
+    # Reset index after filtering so that list-based columns from
+    # rasterstats align correctly with the id column in the DataFrame.
+    zones_gdf = zones_gdf.reset_index(drop=True)
+
     # Process each polygon in the shapefile
     result = {
-        id_col_name: zones_gdf[id_col_name]
+        id_col_name: zones_gdf[id_col_name].tolist()
     }
+
+    # Determine the reference resolution from the DEM so we can
+    # detect coarser layers and use all_touched for them.
+    dem_path = project.catchment_path(catchment_name, 'Topography', 'DEM.tif')
+    with rio.open(dem_path) as dem_src:
+        ref_res = dem_src.res[0]  # pixel size in map units
 
     logger.info('Processing %d polygons for %d layers in %s',len(zones_gdf),len(sources),catchment_name)
     for label, path in sources:
         logging.info('Processing %s from %s',label,path[-1])
+        raster_path = project.catchment_path(catchment_name,*path)
+
+        # Use all_touched for rasters coarser than 2x the DEM
+        # resolution, so small zones still capture pixels.
+        with rio.open(raster_path) as layer_src:
+            layer_res = layer_src.res[0]
+        use_all_touched = layer_res > ref_res * 2
+        if use_all_touched:
+            logger.info(
+                '%s: resolution %.0fm is coarser than DEM (%.0fm) '
+                '— using all_touched=True',
+                label, layer_res, ref_res,
+            )
+
         stats = toputil.get_zonal_stats(
             zones_gdf,
-            project.catchment_path(catchment_name,*path),
-            label
+            raster_path,
+            label,
+            extra_stats=['count', 'nodata'],
+            all_touched=use_all_touched,
             )
+
+        # Detect zones where stats could not be computed.
+        #
+        # We cannot rely on rasterstats' 'nodata' count for NaN-nodata
+        # rasters (nan == nan is False, so the count is always 0).
+        # Instead, check the output stats directly: if rasterstats
+        # returned None for any core stat, the zone had no usable
+        # pixels — either zero overlap or all pixels were nodata/NaN.
+        #
+        # For zones that DO have valid stats, apply the
+        # layer_nan_threshold using the count vs total pixel estimate.
+        zones_no_data = 0
+        zones_nulled = 0
+
+        assert len(stats) == len(zones_gdf), (
+            'Length of stats does not match number of zones. '
+            'Expected %d, got %d.' % (len(zones_gdf), len(stats))
+        )
+
+        for s in stats:
+            # Check if rasterstats could compute any valid statistic.
+            # When all pixels are nodata/NaN or there is zero overlap,
+            # rasterstats returns None for stats like 'mean'.
+            sample_stat = s.get('mean')
+            if sample_stat is None:
+                for k in STATS:
+                    s[k] = np.nan
+                zones_no_data += 1
+                continue
+
+            # For zones with valid stats, check the nodata fraction.
+            # Use 'count' (valid pixels) vs total rasterized pixels.
+            # Note: 'nodata' count from rasterstats is unreliable for
+            # NaN-nodata rasters, so we estimate total from count +
+            # nodata, falling back to count-only if nodata is 0.
+            n_valid = s.get('count', 0) or 0
+            n_nodata = s.get('nodata', 0) or 0
+            n_total = n_valid + n_nodata
+            if n_total > 0 and n_nodata > 0:
+                if (n_nodata / n_total) > layer_nan_threshold:
+                    for k in STATS:
+                        s[k] = np.nan
+                    zones_nulled += 1
+
+        if zones_no_data > 0:
+            logger.warning(
+                '%s: %d of %d zones returned no valid statistics '
+                '(no pixel overlap or all pixels are nodata/NaN, '
+                'possibly due to coarse raster resolution).',
+                label, zones_no_data, len(stats),
+            )
+        if zones_nulled > 0:
+            logger.warning(
+                '%s: %d of %d zones exceed %.0f%% nodata threshold '
+                '— stats set to NaN for those zones.',
+                label, zones_nulled, len(stats),
+                layer_nan_threshold * 100,
+            )
+
         for k in STATS:
             result[f'{label}_{k}'] = [s[k] for s in stats]
 

@@ -68,9 +68,11 @@ def file_matching_all(path,*substrings):
     files = os.listdir(path)
     return [fn for fn in files if all(p in fn for p in substrings)]
 
-def unique_file_matching(path,*substrings):
+def unique_file_matching(path,*substrings,extension=None):
     """Check if a single file contains all substrings and return the unique match"""
     matches = file_matching_all(path,*substrings)
+    if extension is not None:
+        matches = [fn for fn in matches if fn.endswith(extension)]
     if len(matches) == 0:
         raise FileNotFoundError(f"No file found in {path} matching patterns: {substrings}")
     elif len(matches) > 1:
@@ -771,30 +773,48 @@ def get_erosion_title(file_or_col:str, type:str):
     return title
 
 ###############################################################################
-def get_zonal_stats(gdf, raster_path, label, stats=None):
+def get_zonal_stats(gdf, raster_path, label, extra_stats=None,
+                    all_touched=False, stats=None):
     """
-    Compute zonal statistics for a raster against a GeoDataFrame of
-    zones.
+    Compute zonal statistics for each polygon in *gdf* against a raster.
 
-    Parameters:
-    - gdf: GeoDataFrame of zone polygons
-    - raster_path (str): path to the raster file
-    - label (str): descriptive label used in log messages
-    - stats (list): OPTIONAL list of stat names recognised by
-      rasterstats (e.g. ['sum'], ['mean', 'max']). Defaults to
-      the module-level STATS list if not provided.
+    Parameters
+    ----------
+    gdf : GeoDataFrame
+        Zone polygons.
+    raster_path : str
+        Path to the raster file.
+    label : str
+        Label for logging.
+    extra_stats : list of str, optional
+        Additional rasterstats statistics to include in the output
+        (e.g. ``['count', 'nodata']``).  These are appended to the
+        standard STATS list.
+    all_touched : bool
+        If True, include every raster cell touched by a geometry, not
+        just those with centres inside the polygon.  Useful for coarse
+        rasters where small zones may otherwise have zero pixel overlap.
+    stats : list of str, optional
+        If given, replaces the default STATS list entirely (and ignores
+        *extra_stats*).  Use when only a single aggregation is needed.
 
-    Returns:
-    - list of dicts, one per zone, with requested stat keys
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
+    Returns
+    -------
+    list of dict
+        One dict per zone with keys for each requested statistic.
     """
-    if stats is None:
-        stats = STATS
+    if stats is not None:
+        requested = list(stats)
+    else:
+        requested = list(STATS)
+        if extra_stats:
+            requested = requested + [s for s in extra_stats if s not in requested]
+
+
     with rio.open(raster_path) as src:
         logger.info(
-            f'Getting zonal stats for raster in {src.crs.to_epsg()}.'
-            f'Zonal vector is in {gdf.crs.to_epsg()}.'
+            f'Getting zonal stats for raster in EPSG:{src.crs.to_epsg()}.'
+            f'Zonal vector is in EPSG:{gdf.crs.to_epsg()}.'
             )
         if src.crs != gdf.crs:
             logger.info(f'Reprojecting zones to {src.crs.to_epsg()}...')
@@ -802,13 +822,29 @@ def get_zonal_stats(gdf, raster_path, label, stats=None):
         else:
             temp_gdf = gdf
 
-        # Note: rasterstats handles CRS differences internally, so
-        # temp_gdf and gdf both work here.
-        zstats = rs.zonal_stats(
-            gdf,
-            raster_path,
-            stats=stats,
-            nodata=src.nodata or -9999
+        # Determine the effective nodata value.  For float rasters
+        # without a declared nodata, use NaN — this is the standard
+        # convention and ensures NaN pixels in soil/aridity grids are
+        # correctly excluded from statistics.
+        nd = src.nodata
+        if nd is None and np.issubdtype(src.dtypes[0], np.floating):
+            nd = float('nan')
+        elif nd is None:
+            nd = -9999
+
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore',
+                message='Warning: converting a masked element to nan',
+                category=UserWarning,
             )
+            zstats = rs.zonal_stats(
+                temp_gdf,
+                raster_path,
+                stats=requested,
+                nodata=nd,
+                all_touched=all_touched,
+                )
     return zstats
 

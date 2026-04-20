@@ -158,7 +158,7 @@ def get_clay_fraction(
     clay_directory = proj.catchment_path(catchment, 'Soils','CLY')
     # Get the files with the relevant soil measure, depth and 'EV' in
     #the file name:
-    file_name = unique_file_matching(clay_directory,'CLY',depth,'EV')
+    file_name = unique_file_matching(clay_directory,'CLY',depth,'EV',extension='.tif')
     # Append to the directory
     file_path = os.path.join(clay_directory, file_name)
     # Get a version of the raster in the same CRS and convert it from
@@ -168,10 +168,24 @@ def get_clay_fraction(
 ###############################################################################
 def prep_debris_flow_simulation(
     proj: FireImpactsProject,
-    catchment:str
+    catchment:str,
     ):
     """
+    Prepare all inputs for a debris flow simulation.
 
+    Parameters
+    ----------
+    proj : FireImpactsProject
+        Current project.
+    catchment : str
+        Catchment name.
+
+    Notes
+    -----
+    Headwaters with excessive NaN coverage in masked_dNBR should be
+    filtered upstream by ``summary_stats(masked_nan_threshold=...)``.
+    The inner join against the condition CSV enforces that filtering
+    here automatically.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
@@ -227,6 +241,21 @@ def prep_debris_flow_simulation(
             ) for depth in ['000_005', '005_015']
         ]
 
+    # Check for NaN in clay fractions beyond what the slope mask introduces
+    slope_nan_count = int(np.isnan(slope_h_ratio).sum())
+    for label, clay in [('clay_0_5', clay0_5), ('clay_5_15', clay5_15)]:
+        clay_nan_count = int(np.isnan(clay).sum())
+        extra_nans = clay_nan_count - slope_nan_count
+        if extra_nans > 0:
+            logger.warning(
+                '%s has %d more NaN pixels than the topography mask '
+                '(%d total NaN vs %d from slope). '
+                'These likely come from gaps in soil data and where '
+                'they overlap with headwaters, they will '
+                'propagate through erosion calculations.',
+                label, extra_nans, clay_nan_count, slope_nan_count
+            )
+
     # From the data folder (in the same directory as fire_impacts
     #and test_data), get the HF lookup csv file which contains the
     #thresholds of 12-minute rainfall intensity at which debris flow
@@ -244,7 +273,7 @@ def prep_debris_flow_simulation(
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
     os.makedirs(out_path, exist_ok=True)
 
-    # Go get  the soil, slope, and aridity data required, assuming it's
+    # Go get the soil, slope, and aridity data required, assuming it's
     #already been saved:
     condition_data = pd.read_csv(
         proj.catchment_path(
@@ -252,16 +281,56 @@ def prep_debris_flow_simulation(
             'Soil_Slope_Aridity_dNBR_headwaters.csv'
             )
         )
+
+    # Log any NaN values already present in the condition data:
+    nan_cols = condition_data.columns[condition_data.isna().any()].tolist()
+    if nan_cols:
+        logger.warning(
+            'NaN values found in condition data before join for '
+            'columns: %s', nan_cols
+        )
     # Replace any missing values with zero:
-    condition_data = condition_data.fillna(0.0) # TODO Check - is this correct? Example is getting nulls in dNBR columns
+    condition_data = condition_data.fillna(0.0)
 
     # Get the headwaters table, assuming it's already been generated:
     topo_data = pd.read_csv(
         proj.catchment_path(catchment,'Topography','Headwaters.csv')
         )
-    # Join condition and topographic data together:
+
+    # Join condition and topographic data together. Use inner join
+    # against condition_data (which may already be filtered by
+    # summary_stats). Log the accounting so we can see what happened.
+    n_condition = len(condition_data)
+    n_topo = len(topo_data)
     fire_impact_data = pd.merge(
-        condition_data, topo_data, on=id_field,how='outer'
+        condition_data, topo_data, on=id_field, how='inner'
+        )
+    n_joined = len(fire_impact_data)
+
+    # Headwaters in topo but not condition were already excluded
+    # upstream (e.g. by summary_stats masked_nan_threshold).
+    pre_excluded = n_topo - n_joined
+    if pre_excluded > 0:
+        logger.info(
+            '%d of %d headwaters already excluded upstream '
+            '(not present in condition data).',
+            pre_excluded, n_topo,
+        )
+    # Headwaters in condition but not topo is unexpected — both should
+    # derive from the same Headwaters.shp.
+    if n_joined < n_condition:
+        condition_ids = set(condition_data[id_field])
+        topo_ids = set(topo_data[id_field])
+        missing_from_topo = sorted(condition_ids - topo_ids)
+        raise ValueError(
+            f'{len(missing_from_topo)} headwater(s) present in '
+            f'condition data (Soil_Slope_Aridity_dNBR_headwaters.csv) '
+            f'but missing from Headwaters.csv: {missing_from_topo}. '
+            f'Both files should derive from the same Headwaters.shp. '
+            f'Condition data has {id_field} range '
+            f'{condition_data[id_field].min()}–{condition_data[id_field].max()}, '
+            f'Headwaters.csv has {id_field} range '
+            f'{topo_data[id_field].min()}–{topo_data[id_field].max()}.'
         )
 
     return debris_flow_load(
@@ -519,11 +588,15 @@ def get_debris_volume(
     """
     # Get the row and column in the array corresponding to the X, Y coordinates
     row, col = rowcol(transform, x, y)
-    try:
-        # Return the debris volume at the calculated row, col position
-        return debris_volume_array[row, col]
-    except IndexError:
-        return np.nan  # return NaN if out of bounds
+    rows, cols = debris_volume_array.shape
+    if row < 0 or row >= rows or col < 0 or col >= cols:
+        logger.debug(
+            'Headwater endpoint (%.1f, %.1f) maps to row=%d, col=%d '
+            'which is outside raster bounds (%d, %d). Returning NaN.',
+            x, y, row, col, rows, cols
+        )
+        return np.nan
+    return debris_volume_array[row, col]
 
 ###############################################################################
 def debris_column_values(
@@ -628,8 +701,8 @@ def calc_I12_crit_columns(
     join_keys_in_data = [
         ARID_MEAN_ADJ, DNBR_MEAN_ADJ, SLOPE_DEG_MEAN_ADJ
         ]
-    
-    # Split HFlookup_I12 into two subsets based on 'years' and merge 
+
+    # Split HFlookup_I12 into two subsets based on 'years' and merge
     #fire_impact_data with each subset:
     HFlookup_year_1 = hf_lookup[hf_lookup["years"] < 1]
     merged_year_1 = pd.merge(
@@ -727,6 +800,20 @@ def debris_flow_load(
         pixel_area
         )
 
+    # Check for NaN in erosion outputs (beyond the catchment mask)
+    in_catchment = catchment_mask.sum()
+    for label, arr in [('erosion_mass_all', erosion_mass_all),
+                       ('erosion_mass_clay', erosion_mass_clay),
+                       ('Sediment_mass', Sediment_mass)]:
+        nan_inside = int(np.isnan(arr[catchment_mask]).sum())
+        if nan_inside > 0:
+            logger.warning(
+                '%s has %d NaN pixels inside the catchment '
+                '(out of %d). Likely caused by NaN in clay '
+                'fraction or slope inputs.',
+                label, nan_inside, in_catchment
+            )
+
     # Get cumulative erosion layers for each type:
     e_all_accum, e_clay_accum, e_sed_accum = create_cum_erosion_layers(
         erosion_mass_all,
@@ -737,6 +824,18 @@ def debris_flow_load(
         inter_meta,
         catchment_mask
         )
+
+    # Check accumulated layers for NaN inside catchment
+    for label, arr in [('e_all_accum', e_all_accum),
+                       ('e_clay_accum', e_clay_accum),
+                       ('e_sed_accum', e_sed_accum)]:
+        nan_inside = int(np.isnan(np.asarray(arr)[catchment_mask]).sum())
+        if nan_inside > 0:
+            logger.warning(
+                '%s has %d NaN pixels inside the catchment after '
+                'flow accumulation.',
+                label, nan_inside
+            )
 
     # Save a GeoTIFF for sense-checking the erosion results:
     E_all_mass_ha = create_erosion_sense_check(
@@ -753,6 +852,22 @@ def debris_flow_load(
         e_sed_accum=e_sed_accum,
         E_all_mass_ha=E_all_mass_ha
         )
+
+    # Check for NaN in the extracted headwater values
+    debris_cols = [CLY_M_ACC_KG, TOT_EM_ACC_KG, TOT_EM_ACC_KG_HA, SED_M_ACC_KG]
+    for col in debris_cols:
+        if col in fire_impact_data.columns:
+            n_nan = int(fire_impact_data[col].isna().sum())
+            if n_nan > 0:
+                nan_ids = fire_impact_data.loc[
+                    fire_impact_data[col].isna(), id_field
+                ].tolist()
+                logger.warning(
+                    '%s has NaN for %d headwaters: %s. '
+                    'Likely caused by endpoint coordinates falling '
+                    'outside the erosion accumulation raster bounds.',
+                    col, n_nan, nan_ids
+                )
 
     # Populate columns with estimates of the mass of each element
     #present in the debris:
@@ -1271,6 +1386,12 @@ def debris_flow(
         concurrently for multiple rainfall replicates of the same
         catchment — otherwise each invocation would race on the scratch
         rasters written by ``prep_debris_flow_simulation``.
+
+    Notes
+    -----
+    Headwaters with excessive NaN in masked_dNBR should be filtered
+    upstream by ``summary_stats(masked_nan_threshold=...)``. The inner
+    join in :func:`prep_debris_flow_simulation` enforces that filtering.
     """
     # Iterate through simulations and calculate the number of events,
     #rainfall values, and event dates for both Year 1 and Year 2
@@ -1284,7 +1405,7 @@ def debris_flow(
             )
 
     out_path = proj.catchment_path(catchment, 'DebrisFlow')
-    
+
     # Check to make sure units are as expected:
     if 'units' not in rainfall.attrs:
         logger.warning(
@@ -1323,12 +1444,12 @@ def debris_flow(
 
     # Iterate through each year
     for year in years:
-        # Add a year to the date-time stamp for the start of the 
-        #rainfall values; 
+        # Add a year to the date-time stamp for the start of the
+        #rainfall values;
         t1 = t0 + pd.Timedelta(days=365)
         # Make the field name:
         threshold_col = I12_CRIT_Y + str(year)
-        # Get all the rainfall values where the index falls between 
+        # Get all the rainfall values where the index falls between
         #that of the start and end of the current year:
         rain_year = rainfall[(rainfall.index >= t0) & (rainfall.index < t1)]
         # Increment the timestamp for the next loop:
@@ -1343,7 +1464,7 @@ def debris_flow(
                 year_results[year]["event_dates"].append([])
                 continue
 
-            # Select rainfall and coordinates of time 
+            # Select rainfall and coordinates of time
             #(day, subday_12mins) for the current simulation:
             rain_flat = rain_year.values
 
@@ -1401,18 +1522,18 @@ def debris_flow(
         aggregate_debris_flow_summary_to_subcatchments(
             proj, catchment, Debris_Flow_Data
             )
-    # Code to save a timeseries of debris flow event totals for the 
+    # Code to save a timeseries of debris flow event totals for the
     #whole catchment:
     if save_daily_catchment_timeseries:
         # Get a dataframe of just the debris mass for each headwater:
         mass_df = Debris_Flow_Data[
             [HW_ID, DEBRIS_MASS_FIELD]
             ].set_index(HW_ID, drop=True)
-        # Multiply the number of events in each timestep by the mass 
-        #of debris in that headwater (pandas magic) to get a figure for 
+        # Multiply the number of events in each timestep by the mass
+        #of debris in that headwater (pandas magic) to get a figure for
         #debris mass delivered:
         flow_mass = event_ts.mul(mass_df[DEBRIS_MASS_FIELD], axis=1)
-        # Sum the result across all headwaters for each row, and 
+        # Sum the result across all headwaters for each row, and
         #convert to tonnes:
         flow_mass[CATCH_TOTAL_DEBRIS_TONNES] = flow_mass.sum(axis=1) / 1e3
         # Now resample to daily totals:
@@ -1429,7 +1550,7 @@ def debris_flow(
         flow_mass.to_csv(out_name)
 
     logger.info('Done!')
-    
+
     return Debris_Flow_Data, event_ts
 
 ###############################################################################
@@ -1624,9 +1745,9 @@ def run_debris_flow_sim(
     fire_end_dt = project.get_fire_end_date(catchment)
     rainfall_trimmed = rainfall.loc[fire_end_dt:]
 
-    # Check if timeseries covers a full 2 years since fire; raise error 
+    # Check if timeseries covers a full 2 years since fire; raise error
     #if not:
-    
+
 
     # If no recorders were passed, use an empty dictionary so the rest
     #of the code works consistently:
@@ -1644,7 +1765,7 @@ def post_debris_flow_mass_adjustment(
     mass_col:str=CLY_M_ACC_KG
     ):
     """
-    Placeholder function for adjusting the mass available for 
+    Placeholder function for adjusting the mass available for
     subsequent debris flows in the same headwater after an event
     --------------------------------------------------------------------
     --------------------------------------------------------------------
@@ -1659,22 +1780,22 @@ def generate_debris_flow(
     out_path:str
     ):
     """
-    Generator function that produces an iterable of (timestep, dict) 
-    tuples for each timestep entry the provided rainfall data. Dict is 
+    Generator function that produces an iterable of (timestep, dict)
+    tuples for each timestep entry the provided rainfall data. Dict is
     a lookup of all relevant debris flow results for that timestep.
 
     Parameters:
-    - rainfall: Series of rainfall values which MUST be intensity in 
+    - rainfall: Series of rainfall values which MUST be intensity in
     mm/hr recorded at 12-minute intervals
-        - So I think it matters whether the first timestamp in the 
-        rainfall data can be considered to be immediately after the 
+        - So I think it matters whether the first timestamp in the
+        rainfall data can be considered to be immediately after the
         fire ends. Do we ask for a fire end date? That might be key.
-    - debris_flow_data: Dataframe of debris flow input variables by 
+    - debris_flow_data: Dataframe of debris flow input variables by
     headwater, as created by prep_debris_flow_simulation()
 
     Yields:
     - tuple of (timestep, result) where:
-        - timestep is the datetime stamp for the current 12-minute 
+        - timestep is the datetime stamp for the current 12-minute
         interval
         - result is a dictionary with the following values:
             - total rain (converted from intensity to depth)
@@ -1684,18 +1805,18 @@ def generate_debris_flow(
             - mass of debris from events year 2 (tonnes)
     --------------------------------------------------------------------
     Notes:
-    - Currently this generator does not check which year the current 
-    timestep is part of, so the results contain debris flow values for 
-    both years. It's assumed that the function using this generator 
+    - Currently this generator does not check which year the current
+    timestep is part of, so the results contain debris flow values for
+    both years. It's assumed that the function using this generator
     will know which year to grab.
-        - This also means that any reset of debris flow mass as a 
-        result of an event should be handled by the function using 
+        - This also means that any reset of debris flow mass as a
+        result of an event should be handled by the function using
         this generator? Or maybe it has to be inside here....
-    - The function running this generator should subset the headwaters 
+    - The function running this generator should subset the headwaters
     by subcatchment if that's required, before running.
-    TODO: 
-    - We also need to engineer this to accept spatially varying 
-    rainfall at some point, but this can probably be processed before 
+    TODO:
+    - We also need to engineer this to accept spatially varying
+    rainfall at some point, but this can probably be processed before
     this function by headwater so a relatively minor adjustment.
     --------------------------------------------------------------------
     """
@@ -1733,8 +1854,8 @@ def generate_debris_flow(
         if rain_intensity_12min == 0:
             yield (timestep, result)
             continue
-        
-        # Check if the rainfall intensity exceeds the threshold for 
+
+        # Check if the rainfall intensity exceeds the threshold for
         #any of the headwaters, for either year:
         mask = (
             subset[year_1_thresh_col] < rain_intensity_12min
@@ -1744,15 +1865,15 @@ def generate_debris_flow(
             yield (timestep, result)
             continue
 
-        # Now handle what happens if the rain intensity IS greater than 
+        # Now handle what happens if the rain intensity IS greater than
         #the debris flow threshold for at least one of the years:
         mask_y1 = subset[year_1_thresh_col] < rain_intensity_12min
         if mask_y1.any():
-            # The number of debris flow events is the number of rows 
-            #where the condition is true i.e. raifnall is greater than 
+            # The number of debris flow events is the number of rows
+            #where the condition is true i.e. raifnall is greater than
             #threshold:
             y1_event_count = mask_y1.sum()
-            # Get just the rows from the workind df where there's an 
+            # Get just the rows from the workind df where there's an
             #event:
             y1_event_deets = subset.loc[mask_y1]
             # Get the sum of mass for all those rows in kg then tonnes:
@@ -1782,10 +1903,25 @@ def record_headwaters_timeseries(
     agg_count:int=1
     ):
     """
-    Build a debris flow recorder that summarises debris flow mass over 
+    Build a debris flow recorder that summarises debris flow mass over
     time for each headwater
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
     pass
+
+# NOTES/QUESTIONS
+#
+# Debris flow
+# * Two years? (But assume starting 1 January, should be any day of the year)
+# * Two years? Parameter?
+#
+# RUSLE
+# * Gridded output? (Generator?)
+#
+# Both
+# * Independent of stochastic replicates
+# * Possibility of spatial rainfall?
+# * Results on different spatial / temporal aggregations
+# * Not duplicating code we already have (ie pysheds)
 
