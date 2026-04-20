@@ -74,6 +74,11 @@ class FireImpactsProject(object):
         self.catchments = []
         self.boundary_files = {}
         self.source_data = {}
+        # Per-catchment name of the string field in the subcatchment
+        # layer that should be used as the label in downstream outputs
+        # (e.g. 'SiteID' for Avon).  Populated by add_subcatchments()
+        # or set_subcatchment_label_field() and persisted in settings.
+        self.subcatchment_label_fields: dict = {}
 
         # If the user has said to clear the existing folder OR they have
         #said to proceed with loading a new project even if there is
@@ -111,7 +116,8 @@ class FireImpactsProject(object):
         settings_dict = dict(
             catchments=self.catchments,
             source_data=self.source_data,
-            boundary_files=self.boundary_files
+            boundary_files=self.boundary_files,
+            subcatchment_label_fields=self.subcatchment_label_fields,
             )
         return settings_dict
 
@@ -162,6 +168,43 @@ class FireImpactsProject(object):
         return os.path.join(base,catchment_name,*args)
 
     ###########################################################################
+    def ensemble_path(
+        self,
+        catchment_name: str,
+        *args,
+        event: str = 'default',
+        ensemble: str = 'default',
+        ):
+        """Resolve a path under a given catchment's event + ensemble
+        results folder.
+
+        Structure::
+
+            Catchments/<catchment>/Events/<event>/Ensemble/<ensemble>/<args>
+
+        Multiple ensembles per event support comparing, e.g., the same
+        fire under current vs. future climate.  The ``Events/`` layer
+        is the forward-compatible seam for the planned multi-event
+        support — single-event projects simply use ``event='default'``.
+
+        Parameters
+        ----------
+        catchment_name : str
+        *args : str
+            Path components appended below the ensemble folder.
+        event : str
+            Event name.  Defaults to ``'default'`` so single-event
+            projects can ignore this parameter entirely.
+        ensemble : str
+            Ensemble name within the event.  Defaults to ``'default'``.
+        """
+        return os.path.join(
+            self.catchment_path(catchment_name),
+            'Events', event, 'Ensemble', ensemble,
+            *args,
+        )
+
+    ###########################################################################
     def load_project(self):
         """
         (re)Load the project settings from the settings file.
@@ -178,6 +221,10 @@ class FireImpactsProject(object):
         self.source_data = settings.get('source_data',{})
         # Load boundary files to class instance:
         self.boundary_files = settings.get('boundary_files',{})
+        # Per-catchment subcatchment label field (e.g. 'SiteID'):
+        self.subcatchment_label_fields = settings.get(
+            'subcatchment_label_fields', {}
+        )
 
 
         self.ensure_catchment_folders()
@@ -241,25 +288,35 @@ class FireImpactsProject(object):
         self,
         catchment_name:str,
         subcatch_shapefile_path:str,
-        id_cols:list=[]
+        id_cols:list=[],
+        label_field:str=None,
         ):
         """
         Load subcatchments from a shapefile.
 
-        Parameters:
-        ----------------------------------------------------------------
-        Notes:
-        - Reproject to the catchment crs
-        - Clip to the catchment boundary
-        - Keep identifying attributes
-        - Load into class instance as geodataframe
-        - Add path to boundary files and update settings.json
-        - Save processed boundary as shapefile in the subcatchments 
-        folder
+        Parameters
+        ----------
+        catchment_name : str
+        subcatch_shapefile_path : str
+        id_cols : list
+            Attribute columns from the source shapefile to retain
+            alongside the internal ``sc_ID`` index.
+        label_field : str or None
+            Which of the retained columns should be treated as the
+            preferred string label for downstream outputs (e.g.
+            ``'SiteID'``).  If *None*, defaults to the first entry
+            of *id_cols* when that looks like a string column.  The
+            choice is persisted in ``settings.json`` so functions
+            like :func:`combine_rusle_and_debris_subcatchment` can
+            pick it up automatically.
 
-        TODO:
-        - Handle slivers near edge of catchment boundary
-        ----------------------------------------------------------------
+        Notes
+        -----
+        - Reprojects to the catchment CRS.
+        - Clips to the catchment boundary.
+        - Keeps identifying attributes.
+        - Saves processed boundary as shapefile in the Subcatchments
+          folder and updates ``settings.json``.
         """
         # Read in the proposed subcatchments:
         in_gdf = gpd.read_file(subcatch_shapefile_path)
@@ -296,6 +353,18 @@ class FireImpactsProject(object):
         # Add original subcatchment geodataframe to boundary files:
         key_name = catchment_name + '_' + 'subcatchments'
         self.boundary_files[key_name] = subcatch_shapefile_path
+
+        # Record the preferred label field for this catchment.  If the
+        # caller didn't nominate one, default to the first id_col when
+        # it's a string-valued column in the source layer.
+        resolved_label = label_field
+        if resolved_label is None and id_cols:
+            first = id_cols[0]
+            if first in in_gdf.columns and in_gdf[first].dtype == object:
+                resolved_label = first
+        if resolved_label is not None:
+            self.subcatchment_label_fields[catchment_name] = resolved_label
+
         self._write()
 
         # Get only the useful columns, plus geometry:
@@ -314,6 +383,39 @@ class FireImpactsProject(object):
             'Saved clipped subcatchments shapefile in the catchment '
             f'crs to {key_file_path}'
             )
+
+    ###########################################################################
+    def subcatchment_label_field(self, catchment_name: str):
+        """Return the preferred string label field for a catchment's
+        subcatchments, or *None* if not set.
+
+        Set via :meth:`add_subcatchments` (``label_field=`` argument)
+        or :meth:`set_subcatchment_label_field`.  Consumed by
+        downstream helpers like
+        :func:`combine_rusle_and_debris_subcatchment` so that output
+        columns carry meaningful names without per-call configuration.
+        """
+        return self.subcatchment_label_fields.get(catchment_name)
+
+    ###########################################################################
+    def set_subcatchment_label_field(
+        self, catchment_name: str, field: str | None,
+        ):
+        """Set (or clear with *None*) the preferred subcatchment label
+        field for a catchment, persisting it to ``settings.json``.
+        """
+        if field is None:
+            self.subcatchment_label_fields.pop(catchment_name, None)
+        else:
+            subs = self.get_subcatchments(catchment_name)
+            if field not in subs.columns:
+                raise ValueError(
+                    f"Field '{field}' not found on "
+                    f"{catchment_name} subcatchments. Available: "
+                    f"{list(subs.columns)}"
+                )
+            self.subcatchment_label_fields[catchment_name] = field
+        self._write()
 
     ###########################################################################
     def ensure_catchment_folders(self,catchment_name:str=None):
