@@ -87,9 +87,9 @@ CATCHMENT
 
 # %%
 START_YEAR = 2015
-YEARS = 3
-rain_data_start = f'{START_YEAR}-01-01'
-rain_data_end = f'{START_YEAR + YEARS - 1}-12-31'
+YEARS = 2
+rain_data_start = f'{START_YEAR}-04-01'
+rain_data_end = f'{START_YEAR + YEARS}-03-31'
 
 N_REPLICATES = 10
 
