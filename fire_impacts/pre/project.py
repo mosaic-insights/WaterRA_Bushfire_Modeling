@@ -17,10 +17,8 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 
-# Get the top-level util specifically using importlib:
-import importlib
-toputil = importlib.import_module('fire_impacts.util') 
-const = importlib.import_module('fire_impacts.const')
+from .. import util as toputil
+from .. import const
 logger = logging.getLogger(__name__)
 
 # These are the default directories that need to exist inside every 

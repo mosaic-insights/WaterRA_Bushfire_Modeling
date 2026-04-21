@@ -13,8 +13,7 @@ import geopandas as gpd
 import rasterio as rio
 import rasterstats as rs
 
-import importlib
-constants = importlib.import_module('fire_impacts.const')
+from . import const as constants
 
 STATS=constants.STATS
 
