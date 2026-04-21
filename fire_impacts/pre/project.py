@@ -234,31 +234,37 @@ class FireImpactsProject(object):
         self,
         catchment_shapefile:str|Path,
         name=None,
-        replace_existing=False
+        replace_existing=False,
+        subcatchment_id_cols:list=None,
+        subcatchment_label_field:str=None,
         ):
         """
-        Register a new catchment in the project
+        Register a new catchment in the project.
 
-        Parameters:
-        - catchment_shapefile: string or Path object pointing to a 
-        shapefile of the catchment boundary
-        - name: name to use for the catchment. If not provided, the 
-        name will be derived from the shapefile name.
-        - replace_existing: whether the shapefile should be overwritten 
-        if it already exists
-        ----------------------------------------------------------------
-        Notes:
-        - replace_existing behaviour:
-            - If True, replace an existing catchment with the same name
-            - If False, raise an error if a catchment with the same 
-            name already exists.
-        ----------------------------------------------------------------
+        Parameters
+        ----------
+        catchment_shapefile : str or Path
+            Shapefile of the catchment boundary.  When this file
+            contains multiple polygons it is treated as a subcatchment
+            coverage: the geometries are dissolved to a single boundary
+            (saved alongside the catchment) and the original file is
+            registered as the subcatchment coverage via
+            :meth:`add_subcatchments`.
+        name : str, optional
+            Catchment name.  Defaults to the shapefile basename.
+        replace_existing : bool
+            If True, replace an existing catchment of the same name.
+            Otherwise raise.
+        subcatchment_id_cols, subcatchment_label_field
+            Forwarded to :meth:`add_subcatchments` when the source
+            shapefile is dissolved into both a boundary and a
+            subcatchment coverage.  Ignored for single-polygon inputs.
         """
-        # If a name hasn't been specified, derive one from the 
+        # If a name hasn't been specified, derive one from the
         #shapefile name:
         if name is None:
             name = os.path.splitext(os.path.basename(catchment_shapefile))[0]
-        
+
         # Check if the catchment is already there:
         have_already = name in self.catchments
         # If so, and the user hasn't said to replace, raise an error:
@@ -266,20 +272,53 @@ class FireImpactsProject(object):
             raise ValueError(
                 f'Catchment {name} already exists in project.'
                 )
-        # If the catchment isn't already there, add its name to the 
+        # If the catchment isn't already there, add its name to the
         #list of catchments in the class instance
         if not have_already:
             self.catchments.append(name)
-        # Add an entry to the current instance's boundary files 
-        #dictionary pointing to the current catchment shapefile path:
-        self.boundary_files[name] = str(catchment_shapefile)
 
-        # Create the standard set of subcatchment folders for this new
-        #catchment:
+        # Inspect the input: a multi-feature shapefile is interpreted
+        # as a subcatchment coverage.  Dissolve to a single boundary
+        # for the catchment itself; the original file is then
+        # registered as the subcatchment layer below.
+        src_gdf = gpd.read_file(catchment_shapefile)
+        is_coverage = len(src_gdf) > 1
+
+        # Make sure the catchment folder structure exists before we
+        # write any derived files into it.
         self.ensure_catchment_folders(name)
-        # Update the settings.json file so it includes the new 
+
+        if is_coverage:
+            dissolved = src_gdf.dissolve()
+            boundary_path = os.path.join(
+                self.catchment_path(name), f'{name}_boundary.shp'
+            )
+            dissolved.to_file(boundary_path)
+            self.boundary_files[name] = boundary_path
+            logger.info(
+                'Source shapefile %s contains %d features; dissolved '
+                'to a single boundary at %s.  The original coverage '
+                'will be registered as subcatchments.',
+                catchment_shapefile, len(src_gdf), boundary_path,
+            )
+        else:
+            self.boundary_files[name] = str(catchment_shapefile)
+
+        # Update the settings.json file so it includes the new
         #catchment:
         self._write()
+
+        # When the source was a coverage, register it as the
+        # subcatchment layer for this catchment.  This must run after
+        # the boundary is in place — add_subcatchments() clips against
+        # it.
+        if is_coverage:
+            self.add_subcatchments(
+                name,
+                str(catchment_shapefile),
+                id_cols=subcatchment_id_cols or [],
+                label_field=subcatchment_label_field,
+            )
 
     ###########################################################################
     def add_subcatchments(
