@@ -43,16 +43,21 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
     - Dataset: XArray dataset with datetime index and simulations as columns.
     '''
     logger.debug(f"Requesting {num_sims} replicates for location (lat: {lat}, lon: {lon}, elev: {elev}) with annual rainfall {annual_rain} mm and mean temperature {mean_temp} °C for {num_years} years.")
+    params=dict(
+        latitude=lat,
+        longitude=lon,
+        elevation=elev,
+        length=num_years,
+        count=num_sims
+    )
+    if annual_rain is not None:
+        params['mean_annual_rainfall'] = annual_rain
+    if mean_temp is not None:
+        params['mean_temperature'] = mean_temp
+
     api_response = requests.get(
         api_url,
-        params=dict(
-            latitude=lat,
-            longitude=lon,
-            elevation=elev,
-            mean_annual_rainfall=annual_rain,
-            mean_temperature=mean_temp,
-            length=num_years,
-            count=num_sims),
+        params=params,
         timeout=600 # 10 minutes
     )
     logger.debug(f"API response status code: {api_response.status_code}")
@@ -68,44 +73,84 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
 def get_rainfall_replicates(
     proj:FireImpactsProject,
     catchment,
-    start,
-    end,
-    num_replicates,
-    mean_annual_rainfall,
-    average_temperature,
-    num_years=2
+    start=None,
+    end=None,
+    num_replicates=10,
+    mean_annual_rainfall=None,
+    average_temperature=None,
+    num_years=None,
     ):
     """
-    Get stochastic rainfall replicates for one or more catchments in 
+    Get stochastic rainfall replicates for one or more catchments in
     the project.
 
-    Parameters:
-    - proj (FireImpactsProject): A dictionary of project folders 
-    created for catchments.
-    - catchment (str): OPTIONAL: Name of the catchment to process. If 
-    None, process all catchments.
-    - start (str): Start date for the rainfall data.
-    - end (str): End date for the rainfall data.
-    - num_replicates (int): Number of rainfall replicates to generate.
-    - mean_annual_rainfall (float): Mean annual rainfall in mm for the 
-    catchment.
-    - average_temperature (float): Average temperature in °C for the 
-    catchment.
-    - num_years (int): Length of data in years. Default is 2.
+    Parameters
+    ----------
+    proj : FireImpactsProject
+    catchment : str or None
+        Catchment to process.  If *None*, process all catchments.
+    start, end : str or pd.Timestamp, optional
+        Calendar window for the returned series.  When both are given,
+        *num_years* is inferred (one API year per calendar year spanned)
+        and the result is sliced to ``[start, end]``.  When omitted,
+        the API output is returned unshifted starting Jan 1 of an
+        arbitrary year — pass *num_years* in that case.
+    num_replicates : int
+        Number of rainfall replicates to request.
+    mean_annual_rainfall : float, optional
+        Mean annual rainfall (mm) for the catchment.
+    average_temperature : float, optional
+        Average temperature (°C) for the catchment.
+    num_years : int, optional
+        Length of data in years to request from the API.  Required
+        when *start* / *end* are not both supplied.  When supplied
+        alongside *start* + *end*, overrides the inferred length (must
+        still be large enough to cover the requested span).
 
-    Returns:
-    - Dataset: XArray dataset with datetime index and simulations as 
-    columns.
-    --------------------------------------------------------------------
-    Notes:
-    - Infer location and elevation from catchment boundary and DEM. 
-    User supplied climate statistics are used to generate the 
-    replicates.
-    --------------------------------------------------------------------
+    Returns
+    -------
+    xarray.Dataset
+        Rainfall replicates.  Time axis is shifted by whole years
+        (preserving seasonality) so that Jan 1 of the API output
+        aligns with Jan 1 of *start*'s year, then sliced to
+        ``[start, end]`` when both are given.
+
+    Notes
+    -----
+    The stochastic rainfall API returns *num_years* of data starting
+    Jan 1 of an internal epoch year.  Because seasonality is
+    January-anchored, only whole-year shifts of the time axis are safe.
+    Earlier versions shifted by ``start - api_first`` (any number of
+    days), which silently moved e.g. peak summer rainfall into autumn
+    when the user requested a non-Jan-1 start.
     """
     if catchment is None:
         return proj.for_each_catchment(lambda c: get_rainfall_replicates(
-            proj, c, start, end, num_replicates, mean_annual_rainfall, average_temperature, num_years))
+            proj, c, start, end, num_replicates, mean_annual_rainfall,
+            average_temperature, num_years))
+
+    if num_replicates is None:
+        raise ValueError("num_replicates must be specified.")
+
+    start_ts = pd.Timestamp(start) if start is not None else None
+    end_ts = pd.Timestamp(end) if end is not None else None
+
+    if start_ts is not None and end_ts is not None:
+        # One API year per calendar year spanned (e.g. 2000-02-01 →
+        # 2002-01-31 spans 2000, 2001, 2002 → 3 years).
+        span_years = end_ts.year - start_ts.year + 1
+        if num_years is None:
+            num_years = span_years
+        elif num_years < span_years:
+            raise ValueError(
+                f"num_years={num_years} is too short to cover "
+                f"{start_ts.date()}..{end_ts.date()} "
+                f"(needs at least {span_years})."
+            )
+    elif num_years is None:
+        raise ValueError(
+            "Provide either start+end (num_years inferred) or num_years."
+        )
 
     boundary = proj.catchment_boundary(catchment).to_crs(epsg=4326)
     centroid = boundary.geometry.centroid
@@ -123,24 +168,20 @@ def get_rainfall_replicates(
         lat, lon, elev, mean_annual_rainfall, average_temperature,
         num_years, num_replicates)
 
-    # The API returns data anchored to an arbitrary internal epoch.
-    # Shift the time axis so the sequence starts at the requested
-    # start date, preserving all rainfall values unchanged.
-    start_ts = pd.Timestamp(start)
-    time_offset = start_ts - pd.Timestamp(rep.time.values[0])
-    rep = rep.assign_coords(time=rep.time + time_offset)
+    # When the user supplied a start date, shift the time axis by a
+    # whole number of years so Jan 1 of the API output aligns with
+    # Jan 1 of the start year.  Whole-year shifts preserve seasonality
+    # — partial-day shifts do not.
+    if start_ts is not None:
+        api_first = pd.Timestamp(rep.time.values[0])
+        year_offset = start_ts.year - api_first.year
+        if year_offset != 0:
+            new_index = rep.time.to_index() + pd.DateOffset(years=year_offset)
+            rep = rep.assign_coords(time=new_index)
 
-    # Warn if the generated data doesn't cover the full requested range.
-    end_ts = pd.Timestamp(end)
-    data_end = pd.Timestamp(rep.time.values[-1])
-    if data_end < end_ts:
-        logger.warning(
-            "Stochastic rainfall data ends at %s, which is before the "
-            "requested end date %s. The generated num_years=%d may be "
-            "too short to cover the full requested period. Downstream "
-            "aggregation will be truncated.",
-            data_end.date(), end_ts.date(), num_years
-        )
+    # Slice to the user's calendar window when both endpoints are given.
+    if start_ts is not None and end_ts is not None:
+        rep = rep.sel(time=slice(start_ts, end_ts))
 
     return rep
 

@@ -78,32 +78,33 @@ CATCHMENT
 # pyraingen locally and calibrate it to available sub-daily rainfall
 # observations, or call the remote pyraingen API which uses publicly
 # available climate statistics — this template uses the remote API.
-# Supply the mean annual rainfall and average temperature for the
-# catchment; the library infers location and elevation from the
-# catchment boundary and DEM.
+# The library infers location and elevation from the catchment
+# boundary and DEM.  Mean annual rainfall and average temperature are
+# optional: the backend service estimates them from lat/lon when not
+# supplied.  Pass them explicitly when you have site-specific values.
 #
 # The same set of replicates feeds both simulations.
 
 # %%
-YEARS = 3
 START_YEAR = 2015
+YEARS = 3
 rain_data_start = f'{START_YEAR}-01-01'
 rain_data_end = f'{START_YEAR + YEARS - 1}-12-31'
 
 N_REPLICATES = 10
-MEAN_ANNUAL_RAINFALL_MM = 600    # mm/year — adjust to your catchment
-AVERAGE_TEMPERATURE_C = 20       # °C      — adjust to your catchment
 
 # %%
+# `num_years` is inferred from start/end (one API year per calendar
+# year spanned).  Uncomment the climate kwargs to override the
+# backend-estimated values.
 replicates = get_rainfall_replicates(
     proj,
-    CATCHMENT,
-    rain_data_start,
-    rain_data_end,
-    N_REPLICATES,
-    MEAN_ANNUAL_RAINFALL_MM,
-    AVERAGE_TEMPERATURE_C,
-    YEARS,
+    catchment=CATCHMENT,
+    start=rain_data_start,
+    end=rain_data_end,
+    num_replicates=N_REPLICATES,
+    # mean_annual_rainfall=600,   # mm  — optional
+    # average_temperature=20,     # °C  — optional
 )
 rainfall_ds = replicates
 rainfall_ds
@@ -344,8 +345,8 @@ save_ensemble_run(
     ensemble=ENSEMBLE,
     include_rusle_grids=False,   # opt in when you need raw grids
     include_raw_debris=True,
-    extra_manifest={
-        'mean_annual_rainfall_mm': MEAN_ANNUAL_RAINFALL_MM,
-        'average_temperature_c': AVERAGE_TEMPERATURE_C,
-    },
+    # extra_manifest={                       # add any custom metadata
+    #     'mean_annual_rainfall_mm': 600,    # to record alongside the
+    #     'average_temperature_c': 20,       # ensemble run
+    # },
 )

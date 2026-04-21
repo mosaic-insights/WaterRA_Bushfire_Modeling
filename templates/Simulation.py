@@ -63,11 +63,21 @@ subcatch_path = '..\\test_data\\Subcatchments_EgSmall_7899.shp'
 rain_data_start = '2019-03-07'
 rain_data_end = '2021-04-01'
 
-replicates = get_rainfall_replicates(proj,None, rain_data_start, rain_data_end, 10, 
-                                     600, # mean annual rainfall (mm)
-                                     20,  # mean temperature (C)
-                                     2)   # num_years
-rainfall_data= replicates[catchment_name]
+# `num_years` is inferred from start/end (one API year per calendar
+# year spanned).  `mean_annual_rainfall` and `average_temperature` are
+# optional — if omitted, the backend service estimates them from the
+# catchment's lat/lon.  Override them here when you have site-specific
+# climate statistics.
+replicates = get_rainfall_replicates(
+    proj,
+    catchment=None,
+    start=rain_data_start,
+    end=rain_data_end,
+    num_replicates=10,
+    # mean_annual_rainfall=600,   # mm  — optional
+    # average_temperature=20,     # °C  — optional
+)
+rainfall_data = replicates[catchment_name]
 # %% [markdown]
 # Once we have our pyraingen rainfall replicates, we use `aggregate_rainfall_data()` to resample the results to the 30-minute frequency required for debris flow simulations
 
