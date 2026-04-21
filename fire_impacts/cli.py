@@ -1,4 +1,5 @@
 # my_package/cli.py
+import glob
 import shutil
 import typer
 from .pre import FireImpactsProject
@@ -10,10 +11,14 @@ logger = logging.getLogger('fire-impacts-cli')
 
 app = typer.Typer()
 
-TEMPLATE_NOTEBOOKS=[
-    'PrepareData',
-    'Simulation'
-]
+TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), '..', 'templates')
+
+
+def _template_notebooks():
+    """Discover all jupytext-percent template scripts in templates/."""
+    paths = sorted(glob.glob(os.path.join(TEMPLATES_DIR, '*.py')))
+    return [os.path.splitext(os.path.basename(p))[0] for p in paths]
+
 
 @app.command()
 def new(path: str, notebooks: bool = True):
@@ -26,10 +31,9 @@ def new(path: str, notebooks: bool = True):
 
 def copy_notebooks_to(path:str, overwrite:bool=False):
     logger.info("Adding template notebooks...")
-    for nb in TEMPLATE_NOTEBOOKS:
-        src = os.path.join(
-            os.path.dirname(__file__),'..', 'templates', f'{nb}.py'
-        )
+    notebooks = _template_notebooks()
+    for nb in notebooks:
+        src = os.path.join(TEMPLATES_DIR, f'{nb}.py')
         dest = os.path.join(path, f'{nb}.py')
         if os.path.exists(dest) and not overwrite:
             logger.warning('Notebook script %s already exists, skipping.', dest)
@@ -44,7 +48,8 @@ def copy_notebooks_to(path:str, overwrite:bool=False):
                             nb_dest,
                             fmt='ipynb')
     logger.info("Template notebooks added.")
-    logger.info('Start with "%s.ipynb" to prepare data.', TEMPLATE_NOTEBOOKS[0])
+    if 'PrepareData' in notebooks:
+        logger.info('Start with "PrepareData.ipynb" to prepare data.')
 
 @app.command()
 def update(path:str,overwrite:bool=False):
