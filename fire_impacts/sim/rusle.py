@@ -580,7 +580,7 @@ def run_usle_simulation(
     """
     if catchment is None:
         return project.for_each_catchment(
-            lambda c: run_usle_simulation(project,rainfall,c,recorders)
+            lambda c: run_usle_simulation(project,rainfall,c,recorders,save_rasters,save_timeseries)
             )
     # If no recorders were passed, use an empty dictionary so the rest
     #of the code works consistently:
