@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt
 
 # %%
 #proj = FireImpactsProject('.',exist_ok=True)
-proj = FireImpactsProject('\\zz_TempDump\\fire_impacts_example_project', exist_ok=True)
+proj = FireImpactsProject('.', exist_ok=True)
 
 # %%
 proj.catchments

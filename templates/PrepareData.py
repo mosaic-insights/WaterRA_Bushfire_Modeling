@@ -129,7 +129,7 @@ logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(leveln
 
 # %%
 # proj = FireImpactsProject('.\\fire_impacts_example_project', clear=True)
-proj = FireImpactsProject('\\zz_TempDump\\fire_impacts_example_project',clear=True)
+proj = FireImpactsProject('.',clear=True)
 
 # %% [markdown]
 # ## Catchment areas
@@ -263,7 +263,12 @@ severity.calculate_fire_severity(
 
 
 # %%
+# Visualise the dNBR raster:
 proj.plot_catchment_raster('FireSeverity', 'dNBR')
+
+# %%
+# Visualise the masked dNBR raster, which is the version of dNBR that is used in the modelling (it is masked to the headwater areas):
+proj.plot_catchment_raster('FireSeverity','masked_dNBR')
 
 # %% [markdown]
 # ## Soils
@@ -302,20 +307,14 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 # The **R**evised **U**niversal **S**oil **L**oss **E**quation is used to estimate general post-fire erosion and is calculated for the entire catchment.
 #
 # ### Required Inputs
-# You will need to obtain RUSLE factor rasters for the erosion simulations. The package will prepare them for simulation in each catchment. 
-# Both **C-factor** and **K-factor** rasters are required. They have been provided for this example catchment to demonstrate functionality.
-#
+# The package will automatically download the national **C-factor** and **K-factor** rasters and prepare them for simulation in each catchment. No manual inputs are required for this step.
 
 # %% [markdown]
 # ### C- and K-Factors
 
 # %%
-# Point to your provided rasters:
-c_factor_path='..\\test_data\\Soil_RusleFactor_C_EgSmallCatchment_7899.tif'
-k_factor_path='..\\test_data\\Soil_RusleFactor_K_EgSmallCatchment_7899.tif'
-
 # Compute adjusted K- and C-factors ready for erosion simulation:
-rusle.compute_adjusted_k_c(proj, catchment=example_catchment_name, c_factor_fn=c_factor_path, k_factor_fn=k_factor_path)
+rusle.compute_adjusted_k_c(proj, catchment=example_catchment_name)
 
 # %% [markdown]
 # ## Summary information for Fire Severity
