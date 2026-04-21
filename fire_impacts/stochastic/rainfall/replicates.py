@@ -136,16 +136,22 @@ def get_rainfall_replicates(
     end_ts = pd.Timestamp(end) if end is not None else None
 
     if start_ts is not None and end_ts is not None:
-        # One API year per calendar year spanned (e.g. 2000-02-01 →
-        # 2002-01-31 spans 2000, 2001, 2002 → 3 years).
+        # One API year per calendar year spanned, plus one year of
+        # buffer.  The buffer matters because the API doesn't strictly
+        # anchor its first timestamp to Jan 1 — pyraingen labels the
+        # first interval at Dec 31 of the prior year, ~12:06.  Without
+        # the extra year the front edge of the requested range can be
+        # silently truncated after the shift+slice below.
         span_years = end_ts.year - start_ts.year + 1
+        required = span_years + 1
         if num_years is None:
-            num_years = span_years
-        elif num_years < span_years:
+            num_years = required
+        elif num_years < required:
             raise ValueError(
                 f"num_years={num_years} is too short to cover "
                 f"{start_ts.date()}..{end_ts.date()} "
-                f"(needs at least {span_years})."
+                f"(needs at least {required} including 1 year of "
+                "anchor buffer)."
             )
     elif num_years is None:
         raise ValueError(
@@ -169,14 +175,33 @@ def get_rainfall_replicates(
         num_years, num_replicates)
 
     # When the user supplied a start date, shift the time axis by a
-    # whole number of years so Jan 1 of the API output aligns with
-    # Jan 1 of the start year.  Whole-year shifts preserve seasonality
-    # — partial-day shifts do not.
+    # whole number of years so the API output covers the requested
+    # window.  Only whole-year shifts are safe — partial-day shifts
+    # would corrupt seasonality.
+    #
+    # The API's first timestamp is not strictly Jan 1: pyraingen
+    # labels the first interval at Dec 31 of the prior year (~12:06).
+    # We therefore pick the largest year_offset such that the shifted
+    # first timestamp still lands at or before start_ts; otherwise the
+    # downstream slice would silently drop the front of the range.
     if start_ts is not None:
-        api_first = pd.Timestamp(rep.time.values[0])
+        api_index = rep.time.to_index()
+        api_first = pd.Timestamp(api_index[0])
         year_offset = start_ts.year - api_first.year
+        shifted_first = api_first + pd.DateOffset(years=year_offset)
+        if shifted_first > start_ts:
+            year_offset -= 1
+            shifted_first = api_first + pd.DateOffset(years=year_offset)
         if year_offset != 0:
-            new_index = rep.time.to_index() + pd.DateOffset(years=year_offset)
+            # Rebuild the index from the shifted anchor with the
+            # original frequency.  Applying DateOffset(years=N) to the
+            # whole index would collapse Feb 29 -> Feb 28 and produce
+            # duplicate timestamps; rebuilding from a single anchor
+            # avoids that.
+            step = api_index[1] - api_index[0]
+            new_index = pd.date_range(
+                shifted_first, periods=len(api_index), freq=step,
+            )
             rep = rep.assign_coords(time=new_index)
 
     # Slice to the user's calendar window when both endpoints are given.
