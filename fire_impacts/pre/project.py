@@ -475,11 +475,21 @@ class FireImpactsProject(object):
                 f'Project folder already exists: {project_path}'
                 )
         # If there is already a folder and the user as said it's ok to
-        #clear its contents:
+        #clear its contents.  Only remove the project-managed entries
+        #(settings.json and Catchments/) rather than the entire folder
+        #so that initialising into an existing directory (e.g. '.') is
+        #safe and doesn't blow away unrelated files.
         if clear and os.path.exists(project_path) and not exist_ok:
-            logger.info('Clearing existing project folder: %s',project_path)
-            # Remove the directory and all of its contents:
-            shutil.rmtree(project_path)
+            logger.info(
+                'Clearing project entries (settings.json, Catchments/) '
+                'in: %s', project_path,
+            )
+            settings_path = self._settings_fn()
+            if os.path.isfile(settings_path):
+                os.remove(settings_path)
+            catchments_dir = self.catchment_path()
+            if os.path.isdir(catchments_dir):
+                shutil.rmtree(catchments_dir)
         # Create a new folder in the location of the project path:
         os.makedirs(self.catchment_path(),exist_ok=exist_ok)
         # Write the settings (which will initially be shells):
