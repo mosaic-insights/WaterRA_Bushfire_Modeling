@@ -315,9 +315,16 @@ def record_subcatchment_timeseries(
         # If zones haven't been provided, we still need an area for
         #consistent behaviour:
         if zones is None:
-            # Use the catchment boundary as the single zone for the
-            #current catchment:
-            boundaries_v = proj.catchment_boundary(catchment)#.to_crs(epsg=4326)
+            # Zone each subcatchment separately; fall back to the
+            # catchment boundary as a single zone when no subcatchments
+            # have been registered for the catchment.
+            try:
+                boundaries_v = proj.get_subcatchments(catchment)
+            except FileNotFoundError:
+                boundaries_v = proj.catchment_boundary(catchment)
+            resolved_label = label_field
+            if resolved_label is None:
+                resolved_label = proj.subcatchment_label_field(catchment)
             # List method to build an array of rasters the same shape
             #as the catchment boundary:
             zones = [
@@ -329,17 +336,10 @@ def record_subcatchment_timeseries(
                     out_shape=data.shape
                     ) for g in boundaries_v.geometry
                 ]
-            # If the user hasn't provided a column label for a column
-            #which includes the name for each zone:
-            if label_field is None:
-                # Just use the index as the zone names if no label field:
+            if resolved_label is None or resolved_label not in boundaries_v.columns:
                 zone_names = boundaries_v.index.values
-            # If a column HAS been specified which includes the name
-            #for each zone:
             else:
-                # Get the values, noting that zones is none so this
-                #will just be the single catchment boundary:
-                zone_names = boundaries_v[label_field].values
+                zone_names = boundaries_v[resolved_label].values
 
         # Update the counter for the number of times this has been run:
         intermediate_count += 1
