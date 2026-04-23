@@ -1025,7 +1025,7 @@ class FireImpactsProject(object):
         catchment:str,
         colour_col:str|None=None,
         table:pd.DataFrame | None=None,
-        data_type:str='DebrisFlow',
+        data_type:str='',
         existing_figure=None,
         existing_axes=None
         ):
