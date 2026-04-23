@@ -641,16 +641,32 @@ class FireImpactsProject(object):
             'vmin': 10,
             'cbar_extend': 'min',
             'title_varname': 'Flow Accumulation'
-        }
+            }
 
-        self.vis_dNBR = {
+        # Raw dNBR (raster): 0–1 scale, extend min to show negatives
+        # as the lowest colour without clipping the upper end.
+        self.vis_dNBR_raw = {
             'cmap': 'inferno',
             'measure': 'ΔNBR',
             'units': 'raw',
             'title_varname': 'ΔNBR',
             'norm': 'linear',
-            'cbar_extend': 'neither'
-        }
+            'vmin': 0.0,
+            'vmax': 1.0,
+            'cbar_extend': 'min',
+            }
+        # Standardised dNBR (zonal stats columns): 0–1000 scale, fixed
+        # range so the colour is consistent across catchments.
+        self.vis_dNBR_std = {
+            'cmap': 'inferno',
+            'measure': 'ΔNBR',
+            'units': 'standardised',
+            'title_varname': 'ΔNBR',
+            'norm': 'linear',
+            'vmin': 0.0,
+            'vmax': 1000.0,
+            'cbar_extend': 'neither',
+            }
 
         self.vis_i12_crit = {
             'cmap': 'plasma_r',
@@ -658,8 +674,10 @@ class FireImpactsProject(object):
             'units': 'mm/hr',
             'title_varname': 'Rain Intensity I12 Crit',
             'norm': 'linear',
-            'cbar_extend': 'neither'
-        }
+            'vmin': 0.0,
+            'vmax': 800.0,
+            'cbar_extend': 'max'
+            }
 
         self.vis_num_debris_flow_events = {
             'cmap': 'Reds',
@@ -727,13 +745,23 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither',
             'title_varname': ''
             }
-        
-        # Dictionary linking 
+
+        # dNBR needs special routing: raw raster files (dNBR.tif,
+        # masked_dNBR.tif) use the 0–1 raw scale; zonal-stat columns
+        # (dNBR_mean, dNBR_max, …) use the 0–1000 standardised scale.
+        _stat_suffixes = ('_mean', '_max', '_min', '_median', '_std')
+        if 'dnbr' in input_string:
+            is_stats_col = any(
+                input_string.endswith(s) for s in _stat_suffixes
+            )
+            return (
+                self.vis_dNBR_std if is_stats_col else self.vis_dNBR_raw
+            )
+
+        # Dictionary linking keyword substrings to vis_params dicts:
         param_dict = {
             'slope': self.vis_slope,
             'flow_acc': self.vis_flow_accum,
-            'masked_dnbr': self.vis_dNBR,
-            'dnbr': self.vis_dNBR,
             'i12_crit': self.vis_i12_crit,
             'num_events': self.vis_num_debris_flow_events,
             'aridity': self.vis_aridity,

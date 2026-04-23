@@ -691,11 +691,16 @@ def plot_spatial_vector(
             on=id_col_name
             )
         colour_col = data_col_name
+        geom_with_data.to_csv('\\zz_TempDump\\geom_with_data.csv', index=False)
 
-        # Get a normaliser to use for both plot and colourbar:
+        # Get a normaliser to use for both plot and colourbar.
+        # Pass vmin/vmax from vis_params when present so the colour
+        # scale is fixed (not data-driven) for variables like dNBR.
         normer = get_cmap_normer(
             data=symbol_data[colour_col],
-            scale=vis_params['norm']
+            scale=vis_params['norm'],
+            min_val=vis_params.get('vmin'),
+            max_val=vis_params.get('vmax'),
             )
         min_plot_val = normer.vmin
         max_plot_val = normer.vmax
