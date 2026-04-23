@@ -483,8 +483,13 @@ class FireImpactsProject(object):
         # Check that it exists and if so, return it:
         if os.path.exists(shapefile_path):
             gdf = gpd.read_file(shapefile_path)
-            # Add an auto ID column:
-            gdf[auto_id_col_name] = gdf.index
+            # Only create the ID column if the shapefile doesn't already
+            # have one. extract_headwaters() writes hw_ID as 1-based
+            # integers; blindly overwriting it with gdf.index (0-based)
+            # would cause a one-position mismatch when merging against
+            # any CSV that was built from the shapefile's own IDs.
+            if auto_id_col_name not in gdf.columns:
+                gdf[auto_id_col_name] = gdf.index
             return gdf
         # Otherwise return None
         else:
