@@ -660,6 +660,7 @@ def plot_spatial_vector(
     spatial file by the ID.
     --------------------------------------------------------------------
     """
+
     if isinstance(vector_path_or_data, str):
         # Read in the spatial data file:
         shapes = gpd.read_file(vector_path_or_data)
@@ -807,10 +808,10 @@ def get_zonal_stats(gdf, raster_path, label, stats=None):
         else:
             temp_gdf = gdf
 
-        # Note: rasterstats handles CRS differences internally, so
-        # temp_gdf and gdf both work here.
+        # Pass temp_gdf (reprojected to raster CRS) — rasterstats does
+        # NOT auto-reproject GeoDataFrame inputs, only file-path inputs.
         zstats = rs.zonal_stats(
-            gdf,
+            temp_gdf,
             raster_path,
             stats=stats,
             nodata=src.nodata or -9999
