@@ -1588,23 +1588,29 @@ def find_all_shapefiles(base_directory):
 def summary_stats(
     project:FireImpactsProject,
     catchment_name=None,
-    zone_type='headwaters'
+    zone_type='headwaters',
+    save_shp=False,
     ):
     """
-    Calculate summary statistics for a catchment from pre-processed 
+    Calculate summary statistics for a catchment from pre-processed
     raster data.
 
     Parameters:
-    - project (FireImpactsProject): Project object containing the 
-    catchment data.
-    - catchment_name (str): Name of the catchment to process. If not 
-    provided, process all catchments in the project.
+    - project (FireImpactsProject): Project object containing the
+      catchment data.
+    - catchment_name (str): Name of the catchment to process. If not
+      provided, process all catchments in the project.
+    - zone_type (str): Either 'headwaters' or 'subcatchments'.
+    - save_shp (bool): If True, also save the results as a shapefile
+      (same base name as the CSV, same folder). The shapefile includes
+      all stat columns plus the zone geometry, suitable for loading
+      into GIS software alongside the source rasters.
 
     Returns:
-    - pd.DataFrame: DataFrame containing the summary statistics for the 
-    catchment (if catchment_name is provided), OR
-    - dict: Dictionary of DataFrames containing the summary statistics 
-    for each catchment.
+    - pd.DataFrame: DataFrame containing the summary statistics for the
+      catchment (if catchment_name is provided), OR
+    - dict: Dictionary of DataFrames containing the summary statistics
+      for each catchment.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
@@ -1618,13 +1624,17 @@ def summary_stats(
             f'one of: {acceptable_zones}'
             )
     # If we've been given a string instead of an actual project object,
-    #try initialising/loading a project with the given name:
-    if isinstance(project,str):
+    # try initialising/loading a project with the given name:
+    if isinstance(project, str):
         project = FireImpactsProject(project)
     # Process for all catchments if none was specified:
     if catchment_name is None:
-        return project.for_each_catchment(lambda c:summary_stats(project,c))
-    
+        return project.for_each_catchment(
+            lambda c: summary_stats(
+                project, c, zone_type=zone_type, save_shp=save_shp
+            )
+        )
+
     if requested_zone == 'subcatchments':
         id_col_name = project.subcatchment_id
         zones_gdf = project.get_subcatchments(catchment_name)
@@ -1637,57 +1647,86 @@ def summary_stats(
             )
         zones_gdf = gpd.read_file(headwaters_path)
 
-    # Initialize a list to store the results
-    results = []
-
     sources = [
-        ('Slope',('Topography','Slope.tif')),
-        ('dNBR',('FireSeverity','dNBR.tif')),
-        ('Aridity',('Soils','Aridity.tif')),
+        ('Slope', ('Topography', 'Slope.tif')),
+        ('dNBR',  ('FireSeverity', 'dNBR.tif')),
+        ('Aridity', ('Soils', 'Aridity.tif')),
         # ('Rain','Rain','Rainfall.tif')
     ]
 
-    soil_path = project.catchment_path(catchment_name,'Soils')
+    soil_path = project.catchment_path(catchment_name, 'Soils')
     for fn in os.listdir(soil_path):
-        abs_fn = os.path.join(soil_path,fn)
+        abs_fn = os.path.join(soil_path, fn)
         if not os.path.isdir(abs_fn):
             continue
-
         for child_fn in os.listdir(abs_fn):
             if child_fn.endswith('.tif'):
-                sources.append((child_fn.replace('.tif',''),('Soils',fn,child_fn)))
+                sources.append(
+                    (child_fn.replace('.tif', ''), ('Soils', fn, child_fn))
+                )
 
-    # Process each polygon in the shapefile
-    result = {
-        id_col_name: zones_gdf[id_col_name]
-    }
+    result = {id_col_name: zones_gdf[id_col_name]}
 
-    logger.info('Processing %d polygons for %d layers in %s',len(zones_gdf),len(sources),catchment_name)
+    logger.info(
+        'Processing %d polygons for %d layers in %s',
+        len(zones_gdf), len(sources), catchment_name
+    )
     for label, path in sources:
-        logging.info('Processing %s from %s',label,path[-1])
+        logging.info('Processing %s from %s', label, path[-1])
         stats = toputil.get_zonal_stats(
             zones_gdf,
-            project.catchment_path(catchment_name,*path),
+            project.catchment_path(catchment_name, *path),
             label
             )
         for k in STATS:
-            result[f'{label}_{k}'] = [s[k] for s in stats]
+            # rasterstats returns Python None (not np.nan) for zones
+            # that fall entirely within nodata pixels. Coerce to nan
+            # so the column stays float64 rather than object dtype.
+            # Object dtype causes to_csv() to write values as strings
+            # which then can't be reliably read back as numbers.
+            result[f'{label}_{k}'] = [
+                float('nan') if s[k] is None else s[k]
+                for s in stats
+            ]
 
     extracted_data = pd.DataFrame(result)
+    extracted_data = extracted_data.apply(pd.to_numeric, errors='coerce')
 
-    # Convert dNBR values to a set of standardised numbers [0, 1000]:
+    # Preserve the raw (pre-clip) dNBR stat columns so that the
+    # original pixel-level distribution is visible for diagnostics.
+    # These sit alongside the standardised columns in the output.
     for stat in STATS:
-        this_col_name = 'dNBR_' + stat
-        extracted_data[this_col_name] = format_dNBR(
-            extracted_data[this_col_name]
-            )
+        raw_col = f'dNBR_{stat}'
+        extracted_data[f'dNBR_raw_{stat}'] = extracted_data[raw_col]
 
+    # Convert dNBR stats to standardised values [0, 1000]: clip
+    # negatives to 0 then scale. Note that this clips the already-
+    # aggregated stats (e.g. a negative mean clips to 0), which can
+    # make mean=0 while max>0. The raw columns above let you verify
+    # the pre-clip values if the result looks unexpected.
+    for stat in STATS:
+        col = f'dNBR_{stat}'
+        extracted_data[col] = format_dNBR(extracted_data[col])
 
-    csv_path=project.catchment_path(
-        catchment_name,
-        f'Soil_Slope_Aridity_dNBR_{zone_type}.csv'
-        )
+    # -----------------------------------------------------------------
+    # Save outputs
+    # -----------------------------------------------------------------
+    base_name = f'Soil_Slope_Aridity_dNBR_{zone_type}'
+    csv_path = project.catchment_path(catchment_name, f'{base_name}.csv')
     extracted_data.to_csv(csv_path, index=False)
+    logger.info('[write] %s', csv_path)
+
+    if save_shp:
+        # Join the computed stats back onto the zone geometries so
+        # the shapefile carries both attributes and geometry.
+        shp_gdf = zones_gdf[[id_col_name, 'geometry']].merge(
+            extracted_data, on=id_col_name, how='left'
+        )
+        shp_path = project.catchment_path(
+            catchment_name, f'{base_name}.shp'
+        )
+        shp_gdf.to_file(shp_path)
+        logger.info('[write] %s', shp_path)
 
     return extracted_data
 
