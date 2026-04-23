@@ -622,7 +622,7 @@ class FireImpactsProject(object):
             'norm': None,
             'cbar_extend': 'neither',
             'title_varname': 'DEM'
-        }
+            }
 
         self.vis_slope = {
             'cmap': 'viridis',
@@ -631,7 +631,7 @@ class FireImpactsProject(object):
             'norm': None,
             'cbar_extend': 'neither',
             'title_varname': 'Slope'
-        }
+            }
 
         self.vis_flow_accum = {
             'cmap': 'viridis',
@@ -668,7 +668,7 @@ class FireImpactsProject(object):
             'title_varname': 'Debris Flow Events',
             'norm': 'boundary',
             'cbar_extend': 'neither',
-        }
+            }
 
         self.vis_aridity = {
             'cmap': 'cividis',
@@ -677,7 +677,7 @@ class FireImpactsProject(object):
             'title_varname': 'Aridity',
             'norm': 'linear',
             'cbar_extend': 'neither'
-        }
+            }
 
         self.vis_erosion = {
             'cmap': 'cividis',
@@ -686,7 +686,7 @@ class FireImpactsProject(object):
             'title_varname': '',
             'norm': 'linear',
             'cbar_extend': 'neither'
-        }
+            }
 
         self.vis_delivered = {
             'cmap': 'cividis',
@@ -695,7 +695,7 @@ class FireImpactsProject(object):
             'title_varname': '',
             'norm': 'linear',
             'cbar_extend': 'neither'
-        }
+            }
 
         self.vis_debris_mass = {
             'cmap': 'cividis',
@@ -743,7 +743,7 @@ class FireImpactsProject(object):
             clay_mass_fmt: self.vis_debris_mass,
             'plain': default_params
             }
-        
+
         # Return the vis_params attribute if the input string matches:
         for key, value in param_dict.items():
             if key in input_string:
