@@ -700,19 +700,25 @@ class FireImpactsProject(object):
         self.vis_erosion = {
             'cmap': 'cividis',
             'measure': 'Erosion',
-            'units': 'tonnes per cell',
+            'units': 't/ha',
             'title_varname': '',
-            'norm': 'linear',
-            'cbar_extend': 'neither'
+            'norm': 'log',
+            'cbar_extend': 'neither',
+            # Rasters are stored in t/cell; convert to t/ha at
+            # plot time using the actual raster cell size.
+            'scale_to_per_ha': True,
             }
 
         self.vis_delivered = {
             'cmap': 'cividis',
             'measure': 'Sediment Delivery',
-            'units': 'tonnes per cell',
+            'units': 't/ha',
             'title_varname': '',
-            'norm': 'linear',
-            'cbar_extend': 'neither'
+            'norm': 'log',
+            'cbar_extend': 'neither',
+            # Rasters are stored in t/cell; convert to t/ha at
+            # plot time using the actual raster cell size.
+            'scale_to_per_ha': True,
             }
 
         self.vis_debris_mass = {
@@ -907,7 +913,16 @@ class FireImpactsProject(object):
                 useful_filename_part, 'delivered'
                 )
             vis_params['title_varname'] = title
-            
+
+        # Fix the colour scale for erosion/delivery rasters so that
+        # year 1 and year 2 are always comparable. Peak (30-min) and
+        # total use different upper bounds to suit their value ranges.
+        if 'erosion' in file_name or 'delivered' in file_name:
+            is_peak = 'peak' in file_name
+            vis_params['vmin'] = 0.01 if is_peak else 10
+            vis_params['vmax'] = 50 if is_peak else 1000
+            vis_params['cbar_extend'] = 'both'
+
         catch_name = toputil.clean_chart_title(catchment)
         chart_title = catch_name + ': ' + vis_params['title_varname']
 

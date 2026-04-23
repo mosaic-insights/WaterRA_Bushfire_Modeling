@@ -582,6 +582,14 @@ def plot_spatial_raster(
         if no_data_value is not None:
             data = np.where(data == no_data_value, np.nan, data)
 
+        # Optionally rescale from per-cell to per-hectare units.
+        # The transform is in scope from both code paths above.
+        if vis_params.get('scale_to_per_ha'):
+            cell_area_ha = (
+                transform[0] * abs(transform[4])
+            ) / 10000
+            data = data / cell_area_ha
+
         # Grab the crs while we have it:
         this_crs = src.crs
 
