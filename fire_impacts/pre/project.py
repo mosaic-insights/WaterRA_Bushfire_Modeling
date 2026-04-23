@@ -916,11 +916,17 @@ class FireImpactsProject(object):
 
         # Fix the colour scale for erosion/delivery rasters so that
         # year 1 and year 2 are always comparable. Peak (30-min) and
-        # total use different upper bounds to suit their value ranges.
-        if 'erosion' in file_name or 'delivered' in file_name:
+        # total use different bounds; delivered tends to be lower than
+        # erosion so has its own set of limits.
+        if 'erosion' in file_name:
             is_peak = 'peak' in file_name
             vis_params['vmin'] = 0.01 if is_peak else 10
             vis_params['vmax'] = 50 if is_peak else 1000
+            vis_params['cbar_extend'] = 'both'
+        elif 'delivered' in file_name:
+            is_peak = 'peak' in file_name
+            vis_params['vmin'] = 0.001 if is_peak else 0.1
+            vis_params['vmax'] = 50 if is_peak else 500
             vis_params['cbar_extend'] = 'both'
 
         catch_name = toputil.clean_chart_title(catchment)
