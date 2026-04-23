@@ -583,6 +583,14 @@ def plot_spatial_raster(
         if no_data_value is not None:
             data = np.where(data == no_data_value, np.nan, data)
 
+        # Optionally rescale from per-cell to per-hectare units.
+        # The transform is in scope from both code paths above.
+        if vis_params.get('scale_to_per_ha'):
+            cell_area_ha = (
+                transform[0] * abs(transform[4])
+            ) / 10000
+            data = data / cell_area_ha
+
         # Grab the crs while we have it:
         this_crs = src.crs
 
@@ -661,6 +669,7 @@ def plot_spatial_vector(
     spatial file by the ID.
     --------------------------------------------------------------------
     """
+
     if isinstance(vector_path_or_data, str):
         # Read in the spatial data file:
         shapes = gpd.read_file(vector_path_or_data)
@@ -692,11 +701,16 @@ def plot_spatial_vector(
             on=id_col_name
             )
         colour_col = data_col_name
+        geom_with_data.to_csv('\\zz_TempDump\\geom_with_data.csv', index=False)
 
-        # Get a normaliser to use for both plot and colourbar:
+        # Get a normaliser to use for both plot and colourbar.
+        # Pass vmin/vmax from vis_params when present so the colour
+        # scale is fixed (not data-driven) for variables like dNBR.
         normer = get_cmap_normer(
             data=symbol_data[colour_col],
-            scale=vis_params['norm']
+            scale=vis_params['norm'],
+            min_val=vis_params.get('vmin'),
+            max_val=vis_params.get('vmax'),
             )
         min_plot_val = normer.vmin
         max_plot_val = normer.vmax

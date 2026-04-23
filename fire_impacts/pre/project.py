@@ -632,8 +632,11 @@ class FireImpactsProject(object):
         # Check that it exists and if so, return it:
         if os.path.exists(shapefile_path):
             gdf = gpd.read_file(shapefile_path)
-            # Add an auto ID column only if one doesn't already exist
-            # in the shapefile (e.g. written by extract_headwaters):
+            # Only create the ID column if the shapefile doesn't already
+            # have one. extract_headwaters() writes hw_ID as 1-based
+            # integers; blindly overwriting it with gdf.index (0-based)
+            # would cause a one-position mismatch when merging against
+            # any CSV that was built from the shapefile's own IDs.
             if auto_id_col_name not in gdf.columns:
                 gdf[auto_id_col_name] = gdf.index
             return gdf
@@ -767,7 +770,7 @@ class FireImpactsProject(object):
             'norm': None,
             'cbar_extend': 'neither',
             'title_varname': 'DEM'
-        }
+            }
 
         self.vis_slope = {
             'cmap': 'viridis',
@@ -776,7 +779,7 @@ class FireImpactsProject(object):
             'norm': None,
             'cbar_extend': 'neither',
             'title_varname': 'Slope'
-        }
+            }
 
         self.vis_flow_accum = {
             'cmap': 'viridis',
@@ -786,16 +789,32 @@ class FireImpactsProject(object):
             'vmin': 10,
             'cbar_extend': 'min',
             'title_varname': 'Flow Accumulation'
-        }
+            }
 
-        self.vis_dNBR = {
+        # Raw dNBR (raster): 0–1 scale, extend min to show negatives
+        # as the lowest colour without clipping the upper end.
+        self.vis_dNBR_raw = {
             'cmap': 'inferno',
             'measure': 'ΔNBR',
             'units': 'raw',
             'title_varname': 'ΔNBR',
             'norm': 'linear',
-            'cbar_extend': 'neither'
-        }
+            'vmin': 0.0,
+            'vmax': 1.0,
+            'cbar_extend': 'min',
+            }
+        # Standardised dNBR (zonal stats columns): 0–1000 scale, fixed
+        # range so the colour is consistent across catchments.
+        self.vis_dNBR_std = {
+            'cmap': 'inferno',
+            'measure': 'ΔNBR',
+            'units': 'standardised',
+            'title_varname': 'ΔNBR',
+            'norm': 'linear',
+            'vmin': 0.0,
+            'vmax': 1000.0,
+            'cbar_extend': 'neither',
+            }
 
         self.vis_i12_crit = {
             'cmap': 'plasma_r',
@@ -803,8 +822,10 @@ class FireImpactsProject(object):
             'units': 'mm/hr',
             'title_varname': 'Rain Intensity I12 Crit',
             'norm': 'linear',
-            'cbar_extend': 'neither'
-        }
+            'vmin': 0.0,
+            'vmax': 800.0,
+            'cbar_extend': 'max'
+            }
 
         self.vis_num_debris_flow_events = {
             'cmap': 'Reds',
@@ -813,7 +834,7 @@ class FireImpactsProject(object):
             'title_varname': 'Debris Flow Events',
             'norm': 'boundary',
             'cbar_extend': 'neither',
-        }
+            }
 
         self.vis_aridity = {
             'cmap': 'cividis',
@@ -822,25 +843,31 @@ class FireImpactsProject(object):
             'title_varname': 'Aridity',
             'norm': 'linear',
             'cbar_extend': 'neither'
-        }
+            }
 
         self.vis_erosion = {
             'cmap': 'cividis',
             'measure': 'Erosion',
-            'units': 'tonnes per cell',
+            'units': 't/ha',
             'title_varname': '',
-            'norm': 'linear',
-            'cbar_extend': 'neither'
-        }
+            'norm': 'log',
+            'cbar_extend': 'neither',
+            # Rasters are stored in t/cell; convert to t/ha at
+            # plot time using the actual raster cell size.
+            'scale_to_per_ha': True,
+            }
 
         self.vis_delivered = {
             'cmap': 'cividis',
             'measure': 'Sediment Delivery',
-            'units': 'tonnes per cell',
+            'units': 't/ha',
             'title_varname': '',
-            'norm': 'linear',
-            'cbar_extend': 'neither'
-        }
+            'norm': 'log',
+            'cbar_extend': 'neither',
+            # Rasters are stored in t/cell; convert to t/ha at
+            # plot time using the actual raster cell size.
+            'scale_to_per_ha': True,
+            }
 
         self.vis_debris_mass = {
             'cmap': 'cividis',
@@ -872,13 +899,23 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither',
             'title_varname': ''
             }
-        
-        # Dictionary linking 
+
+        # dNBR needs special routing: raw raster files (dNBR.tif,
+        # masked_dNBR.tif) use the 0–1 raw scale; zonal-stat columns
+        # (dNBR_mean, dNBR_max, …) use the 0–1000 standardised scale.
+        _stat_suffixes = ('_mean', '_max', '_min', '_median', '_std')
+        if 'dnbr' in input_string:
+            is_stats_col = any(
+                input_string.endswith(s) for s in _stat_suffixes
+            )
+            return (
+                self.vis_dNBR_std if is_stats_col else self.vis_dNBR_raw
+            )
+
+        # Dictionary linking keyword substrings to vis_params dicts:
         param_dict = {
             'slope': self.vis_slope,
             'flow_acc': self.vis_flow_accum,
-            'masked_dnbr': self.vis_dNBR,
-            'dnbr': self.vis_dNBR,
             'i12_crit': self.vis_i12_crit,
             'num_events': self.vis_num_debris_flow_events,
             'aridity': self.vis_aridity,
@@ -888,7 +925,7 @@ class FireImpactsProject(object):
             clay_mass_fmt: self.vis_debris_mass,
             'plain': default_params
             }
-        
+
         # Return the vis_params attribute if the input string matches:
         for key, value in param_dict.items():
             if key in input_string:
@@ -1024,7 +1061,22 @@ class FireImpactsProject(object):
                 useful_filename_part, 'delivered'
                 )
             vis_params['title_varname'] = title
-            
+
+        # Fix the colour scale for erosion/delivery rasters so that
+        # year 1 and year 2 are always comparable. Peak (30-min) and
+        # total use different bounds; delivered tends to be lower than
+        # erosion so has its own set of limits.
+        if 'erosion' in file_name:
+            is_peak = 'peak' in file_name
+            vis_params['vmin'] = 0.01 if is_peak else 10
+            vis_params['vmax'] = 50 if is_peak else 1000
+            vis_params['cbar_extend'] = 'both'
+        elif 'delivered' in file_name:
+            is_peak = 'peak' in file_name
+            vis_params['vmin'] = 0.001 if is_peak else 0.1
+            vis_params['vmax'] = 50 if is_peak else 500
+            vis_params['cbar_extend'] = 'both'
+
         catch_name = toputil.clean_chart_title(catchment)
         chart_title = catch_name + ': ' + vis_params['title_varname']
 
@@ -1142,7 +1194,7 @@ class FireImpactsProject(object):
         catchment:str,
         colour_col:str|None=None,
         table:pd.DataFrame | None=None,
-        data_type:str='DebrisFlow',
+        data_type:str='',
         existing_figure=None,
         existing_axes=None
         ):
@@ -1795,6 +1847,7 @@ def summary_stats(
     zone_type='headwaters',
     masked_nan_threshold:float=0.05,
     layer_nan_threshold:float=0.05,
+    save_shp=False,
     ):
     """
     Calculate summary statistics for a catchment from pre-processed
@@ -1819,6 +1872,9 @@ def summary_stats(
     only.  Note: for coarse rasters, ``all_touched=True`` is used
     automatically, so "overlapping" means any pixel touching the zone.
     Default 0.05 (5%).
+    - save_shp (bool): If True, also save results as a shapefile
+    alongside the CSV. The shapefile includes all stat columns plus
+    zone geometry, suitable for loading into GIS software.
 
     Returns:
     - pd.DataFrame: DataFrame containing the summary statistics for the
@@ -1838,17 +1894,19 @@ def summary_stats(
             f'one of: {acceptable_zones}'
             )
     # If we've been given a string instead of an actual project object,
-    #try initialising/loading a project with the given name:
-    if isinstance(project,str):
+    # try initialising/loading a project with the given name:
+    if isinstance(project, str):
         project = FireImpactsProject(project)
     # Process for all catchments if none was specified:
     if catchment_name is None:
         return project.for_each_catchment(
-            lambda c:summary_stats(
-                project, c, zone_type, masked_nan_threshold,
-                layer_nan_threshold
-                )
+            lambda c: summary_stats(
+                project, c, zone_type=zone_type,
+                masked_nan_threshold=masked_nan_threshold,
+                layer_nan_threshold=layer_nan_threshold,
+                save_shp=save_shp,
             )
+        )
 
     if requested_zone == 'subcatchments':
         id_col_name = project.subcatchment_id
@@ -1867,25 +1925,23 @@ def summary_stats(
             masked_nan_threshold
         )
 
-    # Initialize a list to store the results
-    results = []
-
     sources = [
-        ('Slope',('Topography','Slope.tif')),
-        ('dNBR',('FireSeverity','dNBR.tif')),
-        ('Aridity',('Soils','Aridity.tif')),
+        ('Slope', ('Topography', 'Slope.tif')),
+        ('dNBR',  ('FireSeverity', 'dNBR.tif')),
+        ('Aridity', ('Soils', 'Aridity.tif')),
         # ('Rain','Rain','Rainfall.tif')
     ]
 
-    soil_path = project.catchment_path(catchment_name,'Soils')
+    soil_path = project.catchment_path(catchment_name, 'Soils')
     for fn in os.listdir(soil_path):
-        abs_fn = os.path.join(soil_path,fn)
+        abs_fn = os.path.join(soil_path, fn)
         if not os.path.isdir(abs_fn):
             continue
-
         for child_fn in os.listdir(abs_fn):
             if child_fn.endswith('.tif'):
-                sources.append((child_fn.replace('.tif',''),('Soils',fn,child_fn)))
+                sources.append(
+                    (child_fn.replace('.tif', ''), ('Soils', fn, child_fn))
+                )
 
     # Reset index after filtering so that list-based columns from
     # rasterstats align correctly with the id column in the DataFrame.
@@ -1986,23 +2042,54 @@ def summary_stats(
             )
 
         for k in STATS:
-            result[f'{label}_{k}'] = [s[k] for s in stats]
+            # rasterstats returns Python None (not np.nan) for zones
+            # that fall entirely within nodata pixels. Coerce to nan
+            # so the column stays float64 rather than object dtype.
+            # Object dtype causes to_csv() to write values as strings
+            # which then can't be reliably read back as numbers.
+            result[f'{label}_{k}'] = [
+                float('nan') if s[k] is None else s[k]
+                for s in stats
+            ]
 
     extracted_data = pd.DataFrame(result)
+    extracted_data = extracted_data.apply(pd.to_numeric, errors='coerce')
 
-    # Convert dNBR values to a set of standardised numbers [0, 1000]:
+    # Preserve the raw (pre-clip) dNBR stat columns so that the
+    # original pixel-level distribution is visible for diagnostics.
+    # These sit alongside the standardised columns in the output.
     for stat in STATS:
-        this_col_name = 'dNBR_' + stat
-        extracted_data[this_col_name] = format_dNBR(
-            extracted_data[this_col_name]
-            )
+        raw_col = f'dNBR_{stat}'
+        extracted_data[f'dNBR_raw_{stat}'] = extracted_data[raw_col]
 
+    # Convert dNBR stats to standardised values [0, 1000]: clip
+    # negatives to 0 then scale. Note that this clips the already-
+    # aggregated stats (e.g. a negative mean clips to 0), which can
+    # make mean=0 while max>0. The raw columns above let you verify
+    # the pre-clip values if the result looks unexpected.
+    for stat in STATS:
+        col = f'dNBR_{stat}'
+        extracted_data[col] = format_dNBR(extracted_data[col])
 
-    csv_path=project.catchment_path(
-        catchment_name,
-        f'Soil_Slope_Aridity_dNBR_{zone_type}.csv'
-        )
+    # -----------------------------------------------------------------
+    # Save outputs
+    # -----------------------------------------------------------------
+    base_name = f'Soil_Slope_Aridity_dNBR_{zone_type}'
+    csv_path = project.catchment_path(catchment_name, f'{base_name}.csv')
     extracted_data.to_csv(csv_path, index=False)
+    logger.info('[write] %s', csv_path)
+
+    if save_shp:
+        # Join the computed stats back onto the zone geometries so
+        # the shapefile carries both attributes and geometry.
+        shp_gdf = zones_gdf[[id_col_name, 'geometry']].merge(
+            extracted_data, on=id_col_name, how='left'
+        )
+        shp_path = project.catchment_path(
+            catchment_name, f'{base_name}.shp'
+        )
+        shp_gdf.to_file(shp_path)
+        logger.info('[write] %s', shp_path)
 
     return extracted_data
 
@@ -2014,7 +2101,7 @@ def format_dNBR(series:pd.Series):
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    return series.clip(lower=0).mul(1000)
+    return series.clip(lower=0).mul(1000).astype(np.float64)
 
 ###############################################################################
 def save_catchment_raster(
