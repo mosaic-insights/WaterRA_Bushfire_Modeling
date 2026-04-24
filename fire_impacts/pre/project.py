@@ -404,8 +404,14 @@ class FireImpactsProject(object):
 
         self._write()
 
-        # Get only the useful columns, plus geometry:
-        good_cols = id_cols + [subcatch_clipped.geometry.name]
+        # Get only the useful columns, plus geometry. Always retain the
+        # resolved label column so downstream code can label outputs by
+        # subcatchment name rather than integer index.
+        good_cols = list(id_cols)
+        if resolved_label is not None and resolved_label not in good_cols:
+            if resolved_label in subcatch_clipped.columns:
+                good_cols.append(resolved_label)
+        good_cols.append(subcatch_clipped.geometry.name)
         int_gdf = subcatch_clipped[good_cols]
 
         #Use the index as the internal integer subcatchment id (sc_ID)
