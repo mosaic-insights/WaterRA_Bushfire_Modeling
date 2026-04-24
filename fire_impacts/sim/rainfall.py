@@ -154,9 +154,51 @@ def aggregate_rainfall_data(source, rain_data_start=None, rain_data_end=None, ti
 
     return r_agg
 
+def _coerce_replicate_id(label):
+    """Normalise replicate coord labels to integer IDs.
+
+    Accepts plain ints, numeric strings ('0', '01'), and labelled
+    strings like 'Simulation_0' / 'replicate_3' — returns the trailing
+    integer.
+    """
+    if isinstance(label, (int, np.integer)):
+        return int(label)
+    s = str(label)
+    trailing = s.rsplit('_', 1)[-1]
+    try:
+        return int(trailing)
+    except ValueError as e:
+        raise ValueError(
+            f"Cannot extract integer replicate id from label {label!r}"
+        ) from e
+
+
 def convert_rainfall_to_dataframe(source):
-    df = source['rainfall'].to_dataframe().reset_index().pivot(index='time',columns='simulation',values='rainfall')
-    df.attrs['units'] = source['rainfall'].attrs.get('units','unknown')
+    """Pivot a rainfall Dataset to a ``time × replicate`` DataFrame.
+
+    Columns are integer replicate IDs — matching the keys returned by
+    ``load_ensemble_combined`` — regardless of whether the underlying
+    xarray dim is named ``replicate`` / ``simulation`` and whether its
+    coord labels are integers or strings like ``'Simulation_0'``.
+    """
+    replicate_dim = next(
+        (d for d in ('replicate', 'simulation') if d in source['rainfall'].dims),
+        None,
+    )
+    if replicate_dim is None:
+        raise ValueError(
+            f"Rainfall dataset has no 'replicate' or 'simulation' dimension; "
+            f"got dims {source['rainfall'].dims}"
+        )
+    df = (
+        source['rainfall']
+        .to_dataframe()
+        .reset_index()
+        .pivot(index='time', columns=replicate_dim, values='rainfall')
+    )
+    df.columns = [_coerce_replicate_id(c) for c in df.columns]
+    df = df.reindex(columns=sorted(df.columns))
+    df.attrs['units'] = source['rainfall'].attrs.get('units', 'unknown')
     return df
 
 def import_measured_rainfall(

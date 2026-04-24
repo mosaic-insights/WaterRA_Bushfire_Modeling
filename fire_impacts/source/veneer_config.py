@@ -61,7 +61,7 @@ def _detect_parameter(
         ValueError: If no suitable parameter is found
     """
     try:
-        available_options = getter_func()
+        available_options = set(getter_func())
         logger.debug(f"Available {param_name} in model: {available_options}")
     except Exception as e:
         logger.error(f"Failed to get {param_name} from model: {e}")
@@ -136,7 +136,7 @@ def detect_functional_unit(v: veneer.Veneer, candidate_list: Optional[List[str]]
         return [fu for fu in fus if fu != 'Water']
     
     return _detect_parameter(
-        getter_func=v.model.catchment.functional_units,
+        getter_func=v.model.catchment.get_functional_unit_types,
         candidate_list=candidate_list,
         param_name="functional units",
         filter_func=filter_water
@@ -234,7 +234,8 @@ def create_veneer_data_sources(
     tss_data: pd.DataFrame,
     rainfall_data: pd.DataFrame,
     tss_source_name: str = 'fire_tss',
-    rainfall_source_name: str = 'stochastic_rain'
+    rainfall_source_name: str = 'stochastic_rain',
+    timestep: str = 'day'
 ) -> None:
     """
     Create data sources in Veneer for TSS and rainfall data.
@@ -249,8 +250,8 @@ def create_veneer_data_sources(
     logger.info(f"Creating data sources: {tss_source_name}, {rainfall_source_name}")
     
     # Create data sources
-    v.create_data_source(tss_source_name, tss_data, units='kg/h')
-    v.create_data_source(rainfall_source_name, rainfall_data, units='mm/h')
+    v.create_data_source(tss_source_name, tss_data, units=f'kg/{timestep}')
+    v.create_data_source(rainfall_source_name, rainfall_data, units=f'mm/{timestep}')
     
     logger.info("Data sources created successfully")
 
