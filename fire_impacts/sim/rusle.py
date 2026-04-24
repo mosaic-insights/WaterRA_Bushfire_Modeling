@@ -701,8 +701,7 @@ def run_usle_simulation(
             c.RUSLE_OP_TIMESERIES_NAME + '.csv'
             )
         output = pd.DataFrame(data=results[c.RUSLE_OP_TIMESERIES_NAME])
-        output.index.name='Datetime'
-        output.columns = ['total_mass_eroded_tonnes']
+        output.index.name = 'Datetime'
         output.to_csv(out_name)
 
     # Attach a pointer to all the rusle parameters (mostly grids) used
