@@ -11,8 +11,35 @@ from .project import FireImpactsProject
 from .util import clip_and_reproject_raster, reproject_raster, retrieve_grid_from_wcs_for_bounds
 from .data_sources import ASRIS_WCS, TERN_SLGA_STAC, ARIDITY_GRID_COARSE
 from contextlib import contextmanager
+import socket
 import tempfile
 logger = logging.getLogger(__name__)
+
+# Defaults for the remote TERN STAC downloads. Tuned to abort a run
+# that has stalled (API slow / not cleanly failing) rather than hang
+# indefinitely. Override per-call via download_soil_data_stac kwargs.
+DEFAULT_STAC_CONNECT_TIMEOUT = 30     # seconds, TCP connect
+DEFAULT_STAC_REQUEST_TIMEOUT = 600    # seconds, single HTTP request cap
+DEFAULT_STAC_LOW_SPEED_LIMIT = 100    # bytes/sec — below this counts as stalled
+DEFAULT_STAC_LOW_SPEED_TIME = 60      # seconds stalled before aborting
+
+
+@contextmanager
+def _socket_default_timeout(seconds):
+    """Temporarily set the process-wide default socket timeout.
+
+    Covers network libraries (pystac / urllib3) that don't expose a
+    timeout knob directly. Restored on exit.
+    """
+    if seconds is None:
+        yield
+        return
+    previous = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(seconds)
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(previous)
 
 LAYER_NAMES={
     'SILT':'SLT',
@@ -135,11 +162,13 @@ def find_slga_grids(
     if depths is None:
         depths = SOIL_DEPTHS
 
+    logger.info(f"Finding SLGA grids in STAC catalog {base_catalog} for variables {variables} and depths {depths}")
     catalog = get_stac(base_catalog, api_key=api_key)
     entries = list(catalog.get_children())
     relevant = [e for e in entries if e.id in variables]
     assets = []
     for cat in relevant:
+        logger.info(f"Processing variable {cat.id} with {len(list(cat.get_children()))} items")
         # Name of the current soil variable e.g. CLY for clay
         variable = cat.id
         # Get the items for the specified version:
@@ -196,29 +225,48 @@ def download_soil_data_stac(
     project:FireImpactsProject,
     catchment:str=None,
     api_key:str=None,
-    base_stac_catalog=TERN_SLGA_STAC,version='v2'
+    base_stac_catalog=TERN_SLGA_STAC,version='v2',
+    connect_timeout:float=DEFAULT_STAC_CONNECT_TIMEOUT,
+    request_timeout:float=DEFAULT_STAC_REQUEST_TIMEOUT,
+    low_speed_limit:int=DEFAULT_STAC_LOW_SPEED_LIMIT,
+    low_speed_time:int=DEFAULT_STAC_LOW_SPEED_TIME,
     ):
     """
-    Download soil-related data (Silt, Clay, Sand, Bulk Density) for 
-    each catchment from STAC URLs using catchment boundary, and save 
+    Download soil-related data (Silt, Clay, Sand, Bulk Density) for
+    each catchment from STAC URLs using catchment boundary, and save
     the data in the appropriate folder.
 
-    Intended for use with original TERN's STAC, which requires an API 
-    key. Create a TERN account and obtain an API key from the TERN 
+    Intended for use with original TERN's STAC, which requires an API
+    key. Create a TERN account and obtain an API key from the TERN
     website (https://account.tern.org.au/)
 
     Parameters:
-    - project (fire_impacts.FireImpactsProject): A dictionary of 
+    - project (fire_impacts.FireImpactsProject): A dictionary of
     project folders created for catchments.
-    - catchment (str): OPTIONAL: Name of the catchment to process. If 
+    - catchment (str): OPTIONAL: Name of the catchment to process. If
     None, process all catchments.
     - tern_api_key (str): API key for accessing the TERN STAC API.
     - base_stac_catalog (str): Base URL for the TERN STAC catalog.
+    - connect_timeout (float): TCP connect timeout in seconds for both
+    the STAC catalog traversal and each GDAL raster read. Default 30.
+    - request_timeout (float): Hard cap in seconds on a single HTTP
+    request. Default 600. Large COG reads can take a while; set higher
+    if you see legitimate transfers being cut off.
+    - low_speed_limit (int): Bytes/sec below which a GDAL transfer is
+    treated as stalled. Default 100.
+    - low_speed_time (int): Seconds a transfer must stay below
+    *low_speed_limit* before GDAL aborts it. Default 60. This is what
+    catches "API is very slow / not failing cleanly" — the download
+    errors out instead of hanging forever.
     """
     if catchment is None:
         project.for_each_catchment(
             lambda c: download_soil_data_stac(
-                project,c, api_key,base_stac_catalog,version
+                project, c, api_key, base_stac_catalog, version,
+                connect_timeout=connect_timeout,
+                request_timeout=request_timeout,
+                low_speed_limit=low_speed_limit,
+                low_speed_time=low_speed_time,
                 )
             )
         return
@@ -227,12 +275,24 @@ def download_soil_data_stac(
         logger.error("API key is required for STAC access.")
         raise ValueError("API key is required for STAC access.")
 
-    grids = find_slga_grids(base_stac_catalog, version=version, api_key=api_key)
+    # STAC catalog reads go through pystac / urllib3 and don't accept a
+    # timeout kwarg here; a socket-default timeout is a coarse but
+    # effective guard against the catalog hanging.
+    with _socket_default_timeout(request_timeout):
+        grids = find_slga_grids(
+            base_stac_catalog, version=version, api_key=api_key,
+        )
     logger.info(
         f'Processing catchment: {catchment} with {len(grids)} grids '
         'found'
         )
-    with gdal_api_key(api_key):
+    gdal_timeouts = {
+        'GDAL_HTTP_CONNECTTIMEOUT': str(int(connect_timeout)),
+        'GDAL_HTTP_TIMEOUT': str(int(request_timeout)),
+        'GDAL_HTTP_LOW_SPEED_LIMIT': str(int(low_speed_limit)),
+        'GDAL_HTTP_LOW_SPEED_TIME': str(int(low_speed_time)),
+    }
+    with gdal_api_key(api_key), rasterio.Env(**gdal_timeouts):
         for var,fn,url in grids:
             logger.info('Downloading %s',fn)
             dest_dir = project.catchment_path(catchment,'Soils',var)
