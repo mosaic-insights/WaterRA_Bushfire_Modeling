@@ -149,6 +149,24 @@ rusle_results = run_rusle_all_replicates(
 )
 
 # %% [markdown]
+# ### Baseline (no-fire) ensemble
+#
+# Re-run the ensemble using the **unadjusted** C and K factors to
+# produce a pre-fire baseline for each replicate. Differencing
+# ``rusle_results`` against ``baseline_results`` isolates the
+# fire-attributable component of the erosion response under the same
+# stochastic rainfall.
+
+# %%
+baseline_results = run_rusle_all_replicates(
+    proj,
+    rainfall_30min,
+    n_workers=min(N_REPLICATES, 10),
+    recorder_factory=recorder_factory,
+    use_fire_adjusted=False,
+)
+
+# %% [markdown]
 # ### Ensemble statistics (median / P90 / IQR)
 #
 # Publication-quality three-panel map of year-1 total erosion with a

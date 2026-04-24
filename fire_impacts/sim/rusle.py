@@ -47,45 +47,42 @@ LOG_INTERVAL_SECONDS = 15.0
 def compute_klscp_layer(
     proj:FireImpactsProject,
     catchment:str,
-    support_practice_factor:float=1.0
+    support_practice_factor:float=1.0,
+    use_fire_adjusted:bool=True
     ):
     """
     Using previously-generated C, K, and LS factor rasters, compute
     KLSCP values for the catchment in memory.
 
+    When ``use_fire_adjusted=False`` the unadjusted C and K factors are
+    used instead, producing a pre-fire baseline KLSCP for comparison
+    against the fire-impacted result.
+
     Returns: (klscp_array, metadata_dict)
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    # Read all input rasters and ensure they align:
-    c_factor_path = proj.catchment_path(
-        catchment,
-        'Erodibility','C_factor_adjusted.tif'
-        )
-    k_factor_path = proj.catchment_path(
-        catchment,
-        'Erodibility',
-        'K_factor_adjusted.tif'
-        )
+    c_name = 'C_factor_adjusted.tif' if use_fire_adjusted else 'C_factor.tif'
+    k_name = 'K_factor_adjusted.tif' if use_fire_adjusted else 'K_factor.tif'
+    c_factor_path = proj.catchment_path(catchment, 'Erodibility', c_name)
+    k_factor_path = proj.catchment_path(catchment, 'Erodibility', k_name)
     ls_factor_path = proj.catchment_path(
         catchment,
         'Erodibility',
         'LS_factor.tif'
         )
 
-    # Calculate values for the new layer:
-    with rasterio.open(c_factor_path) as c_factor, \
-         rasterio.open(k_factor_path) as k_factor, \
-         rasterio.open(ls_factor_path) as ls_factor:
-
-        # Read data as arrays
-        c_array = c_factor.read(1)
-        k_array = k_factor.read(1)
+    # LS is always at DEM resolution. Align C and K to it — the
+    # unadjusted rasters are stored at their native (coarse) source
+    # resolution, so a direct read() would give mismatched shapes.
+    with rasterio.open(ls_factor_path) as ls_factor:
         ls_array = ls_factor.read(1)
-
-        # Copy the profile metadata before exiting the `with` block.
-        #We pick a layer where the nodata value is np.nan:
         meta = ls_factor.meta.copy()
+        transform = meta['transform']
+        crs = meta['crs']
+
+    c_array = read_aligned(c_factor_path, transform, crs, ls_array.shape)
+    k_array = read_aligned(k_factor_path, transform, crs, ls_array.shape)
 
     # Perform the multiplication for RUSLE base layer
     base = (c_array * k_array * ls_array * support_practice_factor).astype(np.float32)
@@ -95,7 +92,7 @@ def compute_klscp_layer(
     return base, meta
 
 ###############################################################################
-def _rusle_parameter_grids(project:FireImpactsProject, catchment:str):
+def _rusle_parameter_grids(project:FireImpactsProject, catchment:str, use_fire_adjusted:bool=True):
     """
     Organise relevant raster parameters and return them as usable
     data objects ready for rusle calculations.
@@ -116,7 +113,9 @@ def _rusle_parameter_grids(project:FireImpactsProject, catchment:str):
     cell_area_ha = cell_area_m2 * M2_TO_HA  # Convert to hectares
 
     # Compute KLSCP layer in memory:
-    klscp, klscp_meta = compute_klscp_layer(project,catchment)
+    klscp, klscp_meta = compute_klscp_layer(
+        project, catchment, use_fire_adjusted=use_fire_adjusted
+        )
 
     transform = klscp_meta['transform']
     crs = klscp_meta['crs']
@@ -465,7 +464,8 @@ def record_grid_transform():
 ###############################################################################
 def aggregate_rusle_to_subcatchments(
     project: FireImpactsProject,
-    catchment: str
+    catchment: str,
+    results_section: str = c.RESULTS_FOLDER_NAME
     ) -> 'pd.DataFrame | None':
     """
     Compute zonal statistics for each saved RUSLE output raster and
@@ -511,7 +511,7 @@ def aggregate_rusle_to_subcatchments(
     for raster_name in c.RUSLE_OUTPUT_RASTER_NAMES:
         raster_path = project.catchment_path(
             catchment,
-            c.RESULTS_FOLDER_NAME,
+            results_section,
             f'{raster_name}.tif'
             )
         if not os.path.exists(raster_path):
@@ -529,7 +529,7 @@ def aggregate_rusle_to_subcatchments(
 
     out_path = project.catchment_path(
         catchment,
-        c.RESULTS_FOLDER_NAME,
+        results_section,
         c.RUSLE_SC_SUMMARY_NAME + '.csv'
         )
     summary.to_csv(out_path, index=False)
@@ -545,7 +545,9 @@ def run_usle_simulation(
     catchment=None,
     recorders=None,
     save_rasters:bool=True,
-    save_timeseries:bool=True
+    save_timeseries:bool=True,
+    use_fire_adjusted:bool=True,
+    results_section:str=None
     ):
     """
     Run the USLE simulation for a given project and rainfall data,
@@ -580,7 +582,20 @@ def run_usle_simulation(
     """
     if catchment is None:
         return project.for_each_catchment(
-            lambda c: run_usle_simulation(project,rainfall,c,recorders,save_rasters,save_timeseries)
+            lambda ctmt: run_usle_simulation(
+                project, rainfall, ctmt, recorders,
+                save_rasters, save_timeseries,
+                use_fire_adjusted=use_fire_adjusted,
+                results_section=results_section,
+                )
+            )
+    # Resolve the section where outputs will be written. Baseline runs
+    # go to a sibling folder so they don't overwrite the fire-impacted
+    # results produced alongside them.
+    if results_section is None:
+        results_section = (
+            c.RESULTS_FOLDER_NAME if use_fire_adjusted
+            else c.RESULTS_BASELINE_FOLDER_NAME
             )
     # If no recorders were passed, use an empty dictionary so the rest
     #of the code works consistently:
@@ -591,7 +606,7 @@ def run_usle_simulation(
         recorder.reset()
 
     # Get the relevant RUSLE parameters as handy arrays:
-    params = _rusle_parameter_grids(project,catchment)
+    params = _rusle_parameter_grids(project, catchment, use_fire_adjusted=use_fire_adjusted)
     klscp, sdr, dnbr, cell_area_ha, transform = params
     # Get the catchment boundary geometry in a form that's usable by
     #rasterio:
@@ -645,6 +660,14 @@ def run_usle_simulation(
     for key, recorder in recorders.items():
         results[key] = recorder.finalize()
     
+    if save_rasters or save_timeseries:
+        # Baseline runs land in a non-standard folder that the project
+        # template doesn't pre-create. Make sure it exists.
+        os.makedirs(
+            project.catchment_path(catchment, results_section),
+            exist_ok=True,
+            )
+
     if save_rasters:
         template_raster = project.catchment_path(
             catchment,
@@ -660,19 +683,21 @@ def run_usle_simulation(
                 project=project,
                 catchment_name=catchment,
                 file_name=output_raster,
-                section=c.RESULTS_FOLDER_NAME,
+                section=results_section,
                 data=save_data,
                 meta=template_meta
                 )
 
         # Aggregate the saved rasters to subcatchments and write a
-        # summary CSV to Results/ (skipped if no subcatchments exist):
-        aggregate_rusle_to_subcatchments(project, catchment)
+        # summary CSV alongside them (skipped if no subcatchments exist):
+        aggregate_rusle_to_subcatchments(
+            project, catchment, results_section=results_section
+            )
 
     if save_timeseries:
         out_name = project.catchment_path(
             catchment,
-            c.RESULTS_FOLDER_NAME,
+            results_section,
             c.RUSLE_OP_TIMESERIES_NAME + '.csv'
             )
         output = pd.DataFrame(data=results[c.RUSLE_OP_TIMESERIES_NAME])
@@ -1023,6 +1048,7 @@ def run_rusle_replicate(
     rainfall_30min,
     replicate_idx,
     recorder_factory=None,
+    use_fire_adjusted=True,
 ):
     """Run the RUSLE simulation for a single rainfall replicate.
 
@@ -1063,6 +1089,7 @@ def run_rusle_replicate(
             recorders=recorders,
             save_rasters=False,
             save_timeseries=False,
+            use_fire_adjusted=use_fire_adjusted,
         )
 
     return replicate_results
@@ -1075,6 +1102,7 @@ def run_rusle_all_replicates(
     scheduler='threads',
     replicate_indices=None,
     recorder_factory=None,
+    use_fire_adjusted=True,
 ):
     """Run RUSLE simulations for selected rainfall replicates in parallel with Dask.
 
@@ -1125,6 +1153,7 @@ def run_rusle_all_replicates(
             rainfall_30min,
             i,
             recorder_factory=recorder_factory,
+            use_fire_adjusted=use_fire_adjusted,
         )
         for i in replicate_indices
     ]

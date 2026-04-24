@@ -148,6 +148,37 @@ recorders = dict(
 results = rusle.run_usle_simulation(proj,rain_seq,recorders=recorders)
 
 # %% [markdown]
+# ### Baseline (no-fire) simulation
+#
+# To isolate the fire-attributable component of the erosion, we re-run
+# the same simulation using the **unadjusted** C and K factors — i.e. as
+# if the catchment had not burned. Outputs land in a sibling
+# ``Results_baseline/`` folder so they sit alongside, rather than
+# overwriting, the fire-impacted results. Differencing the two gives
+# the erosion uplift caused by the fire.
+
+# %%
+# Rebuild the recorders: each recorder carries accumulator state from
+# the fire run, so we need fresh ones for the baseline.
+baseline_recorders = dict(
+    erosion_y1        = rusle.record_summary_grid('RUSLE',end_time=y1_end),
+    erosion_y2        = rusle.record_summary_grid('RUSLE',start_time=y2_start),
+    peak_erosion_y1   = rusle.record_summary_grid('RUSLE',fn='max',end_time=y1_end),
+    peak_erosion_y2   = rusle.record_summary_grid('RUSLE',fn='max',start_time=y2_start),
+    delivered_y1      = rusle.record_summary_grid('delivered', end_time=y1_end),
+    delivered_y2      = rusle.record_summary_grid('delivered', start_time=y2_start),
+    peak_delivered_y1 = rusle.record_summary_grid('delivered', fn='max', end_time=y1_end),
+    peak_delivered_y2 = rusle.record_summary_grid('delivered', fn='max', start_time=y2_start),
+    erosion_daily_time_series = rusle.record_subcatchment_timeseries(proj,'RUSLE',agg_count=48)
+)
+
+baseline_results = rusle.run_usle_simulation(
+    proj, rain_seq,
+    recorders=baseline_recorders,
+    use_fire_adjusted=False,
+)
+
+# %% [markdown]
 # ### Viewing RUSLE simulation results
 #
 # One easy, intuitive way to view the rsults is as a daily timeseries of total mass eroded each day. This is embedded within the `results` object created above
