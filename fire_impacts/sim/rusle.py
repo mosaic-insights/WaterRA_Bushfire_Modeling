@@ -335,7 +335,20 @@ def record_subcatchment_timeseries(
                     out_shape=data.shape
                     ) for g in boundaries_v.geometry
                 ]
-            if resolved_label is None or resolved_label not in boundaries_v.columns:
+            if resolved_label is None:
+                zone_names = boundaries_v.index.values
+            elif resolved_label not in boundaries_v.columns:
+                logger.warning(
+                    "Subcatchment label field '%s' is configured for "
+                    "catchment '%s' but is not present in the saved "
+                    "subcatchments shapefile (columns: %s). Falling "
+                    "back to integer indices. Re-run "
+                    "FireImpactsProject.add_subcatchments(..., "
+                    "label_field='%s') to rewrite the shapefile with "
+                    "the label column retained.",
+                    resolved_label, catchment,
+                    list(boundaries_v.columns), resolved_label,
+                )
                 zone_names = boundaries_v.index.values
             else:
                 zone_names = boundaries_v[resolved_label].values

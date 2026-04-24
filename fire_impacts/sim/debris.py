@@ -1185,6 +1185,31 @@ def postprocess_debris_flow(
         if resample_freq is not None:
             resampled[rep_key] = resample_debris_timeseries(agg, resample_freq)
 
+    # --- Relabel sc_ID columns with the configured subcatchment label
+    # field (typically 'SiteID') so downstream outputs are keyed by
+    # human-readable names instead of internal integer indices.
+    label_field = proj.subcatchment_label_field(catchment)
+    if label_field:
+        subs = proj.get_subcatchments(catchment)
+        if label_field in subs.columns and SC_ID in subs.columns:
+            label_map = dict(zip(subs[SC_ID], subs[label_field]))
+            for rep_key in list(aggregated.keys()):
+                aggregated[rep_key] = aggregated[rep_key].rename(
+                    columns=label_map,
+                )
+                if rep_key in resampled:
+                    resampled[rep_key] = resampled[rep_key].rename(
+                        columns=label_map,
+                    )
+        else:
+            logger.warning(
+                "Subcatchment label field '%s' is configured for "
+                "catchment '%s' but is not present in the saved "
+                "subcatchments shapefile (columns: %s). Debris-flow "
+                "outputs will keep integer sc_ID column labels.",
+                label_field, catchment, list(subs.columns),
+            )
+
     # --- Save ---
     if save:
         out_path = proj.catchment_path(catchment, 'DebrisFlow')

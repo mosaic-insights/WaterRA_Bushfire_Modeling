@@ -12,7 +12,13 @@ from .ensemble import exceedance_probability, ensemble_statistic, \
                       plot_ensemble_daily_ribbon, \
                       catchment_total_per_replicate, \
                       combine_rusle_and_debris_annual, \
-                      combine_rusle_and_debris_subcatchment
+                      combine_rusle_and_debris_subcatchment, \
+                      rusle_subcatchment_ensemble, \
+                      debris_subcatchment_ensemble, \
+                      subcatchment_series_to_long, \
+                      reduce_ensemble_subcatchments, \
+                      plot_subcatchment_simulation, \
+                      plot_subcatchment_ensemble
 from .results import save_ensemble_run, load_ensemble_manifest, \
                      load_ensemble_rainfall, load_ensemble_combined, \
                      load_ensemble_rusle_timeseries, \

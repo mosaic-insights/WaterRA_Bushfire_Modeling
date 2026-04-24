@@ -893,17 +893,60 @@ def combine_rusle_and_debris_subcatchment(
     sample_rep = next(iter(rusle_results.values()))
     catchment = _resolve_catchment(sample_rep, catchment)
 
-    is_total = freq is None or (isinstance(freq, str) and freq.lower() == 'total')
-    # Resolve the label field: explicit arg wins, else fall back to the
-    # project's configured per-catchment field.
+    rusle_ens = rusle_subcatchment_ensemble(
+        rusle_results,
+        project=project,
+        catchment=catchment,
+        freq=freq,
+        subcatchment_label_field=subcatchment_label_field,
+        rusle_timeseries_key=rusle_timeseries_key,
+        scale=rusle_scale,
+    )
+    debris_ens = debris_subcatchment_ensemble(
+        debris_subcatchment_ts,
+        project=project,
+        catchment=catchment,
+        freq=freq,
+        subcatchment_label_field=subcatchment_label_field,
+    )
+
+    combined = {}
+    for key, rusle_at_freq in rusle_ens.items():
+        if key not in debris_ens:
+            continue
+        debris_at_freq = debris_ens[key]
+        summed = rusle_at_freq.add(debris_at_freq, fill_value=0)
+        shared = [c for c in summed.columns
+                  if c in rusle_at_freq.columns
+                  and c in debris_at_freq.columns]
+        combined[key] = summed[shared].dropna(how='all')
+    return combined
+
+
+# -------------------------------------------------------------------
+# Per-modality helpers used by combine_rusle_and_debris_subcatchment
+# -------------------------------------------------------------------
+
+def _resolve_label_map(project, catchment, subcatchment_label_field):
+    """Resolve the label field sentinel and build the ``sc_ID → label``
+    map used to rename subcatchment columns."""
     if subcatchment_label_field is _SENTINEL:
         subcatchment_label_field = (
             project.subcatchment_label_field(catchment)
             if project is not None else None
         )
-    label_map = _subcatchment_label_map(
+    return _subcatchment_label_map(
         project, catchment, subcatchment_label_field,
     )
+
+
+def _make_resampler(freq):
+    """Return a function that resamples a wide timeseries to *freq*.
+
+    ``freq=None`` or ``'total'`` collapses the whole series to a single
+    row indexed ``'total'``.
+    """
+    is_total = freq is None or (isinstance(freq, str) and freq.lower() == 'total')
 
     def _resample(df):
         if is_total:
@@ -912,28 +955,483 @@ def combine_rusle_and_debris_subcatchment(
             return total
         return df.resample(freq).sum()
 
-    combined = {}
+    return _resample
+
+
+def rusle_subcatchment_ensemble(
+    rusle_results,
+    *,
+    project=None,
+    catchment=None,
+    freq='YS',
+    subcatchment_label_field=_SENTINEL,
+    rusle_timeseries_key='erosion_daily_time_series',
+    scale=1000.0,
+):
+    """Extract per-replicate RUSLE subcatchment timeseries in the form
+    ``{replicate: DataFrame}``, aggregated to *freq* and labelled by the
+    configured subcatchment label field.
+
+    This produces the same shape as
+    :func:`combine_rusle_and_debris_subcatchment` so the same plotting
+    and reduction helpers (e.g. :func:`reduce_ensemble_subcatchments`,
+    :func:`plot_subcatchment_ensemble`) can map RUSLE outputs alone.
+
+    Parameters
+    ----------
+    rusle_results : dict
+        ``{replicate: {catchment: {<timeseries_key>: DataFrame, ...}}}``
+        from :func:`run_rusle_all_replicates`.
+    scale : float
+        Multiplier applied to each replicate's timeseries.  Default
+        ``1000.0`` (tonnes → kilograms) to match the combined output.
+        Pass ``1.0`` to keep tonnes.
+
+    Other parameters are as for
+    :func:`combine_rusle_and_debris_subcatchment`.
+    """
+    if not rusle_results:
+        raise ValueError('rusle_results is empty.')
+    sample_rep = next(iter(rusle_results.values()))
+    catchment = _resolve_catchment(sample_rep, catchment)
+    label_map = _resolve_label_map(
+        project, catchment, subcatchment_label_field,
+    )
+    resample = _make_resampler(freq)
+
+    out = {}
     for key, reps in rusle_results.items():
         ts = reps[catchment].get(rusle_timeseries_key)
         if ts is None:
             raise KeyError(
                 f"Replicate {key} has no '{rusle_timeseries_key}' entry."
             )
-        if key not in debris_subcatchment_ts:
-            continue
+        df = resample(ts * scale)
+        out[key] = _apply_label_map(df, label_map)
+    return out
 
-        rusle_at_freq = _resample(ts * rusle_scale)
-        debris_at_freq = _resample(debris_subcatchment_ts[key])
 
-        rusle_at_freq = _apply_label_map(rusle_at_freq, label_map)
-        debris_at_freq = _apply_label_map(debris_at_freq, label_map)
+def debris_subcatchment_ensemble(
+    debris_subcatchment_ts,
+    *,
+    project=None,
+    catchment=None,
+    freq='YS',
+    subcatchment_label_field=_SENTINEL,
+):
+    """Resample and relabel per-replicate debris-flow subcatchment
+    timeseries into the common ``{replicate: DataFrame}`` form.
 
-        summed = rusle_at_freq.add(debris_at_freq, fill_value=0)
-        shared = [c for c in summed.columns
-                  if c in rusle_at_freq.columns
-                  and c in debris_at_freq.columns]
-        combined[key] = summed[shared].dropna(how='all')
-    return combined
+    Parameters
+    ----------
+    debris_subcatchment_ts : dict
+        ``{replicate: DataFrame}`` — native-resolution per-subcatchment
+        debris-flow timeseries (kg), e.g. the ``'aggregated'`` entry
+        from :func:`postprocess_debris_flow` for the chosen catchment.
+
+    Other parameters are as for
+    :func:`combine_rusle_and_debris_subcatchment`.
+    """
+    if not debris_subcatchment_ts:
+        raise ValueError('debris_subcatchment_ts is empty.')
+    label_map = _resolve_label_map(
+        project, catchment, subcatchment_label_field,
+    )
+    resample = _make_resampler(freq)
+
+    out = {}
+    for key, df in debris_subcatchment_ts.items():
+        out[key] = _apply_label_map(resample(df), label_map)
+    return out
+
+
+# ===================================================================
+# Subcatchment choropleth helpers
+# ===================================================================
+
+_AREA_UNIT_FACTORS = {
+    # Multiplier converting an area in m² to the named unit.
+    'area_m2': 1.0,
+    'area_ha': 1.0 / 10_000.0,
+    'area_km2': 1.0 / 1_000_000.0,
+}
+
+_AREA_UNIT_SUFFIX = {
+    'area_m2': 'per_m2',
+    'area_ha': 'per_ha',
+    'area_km2': 'per_km2',
+}
+
+_AREA_UNIT_LABEL = {
+    'area_m2': '/m²',
+    'area_ha': '/ha',
+    'area_km2': '/km²',
+}
+
+
+def _subcatchment_areas(project, catchment, kind):
+    """Series of subcatchment areas keyed by the registered label (or
+    sc_ID when no label field is configured).  *kind* is one of
+    ``'area_m2'``, ``'area_ha'``, ``'area_km2'``."""
+    if kind not in _AREA_UNIT_FACTORS:
+        raise ValueError(
+            f"Unknown area unit '{kind}'. "
+            f"Choose one of {sorted(_AREA_UNIT_FACTORS)} or pass a callable."
+        )
+    subs = project.get_subcatchments(catchment)
+    id_col = getattr(project, 'subcatchment_id', 'sc_ID')
+    label_field = project.subcatchment_label_field(catchment)
+    # Use the catchment-CRS geometry's .area (m²) since subcatchments
+    # are stored in the catchment's projected CRS.
+    area_m2 = subs.geometry.area
+    if label_field and label_field in subs.columns:
+        index = subs[label_field].values
+    else:
+        index = subs[id_col].values
+    return pd.Series(
+        area_m2.values * _AREA_UNIT_FACTORS[kind],
+        index=index,
+        name=kind,
+    )
+
+
+def _resolve_normaliser(normalise_by, project, catchment):
+    """Return ``(denominator_series, suffix, unit_label)`` for the chosen
+    normalisation, or ``(None, '', '')`` when *normalise_by* is None."""
+    if normalise_by is None:
+        return None, '', ''
+    if callable(normalise_by):
+        denom = normalise_by(project.get_subcatchments(catchment))
+        if not isinstance(denom, pd.Series):
+            raise TypeError(
+                "Callable normalise_by must return a pandas Series indexed "
+                "by subcatchment label."
+            )
+        name = getattr(normalise_by, '__name__', 'custom')
+        return denom, f'per_{name}', f'/{name}'
+    if normalise_by in _AREA_UNIT_FACTORS:
+        denom = _subcatchment_areas(project, catchment, normalise_by)
+        return denom, _AREA_UNIT_SUFFIX[normalise_by], _AREA_UNIT_LABEL[normalise_by]
+    raise ValueError(
+        f"Unknown normalise_by '{normalise_by}'. "
+        f"Pass one of {sorted(_AREA_UNIT_FACTORS)}, a callable, or None."
+    )
+
+
+def _select_time(df, time):
+    """Reduce a wide per-subcatchment frame to a Series indexed by
+    subcatchment label.
+
+    - ``time=None``  — sum all rows.
+    - ``time=int``   — positional (``iloc``) row.
+    - otherwise      — label-based (``loc``) row.
+    """
+    if time is None:
+        return df.sum(axis=0)
+    if isinstance(time, (int, np.integer)) and not isinstance(time, bool):
+        return df.iloc[int(time)]
+    return df.loc[time]
+
+
+def _long_frame(series, project, catchment, value_col):
+    """Convert a Series indexed by subcatchment label into a long
+    DataFrame with the subcatchment id column (``sc_ID``), the label
+    column, and *value_col* — ready for ``plot_subcatchments``."""
+    subs = project.get_subcatchments(catchment)
+    id_col = getattr(project, 'subcatchment_id', 'sc_ID')
+    label_field = project.subcatchment_label_field(catchment)
+    if label_field and label_field in subs.columns:
+        label_to_id = dict(zip(subs[label_field], subs[id_col]))
+        key_name = label_field
+    else:
+        label_to_id = dict(zip(subs[id_col], subs[id_col]))
+        key_name = id_col
+
+    out = series.rename(value_col).to_frame()
+    out.index.name = key_name
+    out = out.reset_index()
+    out[id_col] = out[key_name].map(label_to_id)
+    # Drop rows whose label we can't match to a subcatchment (keeps the
+    # output aligned with the geometry layer):
+    out = out.dropna(subset=[id_col])
+    return out[[id_col, key_name, value_col]]
+
+
+def subcatchment_series_to_long(
+    df,
+    *,
+    project,
+    catchment,
+    time=None,
+    normalise_by=None,
+    value_col=None,
+):
+    """Reshape a wide per-subcatchment timeseries into the long form
+    expected by :meth:`FireImpactsProject.plot_subcatchments`.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Wide-form frame with time on the index and one column per
+        subcatchment (labelled by ``SiteID`` or similar).  Typical
+        input: a single replicate's output from
+        :func:`combine_rusle_and_debris_subcatchment`.
+    project : FireImpactsProject
+    catchment : str
+    time : None, int, or label
+        Row selection; see module docs.  ``None`` sums the full series.
+    normalise_by : None, str, or callable
+        ``None`` → native units; ``'area_ha'``/``'area_km2'``/``'area_m2'``
+        → divide by subcatchment area; a callable receives the
+        subcatchment ``GeoDataFrame`` and returns a Series of
+        denominators indexed by subcatchment label.
+    value_col : str or None
+        Output column name for the value.  When *None*, an informative
+        default is used (``'value'``, ``'value_per_ha'``, etc.).
+    """
+    series = _select_time(df, time)
+    denom, suffix, _ = _resolve_normaliser(normalise_by, project, catchment)
+    if denom is not None:
+        series = series / denom.reindex(series.index)
+    if value_col is None:
+        value_col = 'value' + (f'_{suffix}' if suffix else '')
+    return _long_frame(series, project, catchment, value_col)
+
+
+_REDUCTION_SUFFIX = {
+    'mean': 'mean',
+    'median': 'median',
+}
+
+
+def _apply_reduction(stack, reduction):
+    """Collapse a ``(replicate × subcatchment)`` frame along axis 0."""
+    if callable(reduction):
+        name = getattr(reduction, '__name__', 'custom')
+        if name == '<lambda>':
+            name = 'custom'
+        return reduction(stack), name
+    if isinstance(reduction, str):
+        if reduction in _REDUCTION_SUFFIX:
+            fn = getattr(stack, reduction)
+            return fn(axis=0), _REDUCTION_SUFFIX[reduction]
+        raise ValueError(
+            f"Unknown reduction '{reduction}'. "
+            "Use 'mean', 'median', ('quantile', q), ('exceedance', thresh), "
+            "or a callable."
+        )
+    if isinstance(reduction, tuple) and len(reduction) == 2:
+        kind, arg = reduction
+        if kind == 'quantile':
+            return stack.quantile(arg, axis=0), f'p{int(round(arg * 100))}'
+        if kind == 'exceedance':
+            return (stack > arg).mean(axis=0), f'exceed_{arg:g}'
+        raise ValueError(
+            f"Unknown tuple reduction '{kind}'. Use 'quantile' or 'exceedance'."
+        )
+    raise TypeError(f"Unsupported reduction spec: {reduction!r}")
+
+
+def reduce_ensemble_subcatchments(
+    ensemble,
+    *,
+    project,
+    catchment,
+    time=None,
+    reduction='mean',
+    normalise_by=None,
+    value_col=None,
+):
+    """Collapse an ensemble of wide per-subcatchment timeseries into a
+    single long-form frame ready for choropleth plotting.
+
+    Normalisation is applied **per replicate before the reduction**, so
+    that e.g. ``('exceedance', 0.5)`` with ``normalise_by='area_ha'``
+    gives "probability that per-hectare load exceeds 0.5 (in whatever
+    units the input was in)" — not "exceedance probability of the
+    total load, divided by area" (which would be nonsensical).
+
+    Parameters
+    ----------
+    ensemble : dict
+        ``{replicate: wide DataFrame}``; e.g. output of
+        :func:`combine_rusle_and_debris_subcatchment`.
+    time : as for :func:`subcatchment_series_to_long`.
+    reduction : str, tuple, or callable
+        - ``'mean'`` / ``'median'``
+        - ``('quantile', q)`` with ``0 <= q <= 1``
+        - ``('exceedance', threshold)`` — probability of exceeding
+          *threshold* (in post-normalisation units)
+        - callable: ``f(stack_df) -> Series`` indexed by subcatchment
+          label.  *stack_df* is a ``(replicate × subcatchment)`` frame
+          with normalisation already applied.
+    normalise_by, value_col : as for :func:`subcatchment_series_to_long`.
+    """
+    if not ensemble:
+        raise ValueError("ensemble is empty.")
+    denom, norm_suffix, _ = _resolve_normaliser(
+        normalise_by, project, catchment,
+    )
+
+    rows = {}
+    for rep, df in ensemble.items():
+        s = _select_time(df, time)
+        if denom is not None:
+            s = s / denom.reindex(s.index)
+        rows[rep] = s
+    stack = pd.DataFrame(rows).T  # (replicate × subcatchment)
+    reduced, red_suffix = _apply_reduction(stack, reduction)
+
+    if value_col is None:
+        parts = ['value', red_suffix]
+        if norm_suffix:
+            parts.append(norm_suffix)
+        value_col = '_'.join(p for p in parts if p)
+
+    return _long_frame(reduced, project, catchment, value_col)
+
+
+# ===================================================================
+# Subcatchment choropleth plot wrappers
+# ===================================================================
+
+def _choropleth_units_label(normalise_by, base_units, reduction=None):
+    """Derive a human-readable units string for the colour bar."""
+    if isinstance(reduction, tuple) and reduction and reduction[0] == 'exceedance':
+        return 'probability'
+    if normalise_by is None:
+        return base_units
+    if normalise_by in _AREA_UNIT_LABEL:
+        return f'{base_units}{_AREA_UNIT_LABEL[normalise_by]}'
+    name = getattr(normalise_by, '__name__', 'custom')
+    return f'{base_units}/{name}'
+
+
+def _plot_subcatchment_long(
+    long_df, *, project, catchment, value_col, title, units, cmap,
+    vmin, vmax, existing_figure, existing_axes,
+):
+    """Hand a long-form frame to ``plot_catchment_polygons`` with a
+    vis_params dict built from *units*/*cmap*.  Avoids
+    ``plot_subcatchments``' column-name auto-detection so that generic
+    column names like ``value_mean_per_ha`` render cleanly."""
+    subs = project.get_subcatchments(catchment)
+    id_col = getattr(project, 'subcatchment_id', 'sc_ID')
+    vis_params = {
+        'cmap': cmap,
+        'measure': value_col,
+        'units': units or 'n/a',
+        'norm': None,
+        'cbar_extend': 'neither',
+        'title_varname': value_col,
+    }
+    if vmin is not None:
+        vis_params['vmin'] = vmin
+    if vmax is not None:
+        vis_params['vmax'] = vmax
+    return project.plot_catchment_polygons(
+        catchment=catchment,
+        polygons=subs,
+        colour_col=value_col,
+        vis_params=vis_params,
+        title=title or f'{catchment}: {value_col}',
+        non_geo_data=long_df[[id_col, value_col]],
+        id_col=id_col,
+        existing_figure=existing_figure,
+        existing_axes=existing_axes,
+    )
+
+
+def plot_subcatchment_simulation(
+    df,
+    *,
+    project,
+    catchment,
+    time=None,
+    normalise_by=None,
+    units='kg',
+    title=None,
+    cmap='viridis',
+    value_col=None,
+    vmin=None,
+    vmax=None,
+    existing_figure=None,
+    existing_axes=None,
+):
+    """Choropleth map of a single-simulation per-subcatchment timeseries.
+
+    *df* is a wide frame (one subcatchment per column, time on the
+    index), typically a single replicate from
+    :func:`combine_rusle_and_debris_subcatchment`.
+
+    *vmin* / *vmax* lock the colour-scale endpoints; when either is
+    ``None`` the corresponding endpoint is taken from the data range.
+    """
+    long = subcatchment_series_to_long(
+        df, project=project, catchment=catchment,
+        time=time, normalise_by=normalise_by, value_col=value_col,
+    )
+    colour_col = long.columns[-1]
+    unit_label = _choropleth_units_label(normalise_by, units)
+    return _plot_subcatchment_long(
+        long, project=project, catchment=catchment,
+        value_col=colour_col, title=title, units=unit_label, cmap=cmap,
+        vmin=vmin, vmax=vmax,
+        existing_figure=existing_figure, existing_axes=existing_axes,
+    )
+
+
+def plot_subcatchment_ensemble(
+    ensemble,
+    *,
+    project,
+    catchment,
+    time=None,
+    reduction='mean',
+    normalise_by=None,
+    units='kg',
+    title=None,
+    cmap='viridis',
+    value_col=None,
+    vmin=None,
+    vmax=None,
+    existing_figure=None,
+    existing_axes=None,
+):
+    """Choropleth map of an ensemble-reduced per-subcatchment timeseries.
+
+    *ensemble* is a ``{replicate: wide DataFrame}`` dict; see
+    :func:`reduce_ensemble_subcatchments` for the reduction options.
+
+    *vmin* / *vmax* lock the colour-scale endpoints.  When either is
+    ``None`` the corresponding endpoint is taken from the data.  For
+    ``reduction=('exceedance', ...)`` the output is a probability in
+    ``[0, 1]`` so a missing *vmin*/*vmax* defaults to ``0``/``1`` —
+    pass explicit values to override.
+    """
+    long = reduce_ensemble_subcatchments(
+        ensemble, project=project, catchment=catchment,
+        time=time, reduction=reduction, normalise_by=normalise_by,
+        value_col=value_col,
+    )
+    colour_col = long.columns[-1]
+    unit_label = _choropleth_units_label(normalise_by, units, reduction)
+
+    # Probabilities benefit from a fixed 0-1 colour scale so maps from
+    # different thresholds / time slices are directly comparable.
+    if (isinstance(reduction, tuple) and reduction
+            and reduction[0] == 'exceedance'):
+        if vmin is None:
+            vmin = 0.0
+        if vmax is None:
+            vmax = 1.0
+
+    return _plot_subcatchment_long(
+        long, project=project, catchment=catchment,
+        value_col=colour_col, title=title, units=unit_label, cmap=cmap,
+        vmin=vmin, vmax=vmax,
+        existing_figure=existing_figure, existing_axes=existing_axes,
+    )
 
 
 def combine_rusle_and_debris_annual(
