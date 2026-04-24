@@ -21,6 +21,11 @@ from .. import util as toputil
 from .. import const
 logger = logging.getLogger(__name__)
 
+# Sentinel used to distinguish "kwarg omitted" from an explicit None
+# in APIs where None has its own meaning (e.g. "clear the registered
+# value" vs. "keep what's there").
+_UNSET = object()
+
 # These are the default directories that need to exist inside every 
 #catchments directory:
 PER_CATCHMENT_FOLDERS = const.PER_CATCHMENT_FOLDERS
@@ -236,7 +241,7 @@ class FireImpactsProject(object):
         name=None,
         replace_existing=False,
         subcatchment_id_cols:list=None,
-        subcatchment_label_field:str=None,
+        subcatchment_label_field=_UNSET,
         ):
         """
         Register a new catchment in the project.
@@ -326,7 +331,7 @@ class FireImpactsProject(object):
         catchment_name:str,
         subcatch_shapefile_path:str,
         id_cols:list=[],
-        label_field:str=None,
+        label_field=_UNSET,
         ):
         """
         Load subcatchments from a shapefile.
@@ -338,14 +343,28 @@ class FireImpactsProject(object):
         id_cols : list
             Attribute columns from the source shapefile to retain
             alongside the internal ``sc_ID`` index.
-        label_field : str or None
+        label_field : str, None, or omitted
             Which of the retained columns should be treated as the
             preferred string label for downstream outputs (e.g.
-            ``'SiteID'``).  If *None*, defaults to the first entry
-            of *id_cols* when that looks like a string column.  The
-            choice is persisted in ``settings.json`` so functions
-            like :func:`combine_rusle_and_debris_subcatchment` can
-            pick it up automatically.
+            ``'SiteID'``).
+
+            Three cases:
+
+            - **Omitted** — if a label field is already registered
+              for this catchment (typical when re-running to refresh
+              the shapefile) it is preserved and a warning is
+              logged.  When no prior registration exists, defaults
+              to the first entry of *id_cols* when that looks like a
+              string column.
+            - **Explicit ``None``** — clear any registered label
+              field for this catchment (no warning).
+            - **String** — use as the label; a warning is logged if
+              this changes a previously-registered value.
+
+            The final choice is persisted in ``settings.json`` so
+            functions like
+            :func:`combine_rusle_and_debris_subcatchment` can pick
+            it up automatically.
 
         Notes
         -----
@@ -389,18 +408,68 @@ class FireImpactsProject(object):
                 )
         # Add original subcatchment geodataframe to boundary files:
         key_name = catchment_name + '_' + 'subcatchments'
+        previous_source = self.boundary_files.get(key_name)
+        previous_label = self.subcatchment_label_fields.get(catchment_name)
+        if previous_source is not None and previous_source != subcatch_shapefile_path:
+            logger.warning(
+                "Replacing registered subcatchments for catchment "
+                "'%s': source was %s, now %s. The saved clipped "
+                "shapefile will be overwritten.",
+                catchment_name, previous_source, subcatch_shapefile_path,
+            )
         self.boundary_files[key_name] = subcatch_shapefile_path
 
-        # Record the preferred label field for this catchment.  If the
-        # caller didn't nominate one, default to the first id_col when
-        # it's a string-valued column in the source layer.
-        resolved_label = label_field
-        if resolved_label is None and id_cols:
-            first = id_cols[0]
-            if first in in_gdf.columns and in_gdf[first].dtype == object:
-                resolved_label = first
+        # Resolve the label field with three-way semantics for
+        # *label_field*: omitted (sentinel) → preserve existing;
+        # explicit None → clear registration; string → use as-is.
+        if label_field is _UNSET:
+            if previous_label is not None:
+                if previous_label in in_gdf.columns:
+                    logger.warning(
+                        "add_subcatchments() called for catchment "
+                        "'%s' without label_field=, but '%s' is "
+                        "already registered and present in %s — "
+                        "keeping it. Pass label_field=None "
+                        "explicitly to clear the registration.",
+                        catchment_name, previous_label,
+                        subcatch_shapefile_path,
+                    )
+                    resolved_label = previous_label
+                else:
+                    logger.warning(
+                        "add_subcatchments() called for catchment "
+                        "'%s' without label_field=, and the "
+                        "previously registered field '%s' is not "
+                        "present in %s. Subcatchment outputs will "
+                        "fall back to integer indices.",
+                        catchment_name, previous_label,
+                        subcatch_shapefile_path,
+                    )
+                    resolved_label = None
+            elif id_cols:
+                first = id_cols[0]
+                if first in in_gdf.columns and in_gdf[first].dtype == object:
+                    resolved_label = first
+                else:
+                    resolved_label = None
+            else:
+                resolved_label = None
+        else:
+            # Caller specified explicitly (either a name or None).
+            resolved_label = label_field
+            if (resolved_label is not None
+                    and previous_label is not None
+                    and resolved_label != previous_label):
+                logger.warning(
+                    "Changing subcatchment label field for catchment "
+                    "'%s' from '%s' to '%s'.",
+                    catchment_name, previous_label, resolved_label,
+                )
+
         if resolved_label is not None:
             self.subcatchment_label_fields[catchment_name] = resolved_label
+        else:
+            self.subcatchment_label_fields.pop(catchment_name, None)
 
         self._write()
 
