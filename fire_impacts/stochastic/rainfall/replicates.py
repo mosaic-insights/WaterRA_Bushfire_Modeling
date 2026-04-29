@@ -1,4 +1,7 @@
 import logging
+import os
+import getpass
+import uuid
 import requests
 import pandas as pd
 import numpy as np
@@ -7,6 +10,32 @@ from fire_impacts.pre.util import read_raster
 import xarray as xr
 from ...pre.data_sources import STOCHASTIC_RAINFALL_API
 logger = logging.getLogger(__name__)
+
+REQUEST_ID_ENV_VAR = 'FIRE_IMPACTS_REQUEST_ID'
+
+
+def _request_id_enabled():
+    return os.environ.get(REQUEST_ID_ENV_VAR, '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def build_request_id(catchment=None):
+    """Build an X-Request-ID tag identifying the caller and catchment.
+
+    Includes OS username and catchment name plus a short uuid so repeat
+    calls remain distinguishable in server logs. Returns None when the
+    opt-in env var is not set.
+    """
+    if not _request_id_enabled():
+        return None
+    try:
+        user = getpass.getuser()
+    except Exception:
+        user = 'unknown'
+    parts = ['fire-impacts', user]
+    if catchment:
+        parts.append(str(catchment))
+    parts.append(uuid.uuid4().hex[:8])
+    return '/'.join(parts).replace(' ', '_')
 
 def decode_rle(rle):
     values = []
@@ -25,7 +54,7 @@ def hg_to_data_frame(data):
     result = pd.DataFrame(data=values.T, index=dates, columns=[f'Simulation_{i}' for i in range(len(values))])
     return result
 
-def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url=STOCHASTIC_RAINFALL_API):
+def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url=STOCHASTIC_RAINFALL_API,request_id=None):
     '''
     Get stochastic rainfall replicates from the API and return as a DataFrame.
 
@@ -38,6 +67,9 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
     - num_years (int): Length of data in years.
     - num_sims (int): Number of samples/replicates.
     - api_url (str): URL of the stochastic rainfall API. Default is STOCHASTIC_RAINFALL_API.
+    - request_id (str, optional): Value to send as the X-Request-ID
+      header so the server can correlate log messages. Off by default;
+      callers typically build one via build_request_id().
 
     Returns:
     - Dataset: XArray dataset with datetime index and simulations as columns.
@@ -55,9 +87,15 @@ def get_replicates(lat,lon,elev,annual_rain,mean_temp,num_years,num_sims,api_url
     if mean_temp is not None:
         params['mean_temperature'] = mean_temp
 
+    headers = {}
+    if request_id:
+        headers['X-Request-ID'] = request_id
+        logger.debug(f"Using X-Request-ID: {request_id}")
+
     api_response = requests.get(
         api_url,
         params=params,
+        headers=headers or None,
         timeout=600 # 10 minutes
     )
     logger.debug(f"API response status code: {api_response.status_code}")
@@ -172,7 +210,8 @@ def get_rainfall_replicates(
     elev = np.nanmean(dem)
     rep = get_replicates(
         lat, lon, elev, mean_annual_rainfall, average_temperature,
-        num_years, num_replicates)
+        num_years, num_replicates,
+        request_id=build_request_id(catchment))
 
     # When the user supplied a start date, shift the time axis by a
     # whole number of years so the API output covers the requested
