@@ -373,6 +373,18 @@ def get_cmap_normer(
         else:
             vmin = np.nanmin(finite) if min_val is None else min_val
             vmax = np.nanmax(finite) if max_val is None else max_val
+        # Degenerate case: all data values equal (or the clipped
+        # percentiles coincide).  Matplotlib silently expands such a
+        # Normalize to ±0.1, which makes the colourbar show nonsensical
+        # negatives for non-negative measures like probabilities.
+        # Widen to a useful range instead: [0, 1] when the constant
+        # value sits inside that interval (natural for probabilities /
+        # fractions), otherwise a unit window around the value.
+        if vmin == vmax:
+            if 0.0 <= vmin <= 1.0:
+                vmin, vmax = 0.0, 1.0
+            else:
+                vmin, vmax = vmin - 0.5, vmin + 0.5
     # If both values are provided, make sure they're valid:
     else:
         # If one of the values is invalid:
@@ -703,9 +715,10 @@ def plot_spatial_vector(
         colour_col = data_col_name
         geom_with_data.to_csv('\\zz_TempDump\\geom_with_data.csv', index=False)
 
-        # Get a normaliser to use for both plot and colourbar.
-        # Pass vmin/vmax from vis_params when present so the colour
-        # scale is fixed (not data-driven) for variables like dNBR.
+        # Get a normaliser to use for both plot and colourbar.  Honour
+        # vis_params['vmin']/['vmax'] when provided so callers can lock
+        # the colour range (e.g. 0-1 for probability maps) instead of
+        # auto-scaling to the data extent.
         normer = get_cmap_normer(
             data=symbol_data[colour_col],
             scale=vis_params['norm'],

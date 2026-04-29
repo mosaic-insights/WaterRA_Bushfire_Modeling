@@ -48,6 +48,9 @@ from fire_impacts.sim import (
     plot_catchment_exceedance_curve,
     plot_ensemble_daily_ribbon,
     combine_rusle_and_debris_subcatchment,
+    rusle_subcatchment_ensemble,
+    debris_subcatchment_ensemble,
+    plot_subcatchment_ensemble,
     save_ensemble_run,
 )
 from fire_impacts.stochastic.rainfall import get_rainfall_replicates
@@ -329,6 +332,66 @@ def ensemble_mean(per_replicate):
 
 mean_annual_kg = ensemble_mean(combined_annual)
 mean_annual_kg
+
+# %% [markdown]
+# ### Subcatchment choropleth maps
+#
+# `plot_subcatchment_ensemble` turns any ``{replicate: wide DataFrame}``
+# dict into a choropleth of the subcatchment coverage.  It accepts any
+# reduction (`'mean'`, `'median'`, `('quantile', q)`,
+# `('exceedance', threshold)`, or a callable) and can normalise per
+# replicate *before* the reduction — so
+# ``reduction=('exceedance', 500)`` with ``normalise_by='area_ha'``
+# correctly answers *"probability that per-hectare load exceeds
+# 500 kg/ha"*.
+#
+# The same function works on the combined load, RUSLE only, or debris
+# only: `rusle_subcatchment_ensemble` and `debris_subcatchment_ensemble`
+# produce the same ``{replicate: DataFrame}`` shape as
+# `combine_rusle_and_debris_subcatchment` so the plotter treats them
+# interchangeably.
+#
+# Exceedance plots default to a locked `[0, 1]` colour scale so maps
+# for different thresholds or years are directly comparable; pass
+# `vmin=` / `vmax=` to override.
+
+# %%
+# Ensemble mean, year 1 (data-derived colour scale):
+plot_subcatchment_ensemble(
+    combined_annual, project=proj, catchment=CATCHMENT,
+    time=0, reduction='mean', normalise_by='area_ha', units='kg',
+    title='Year 1 mean load (kg/ha)',
+)
+plt.show()
+
+# P(year 1 combined load > 500 kg/ha):
+plot_subcatchment_ensemble(
+    combined_annual, project=proj, catchment=CATCHMENT,
+    time=0, reduction=('exceedance', 500), normalise_by='area_ha',
+    cmap='RdYlGn_r',
+    title='P(Year 1 combined load > 500 kg/ha)',
+)
+plt.show()
+
+# Same threshold against RUSLE only:
+plot_subcatchment_ensemble(
+    rusle_subcatchment_ensemble(rusle_results, catchment=CATCHMENT),
+    project=proj, catchment=CATCHMENT,
+    time=0, reduction=('exceedance', 500), normalise_by='area_ha',
+    cmap='RdYlGn_r',
+    title='P(Year 1 RUSLE load > 500 kg/ha)',
+)
+plt.show()
+
+# ...and against debris flow only:
+plot_subcatchment_ensemble(
+    debris_subcatchment_ensemble(sc_debris_12min, catchment=CATCHMENT),
+    project=proj, catchment=CATCHMENT,
+    time=0, reduction=('exceedance', 500), normalise_by='area_ha',
+    cmap='RdYlGn_r',
+    title='P(Year 1 debris load > 500 kg/ha)',
+)
+plt.show()
 
 # %% [markdown]
 # ## Save the ensemble run for downstream modelling
