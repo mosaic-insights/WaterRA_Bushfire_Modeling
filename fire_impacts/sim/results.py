@@ -48,17 +48,19 @@ RAINFALL_NAME = 'rainfall.nc'
 REPLICATES_DIR = 'replicates'
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Path helpers
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def _ensemble_root(proj, catchment, event='default', ensemble='default'):
+    """Return the root Path for a named ensemble under a catchment."""
     return Path(proj.ensemble_path(
         catchment, event=event, ensemble=ensemble,
     ))
 
 
 def _replicate_dir(root: Path, replicate_idx: int) -> Path:
+    """Return the per-replicate subdirectory path for a given index."""
     return root / REPLICATES_DIR / f'{replicate_idx:02d}'
 
 
@@ -69,9 +71,9 @@ def _safe_key(key: str) -> str:
     )
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Saving
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def save_ensemble_run(
     proj,
@@ -87,55 +89,47 @@ def save_ensemble_run(
     include_raw_debris: bool = True,
     subcatchment_label_field: str | None = None,
     extra_manifest: dict | None = None,
-    ) -> Path:
-    """Persist an ensemble simulation run to the library-managed
-    project directory.
+) -> Path:
+    """
+    Persist an ensemble simulation run to the library-managed directory.
 
-    Everything is optional — pass whichever artefacts you have computed.
-    The primary artefact for driving a downstream catchment model is
-    ``combined_by_freq`` plus ``rainfall_ds``.
+    Everything is optional — pass whichever artefacts have been computed.
+    The primary artefacts for driving a downstream catchment model are
+    combined_by_freq and rainfall_ds.
 
-    Parameters
-    ----------
-    proj : FireImpactsProject
-    catchment : str
-    rainfall_ds : xarray.Dataset or None
-        Multi-replicate rainfall dataset (the input that drove the
-        simulations).  Saved as a single NetCDF at the ensemble root.
-    rusle_results : dict or None
-        ``{replicate: {catchment: {key: ...}}}`` as produced by
-        :func:`run_rusle_all_replicates`.  Gridded recorder outputs
-        are saved as GeoTIFFs only when *include_rusle_grids* is True.
-    debris_results : dict or None
-        ``{replicate: {catchment: (summary_df, mass_ts)}}`` as produced
-        by :func:`run_debris_flow_all_replicates`.  Stored only when
-        *include_raw_debris* is True.
-    combined_by_freq : dict or None
-        ``{freq: {replicate: DataFrame}}`` — output of
-        :func:`combine_rusle_and_debris_subcatchment` for each
-        resolution you want persisted.  *freq* is used as the filename
-        suffix (e.g. ``'h'``, ``'D'``, ``'YS'``, ``'total'``).
-    event, ensemble : str
-        Routing labels (see :meth:`FireImpactsProject.ensemble_path`).
-    include_rusle_grids : bool
-        Save per-replicate RUSLE grid recorders as GeoTIFFs.  Off by
-        default — these dominate disk usage and are reproducible.
-    include_raw_debris : bool
-        Save per-replicate debris headwater summary + mass timeseries.
-    subcatchment_label_field : str or None
-        Recorded in the manifest for downstream consumers.  When
-        *None* (the default) the project's per-catchment setting is
-        used, as configured via
-        :meth:`FireImpactsProject.set_subcatchment_label_field` /
-        :meth:`add_subcatchments`.
-    extra_manifest : dict or None
-        Merged into the manifest (e.g. to record rainfall provenance,
-        climate scenario, seed).
+    Parameters:
+    - proj: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to save outputs for.
+    - rainfall_ds: Multi-replicate rainfall dataset (the input that
+      drove the simulations). Saved as a single NetCDF at the ensemble
+      root.
+    - rusle_results: Dict of the form {replicate: {catchment: {key:
+      ...}}} as produced by run_rusle_all_replicates(). Gridded recorder
+      outputs are saved as GeoTIFFs only when include_rusle_grids is
+      True.
+    - debris_results: Dict of the form {replicate: {catchment:
+      (summary_df, mass_ts)}} as produced by
+      run_debris_flow_all_replicates(). Stored only when
+      include_raw_debris is True.
+    - combined_by_freq: Dict of the form {freq: {replicate: DataFrame}},
+      output of combine_rusle_and_debris_subcatchment() for each
+      resolution to persist. freq is used as the filename suffix
+      (e.g. 'h', 'D', 'YS', 'total').
+    - event: Event routing label (see FireImpactsProject.ensemble_path).
+    - ensemble: Ensemble routing label. Multiple ensembles per event
+      support scenarios like same fire with different climate inputs.
+    - include_rusle_grids: If True, save per-replicate RUSLE grid
+      recorders as GeoTIFFs. Off by default — these dominate disk usage
+      and are reproducible from the rainfall input.
+    - include_raw_debris: If True, save per-replicate debris headwater
+      summary and mass timeseries.
+    - subcatchment_label_field: Recorded in the manifest for downstream
+      consumers. If None, the project's per-catchment setting is used.
+    - extra_manifest: Additional key-value pairs merged into the
+      manifest (e.g. rainfall provenance, climate scenario, seed).
 
-    Returns
-    -------
-    pathlib.Path
-        The ensemble root directory.
+    Returns:
+    - pathlib.Path to the ensemble root directory.
     """
     root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
     root.mkdir(parents=True, exist_ok=True)
@@ -198,6 +192,7 @@ def save_ensemble_run(
 
 
 def _save_rainfall(rainfall_ds: xr.Dataset, root: Path) -> None:
+    """Write the rainfall dataset to a NetCDF file at the ensemble root."""
     path = root / RAINFALL_NAME
     rainfall_ds.to_netcdf(path)
     logger.info('Saved rainfall ensemble to %s', path)
@@ -222,8 +217,19 @@ def _save_rusle_replicate(catchment_results, rep_dir, *, include_grids):
 
 
 def _write_dataarray_as_geotiff(da: xr.DataArray, path: Path) -> None:
-    """Write an (optionally 3-D with time) DataArray as a GeoTIFF via
-    rioxarray — falling back to a NetCDF if georeferencing is missing."""
+    """
+    Write an xarray.DataArray to a GeoTIFF file via rioxarray.
+
+    Falls back to a NetCDF file if georeferencing metadata is missing
+    or rioxarray raises an error.
+
+    Parameters:
+    - da: DataArray to write. May be 2-D or 3-D (with a time dimension).
+    - path: Destination file path for the GeoTIFF output.
+
+    Returns:
+    - None
+    """
     try:
         import rioxarray  # noqa: F401 - registers .rio accessor
         da.rio.to_raster(path)
@@ -246,6 +252,7 @@ def _save_debris_replicate(catchment_tuple, rep_dir):
 
 
 def _save_combined_replicate(df: pd.DataFrame, rep_dir, *, freq: str):
+    """Write one replicate's combined subcatchment DataFrame as parquet."""
     combined_dir = rep_dir / 'combined'
     combined_dir.mkdir(parents=True, exist_ok=True)
     # Parquet columns must be strings; enforce that here so numeric
@@ -256,10 +263,13 @@ def _save_combined_replicate(df: pd.DataFrame, rep_dir, *, freq: str):
     out.to_parquet(path)
 
 
-def _build_manifest(*, catchment, event, ensemble, replicate_ids,
-                    rainfall_ds, combined_by_freq, include_rusle_grids,
-                    include_raw_debris, has_rusle, has_debris,
-                    subcatchment_label_field, extra):
+def _build_manifest(
+    *, catchment, event, ensemble, replicate_ids,
+    rainfall_ds, combined_by_freq, include_rusle_grids,
+    include_raw_debris, has_rusle, has_debris,
+    subcatchment_label_field, extra,
+):
+    """Build and return the manifest dict for an ensemble run."""
     rainfall_meta: dict = {}
     if rainfall_ds is not None and 'time' in rainfall_ds.coords:
         tcoord = rainfall_ds['time']
@@ -293,13 +303,29 @@ def _build_manifest(*, catchment, event, ensemble, replicate_ids,
     return manifest
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Loading
-# ===================================================================
+# ---------------------------------------------------------------------------
 
-def load_ensemble_manifest(proj, catchment, *, event='default',
-                           ensemble='default') -> dict:
-    """Read the ensemble manifest JSON."""
+def load_ensemble_manifest(
+    proj,
+    catchment,
+    *,
+    event='default',
+    ensemble='default',
+) -> dict:
+    """
+    Read and return the ensemble manifest JSON as a dict.
+
+    Parameters:
+    - proj: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to read the manifest for.
+    - event: Event routing label. Default 'default'.
+    - ensemble: Ensemble routing label. Default 'default'.
+
+    Returns:
+    - Dict parsed from the manifest.json file.
+    """
     root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
     path = root / MANIFEST_NAME
     if not path.exists():
@@ -311,45 +337,105 @@ def load_ensemble_manifest(proj, catchment, *, event='default',
         return json.load(f)
 
 
-def list_ensembles(proj, catchment, *, event='default') -> list[str]:
-    """Return the ensemble names available under an event."""
-    base = Path(proj.catchment_path(catchment)) / 'Events' / event / 'Ensemble'
+def list_ensembles(
+    proj,
+    catchment,
+    *,
+    event='default',
+) -> list[str]:
+    """
+    Return the ensemble names available under a catchment event.
+
+    Parameters:
+    - proj: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to query.
+    - event: Event routing label. Default 'default'.
+
+    Returns:
+    - Sorted list of ensemble name strings found on disk.
+    """
+    base = (
+        Path(proj.catchment_path(catchment))
+        / 'Events' / event / 'Ensemble'
+    )
     if not base.exists():
         return []
     return sorted(p.name for p in base.iterdir() if p.is_dir())
 
 
 def list_events(proj, catchment) -> list[str]:
-    """Return the events available under a catchment."""
+    """
+    Return the event names available under a catchment.
+
+    Parameters:
+    - proj: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to query.
+
+    Returns:
+    - Sorted list of event name strings found on disk.
+    """
     base = Path(proj.catchment_path(catchment)) / 'Events'
     if not base.exists():
         return []
     return sorted(p.name for p in base.iterdir() if p.is_dir())
 
 
-def load_ensemble_rainfall(proj, catchment, *, event='default',
-                           ensemble='default') -> xr.Dataset:
-    """Reload the rainfall ensemble NetCDF."""
+def load_ensemble_rainfall(
+    proj,
+    catchment,
+    *,
+    event='default',
+    ensemble='default',
+) -> xr.Dataset:
+    """
+    Reload the rainfall ensemble NetCDF for a saved ensemble run.
+
+    Parameters:
+    - proj: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to load rainfall for.
+    - event: Event routing label. Default 'default'.
+    - ensemble: Ensemble routing label. Default 'default'.
+
+    Returns:
+    - xarray.Dataset of rainfall replicates loaded from disk.
+    """
     root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
     path = root / RAINFALL_NAME
     return xr.open_dataset(path)
 
 
 def load_ensemble_combined(
-    proj, catchment, *, freq='D',
-    event='default', ensemble='default',
-    ) -> dict[int, pd.DataFrame]:
-    """Reload the combined RUSLE+debris subcatchment loads (kg) at a
-    given temporal resolution, as ``{replicate: DataFrame}``.
+    proj,
+    catchment,
+    *,
+    freq='D',
+    event='default',
+    ensemble='default',
+) -> dict[int, pd.DataFrame]:
+    """
+    Reload combined RUSLE+debris subcatchment loads at a given frequency.
 
-    Column labels match whatever was saved (typically ``SiteID``
-    strings — see the manifest's ``subcatchment_label_field``).
+    Column labels match whatever was saved (typically SiteID strings —
+    see the manifest's subcatchment_label_field).
+
+    Parameters:
+    - proj: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to load.
+    - freq: Temporal resolution key matching a freq used in
+      save_ensemble_run (e.g. 'D', 'h', 'YS', 'total').
+    - event: Event routing label. Default 'default'.
+    - ensemble: Ensemble routing label. Default 'default'.
+
+    Returns:
+    - Dict mapping replicate index (int) to subcatchment load DataFrame.
     """
     root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
     suffix = _safe_key(freq)
     replicates_dir = root / REPLICATES_DIR
     if not replicates_dir.exists():
-        raise FileNotFoundError(f'No replicates folder at {replicates_dir}')
+        raise FileNotFoundError(
+            f'No replicates folder at {replicates_dir}'
+        )
 
     out: dict[int, pd.DataFrame] = {}
     for rep_dir in sorted(replicates_dir.iterdir()):
@@ -368,10 +454,28 @@ def load_ensemble_combined(
 
 
 def load_ensemble_rusle_timeseries(
-    proj, catchment, *, key='erosion_daily_time_series',
-    event='default', ensemble='default',
-    ) -> dict[int, pd.DataFrame]:
-    """Reload a per-replicate RUSLE recorder timeseries by key."""
+    proj,
+    catchment,
+    *,
+    key='erosion_daily_time_series',
+    event='default',
+    ensemble='default',
+) -> dict[int, pd.DataFrame]:
+    """
+    Reload a per-replicate RUSLE recorder timeseries by key.
+
+    Parameters:
+    - proj: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to load.
+    - key: Recorder key used when saving (e.g.
+      'erosion_daily_time_series'). Default is the standard RUSLE
+      timeseries key.
+    - event: Event routing label. Default 'default'.
+    - ensemble: Ensemble routing label. Default 'default'.
+
+    Returns:
+    - Dict mapping replicate index (int) to timeseries DataFrame.
+    """
     root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
     replicates_dir = root / REPLICATES_DIR
     out: dict[int, pd.DataFrame] = {}
@@ -385,10 +489,25 @@ def load_ensemble_rusle_timeseries(
 
 
 def load_ensemble_debris_raw(
-    proj, catchment, *, event='default', ensemble='default',
-    ) -> dict[int, tuple[pd.DataFrame, pd.DataFrame]]:
-    """Reload per-replicate debris-flow raw outputs (summary + mass
-    timeseries)."""
+    proj,
+    catchment,
+    *,
+    event='default',
+    ensemble='default',
+) -> dict[int, tuple[pd.DataFrame, pd.DataFrame]]:
+    """
+    Reload per-replicate debris-flow raw outputs from disk.
+
+    Parameters:
+    - proj: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to load.
+    - event: Event routing label. Default 'default'.
+    - ensemble: Ensemble routing label. Default 'default'.
+
+    Returns:
+    - Dict mapping replicate index (int) to a (summary_df, mass_ts)
+      tuple of DataFrames.
+    """
     root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
     replicates_dir = root / REPLICATES_DIR
     out = {}
