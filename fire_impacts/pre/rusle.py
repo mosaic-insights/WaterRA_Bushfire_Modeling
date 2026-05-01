@@ -1,3 +1,13 @@
+"""
+RUSLE pre-processing: fire-adjusted C/K factors, LSI, and SDR computation.
+
+Computes the fire-adjusted cover (C) and erodibility (K) factors from
+dNBR and aridity, the slope-length-gradient (LSI) factor from the DEM,
+and the Sediment Delivery Ratio (SDR) from the hydrological connectivity
+index.  All outputs are written to the project's Erodibility and Delivery
+folders.
+"""
+
 from fire_impacts.pre.util import (
     clip_and_reproject_raster, read_raster, read_aligned
 )
@@ -13,17 +23,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Adjusted K and C factor computation
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def compute_adjusted_k_c(
-        proj: FireImpactsProject,
-        catchment: str,
-        c_factor_fn: str = None,
-        k_factor_fn: str = None,
-        compute_lsi_factor: bool = True,
-        compute_sdr: bool = True):
+    proj: FireImpactsProject,
+    catchment: str,
+    c_factor_fn: str = None,
+    k_factor_fn: str = None,
+    compute_lsi_factor: bool = True,
+    compute_sdr: bool = True,
+):
     """
     Compute fire-adjusted C and K factors and prepare RUSLE inputs.
 
@@ -137,12 +148,14 @@ def compute_adjusted_k_c(
         compute_sediment_delivery_ratio(proj, catchment)
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Topographic index helper
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def _topographic_indices(
-        project: FireImpactsProject, catchment: str):
+    project: FireImpactsProject,
+    catchment: str,
+):
     """
     Compute D8 flow direction and accumulation for a catchment DEM.
 
@@ -168,9 +181,9 @@ def _topographic_indices(
     return grid, fdir, acc
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # LSI factor computation
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def compute_lsi(project: FireImpactsProject, catchment=None):
     """
@@ -300,9 +313,9 @@ def compute_lsi(project: FireImpactsProject, catchment=None):
     return slope_degrees, slope_percent, aspect_radians, specific_area, LSi
 
 
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Sediment Delivery Ratio computation
-# ----------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 DEFAULT_MAX_SDR = 0.8
 DEFAULT_IC0 = 0.5
@@ -310,11 +323,12 @@ DEFAULT_K = 1
 
 
 def compute_sediment_delivery_ratio(
-        project: FireImpactsProject,
-        catchment=None,
-        max_sdr=DEFAULT_MAX_SDR,
-        ic0=DEFAULT_IC0,
-        k=DEFAULT_K):
+    project: FireImpactsProject,
+    catchment=None,
+    max_sdr=DEFAULT_MAX_SDR,
+    ic0=DEFAULT_IC0,
+    k=DEFAULT_K,
+):
     """
     Calculate the Sediment Delivery Ratio (SDR) for a catchment.
 
