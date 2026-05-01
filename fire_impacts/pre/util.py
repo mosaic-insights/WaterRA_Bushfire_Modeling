@@ -1,3 +1,11 @@
+"""
+Low-level raster and WCS utility functions for pre-processing.
+
+Functions here are mostly format-conversion helpers — clipping,
+reprojecting, and reading rasters — used by the higher-level
+pre-processing modules.
+"""
+
 import geopandas as gpd
 from .project import APPROX_KM_PER_DEGREE
 from owslib.wcs import WebCoverageService
@@ -14,40 +22,50 @@ import tempfile
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Raster clip and reproject helpers
+# ---------------------------------------------------------------------------
+
 def clip_raster(
-    raster_file:str,
-    shapefile:str
-    ):
+    raster_file: str,
+    shapefile: str,
+):
     """
-    Clip a raster to a shapefile, keeping the raster CRS.
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
+    Clip a raster to a shapefile (buffered by 2 pixels) in the raster
+    CRS and write the result to a temporary file.
+
+    Parameters:
+    - raster_file: path to the input raster.
+    - shapefile: path to the shapefile to clip against.
+
+    Returns:
+    - temp_file: path to the temporary clipped GeoTIFF on disk.
+    - shapefile_crs: CRS string from the shapefile.
     """
     # Read the raster file to get its CRS and resolution
     with rio.open(raster_file) as src:
         raster_crs = src.crs
-        raster_res = src.res  
+        raster_res = src.res
 
     # Read the shapefile
     catchment = gpd.read_file(shapefile)
     # Get the CRS of the shapefile
     shapefile_crs = catchment.crs.to_string()
-    # Ensure the shapefile is in the same CRS as the raster before
-    #clipping, buffering the shapefile by 2 pixels to ensure it covers 
-    #the raster:
-    catchment = catchment.to_crs(raster_crs).buffer(raster_res[0]*2)
+    # Reproject the shapefile to the raster CRS and buffer by 2 pixels
+    # to ensure it fully covers the raster at the clip boundary.
+    catchment = catchment.to_crs(raster_crs).buffer(raster_res[0] * 2)
 
-    # Read the raster file
+    # Read the raster file and clip to the buffered catchment boundary
     with rio.open(raster_file) as src:
-        # Clip the raster with the shapefile
         out_image, out_transform = mask(
             src,
             catchment.geometry.apply(mapping),
             crop=True,
             all_touched=True,
             nodata=np.nan,
-            pad=False
-            )
+            pad=False,
+        )
         out_meta = src.meta.copy()
         out_meta.update({
             "driver": "GTiff",
@@ -55,93 +73,89 @@ def clip_raster(
             "width": out_image.shape[2],
             "transform": out_transform,
             "crs": src.crs,
-            'nodata': np.nan
-            })
+            "nodata": np.nan,
+        })
 
     # Write the clipped raster to a temporary file
-    temp_file = 'clipped_temp.tif'
-    with rio.open(temp_file, 'w', **out_meta) as dest:
+    temp_file = "clipped_temp.tif"
+    with rio.open(temp_file, "w", **out_meta) as dest:
         dest.write(out_image)
 
     return temp_file, shapefile_crs
 
 
-###############################################################################
 def clip_and_reproject_raster(
-    raster_file:str,
-    shapefile:str,
-    output_file:str,
-    target_resolution:float=None
-    ):
+    raster_file: str,
+    shapefile: str,
+    output_file: str,
+    target_resolution: float = None,
+):
     """
-    Clips a raster file using a shapefile and reprojects the clipped 
-    raster to the CRS of the shapefile.
+    Clip a raster to a shapefile and reproject it to the shapefile's
+    CRS.
 
     Parameters:
-    - raster_file (str): Path to the input raster file.
-    - shapefile (str): Path to the shapefile for clipping.
-    - output_files (list): List of paths to the output reprojected 
-    raster files.
-    - target_resolution (tuple): OPTIONAL: Desired resolution for the 
-    output rasters. Default to automatic selection of resolution.
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
-    """
-    # Clip the raster to the slightly-buffered extent of the shapefile:
-    temp_file, shapefile_crs = clip_raster(
-        raster_file,
-        shapefile
-        )
+    - raster_file: path to the input raster file.
+    - shapefile: path to the shapefile for clipping.
+    - output_file: path to the output reprojected raster file.
+    - target_resolution: target pixel resolution; defaults to automatic
+      selection.
 
-    # Reproject the raster to the shapefile's CRS:
-    reproject_raster(
-        temp_file,
-        shapefile_crs,
-        output_file,
-        target_resolution
-        )
+    Returns:
+    - None.  Writes the reprojected raster to output_file.
+    """
+    # Clip the raster to the slightly-buffered extent of the shapefile
+    temp_file, shapefile_crs = clip_raster(raster_file, shapefile)
+
+    # Reproject the raster to the shapefile's CRS
+    reproject_raster(temp_file, shapefile_crs, output_file, target_resolution)
+
     # Clean up temporary file
     os.remove(temp_file)
 
-###############################################################################
+
 def reproject_raster(
-    temp_file:str,
-    target_crs:str,
-    output_file:str,
-    target_resolution:float=None
-    ):
+    temp_file: str,
+    target_crs: str,
+    output_file: str,
+    target_resolution: float = None,
+):
     """
-    
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
+    Reproject a raster to a target CRS and write it to disk.
+
+    Parameters:
+    - temp_file: path to the input raster to reproject.
+    - target_crs: CRS string for the output raster.
+    - output_file: path for the reprojected output GeoTIFF.
+    - target_resolution: target pixel resolution; defaults to automatic
+      selection based on the input transform.
+
+    Returns:
+    - None.  Writes the reprojected raster to output_file.
     """
-    # Reproject the clipped raster to the CRS of the shapefile with the 
-    #target resolution
     with rio.open(temp_file) as src:
         logger.info(
-           f'Reprojecting raster from %s to %s', src.crs, target_crs
-           )
+            "Reprojecting raster from %s to %s", src.crs, target_crs
+        )
         transform, width, height = calculate_default_transform(
             src.crs,
             target_crs,
             src.width,
             src.height,
             *src.bounds,
-            resolution=target_resolution
-            )
+            resolution=target_resolution,
+        )
         kwargs = src.meta.copy()
         kwargs.update({
-            'crs': target_crs,
-            'transform': transform,
-            'width': width,
-            'height': height,
-            'res': target_resolution  # Set the target resolution explicitly
+            "crs": target_crs,
+            "transform": transform,
+            "width": width,
+            "height": height,
+            "res": target_resolution,
         })
 
-        with rio.open(output_file, 'w', **kwargs) as dst:
-            logger.info(
-               f'Reprojecting clipped raster to: {output_file}'
-               )
+        with rio.open(output_file, "w", **kwargs) as dst:
+            logger.info("Reprojecting clipped raster to: %s", output_file)
             for i in range(1, src.count + 1):
                 reproject(
                     source=rio.band(src, i),
@@ -150,101 +164,165 @@ def reproject_raster(
                     src_crs=src.crs,
                     dst_transform=transform,
                     dst_crs=target_crs,
-                    resampling=Resampling.bilinear
-                    )
+                    resampling=Resampling.bilinear,
+                )
 
-###############################################################################
-def read_raster(path_to_file:str):
+
+def read_raster(path_to_file: str):
     """
-    Helper function to read a raster file and return its data and 
-    metadata dictionary
+    Read a single-band raster and return its data and metadata.
 
-    NOTE: This will cause errors as I have just updated it to return 
-    data and meta, not data, crs, transform. Should just need to update
-    the calling functions to get those objects from the meta dictionary
-    i.e. crs = meta['crs'], transform = meta['transform']
+    Parameters:
+    - path_to_file: path to the raster file.
+
+    Returns:
+    - data: 2-D numpy array of band 1 values.
+    - meta: rasterio metadata dict (includes 'crs' and 'transform').
     """
     with rio.open(path_to_file) as src:
         return (src.read(1), src.meta)
 
-###############################################################################
-def read_aligned(raster_fn:str, transform, crs,shape,resampling=Resampling.nearest):
-    '''
-    Read a raster and reproject it to a given crs and window (transform)
-    '''
-    logger.info(f'Reading raster {raster_fn} and reprojecting to {crs}')
+
+def read_aligned(
+    raster_fn: str,
+    transform,
+    crs,
+    shape,
+    resampling=Resampling.nearest,
+):
+    """
+    Read a raster and reproject it onto a given grid in memory.
+
+    Parameters:
+    - raster_fn: path to the source raster file.
+    - transform: affine transform defining the target grid.
+    - crs: target CRS.
+    - shape: (rows, cols) of the target grid.
+    - resampling: rasterio Resampling method (default nearest).
+
+    Returns:
+    - 2-D numpy array reprojected onto the target grid; NoData pixels
+      are replaced with NaN.
+    """
+    logger.info("Reading raster %s and reprojecting to %s", raster_fn, crs)
     with rio.open(raster_fn) as src:
         kwargs = src.meta.copy()
         kwargs.update({
-            'crs': crs,
-            'transform': transform,
-            'width': shape[1],
-            'height': shape[0],
+            "crs": crs,
+            "transform": transform,
+            "width": shape[1],
+            "height": shape[0],
         })
 
         with rio.MemoryFile() as memfile:
             with memfile.open(**kwargs) as dst:
-              reproject(
-                  source=rio.band(src, 1),
-                  destination=rio.band(dst, 1),
-                  src_transform=src.transform,
-                  src_crs=src.crs,
-                  dst_transform=transform,
-                  dst_crs=crs,
-                  resampling=resampling
-              )
+                reproject(
+                    source=rio.band(src, 1),
+                    destination=rio.band(dst, 1),
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=transform,
+                    dst_crs=crs,
+                    resampling=resampling,
+                )
 
             with memfile.open() as src:
-              data = src.read(1,masked=True)
-              data[data.mask] = np.nan
-              return data
-
-###############################################################################
-def metres_to_approx_degrees(m:float):
-   return m * c.M_TO_KM / APPROX_KM_PER_DEGREE
+                data = src.read(1, masked=True)
+                data[data.mask] = np.nan
+                return data
 
 
-def retrieve_grid_from_wcs_for_bounds(label, wcs_url, bbox, resx, resy, crs, output_folder, filter_layers=None):
+# ---------------------------------------------------------------------------
+# Unit conversion helper
+# ---------------------------------------------------------------------------
+
+def metres_to_approx_degrees(m: float):
+    """Convert a distance in metres to approximate decimal degrees."""
+    return m * c.M_TO_KM / APPROX_KM_PER_DEGREE
+
+
+# ---------------------------------------------------------------------------
+# WCS download helpers
+# ---------------------------------------------------------------------------
+
+def retrieve_grid_from_wcs_for_bounds(
+    label,
+    wcs_url,
+    bbox,
+    resx,
+    resy,
+    crs,
+    output_folder,
+    filter_layers=None,
+):
+    """
+    Download coverage layers from a WCS service for a bounding box.
+
+    Iterates over all coverages in the WCS catalogue (optionally
+    filtered by layer-title substrings), requests each one as a
+    GeoTIFF, reprojects it to the target CRS and resolution, and
+    saves the result to output_folder.
+
+    Parameters:
+    - label: human-readable label used in log messages.
+    - wcs_url: URL of the WCS service.
+    - bbox: bounding box tuple (minx, miny, maxx, maxy) in EPSG:4326.
+    - resx: x resolution for the coverage request.
+    - resy: y resolution for the coverage request.
+    - crs: target CRS string for reprojection.
+    - output_folder: directory to write the downloaded GeoTIFFs.
+    - filter_layers: optional list of title substrings; only coverages
+      whose title contains at least one substring are downloaded.
+
+    Returns:
+    - None.  Writes reprojected GeoTIFFs to output_folder.
+    """
     # Connect to the WCS server for each dataset
     wcs = get_wcs(wcs_url)
 
     # Iterate through all coverages available in the WCS contents
     for coverage_id in wcs.contents:
-        # Get the metadata for the current coverage
         coverage_metadata = wcs.contents[coverage_id]
-
-        # Get the title of the coverage for file naming
         coverage_title = coverage_metadata.title
 
         # Filter coverages based on the presence of specific substrings
-        if (filter_layers is not None) and not any(layer in coverage_title for layer in filter_layers):
-            continue
+        if filter_layers is not None:
+            if not any(layer in coverage_title for layer in filter_layers):
+                continue
 
         # Request the coverage data using the GetCoverage operation
         response = wcs.getCoverage(
             identifier=coverage_id,
             bbox=bbox,
-            format="GeoTIFF",  # Use GeoTIFF format
-            crs="EPSG:4326",  # Coordinate reference system
-            resx=resx,  # Set the resolution for x
-            resy=resy   # Set the resolution for y
+            format="GeoTIFF",
+            crs="EPSG:4326",
+            resx=resx,
+            resy=resy,
         )
 
         os.makedirs(output_folder, exist_ok=True)
 
-        # Define the output filename based on the coverage title and data type
-        output_filename = os.path.join(output_folder, f"{coverage_title}.tif")
-        tmp_filename = os.path.join(output_folder, f"{coverage_title}_tmp.tif")
+        # Define output filenames based on the coverage title
+        output_filename = os.path.join(
+            output_folder, f"{coverage_title}.tif"
+        )
+        tmp_filename = os.path.join(
+            output_folder, f"{coverage_title}_tmp.tif"
+        )
+
         # Save the downloaded data as a GeoTIFF
         with open(tmp_filename, "wb") as file:
             file.write(response.read())
 
-        # Reproject the raster to the catchment CRS and resolution
+        # Reproject to the catchment CRS and resolution
         reproject_raster(tmp_filename, crs, output_filename)
         os.remove(tmp_filename)
 
-        logger.info(f"Downloaded {label} data saved as {coverage_title}.tif")
+        logger.info(
+            "Downloaded %s data saved as %s.tif", label, coverage_title
+        )
+
 
 def get_wcs(url):
-    return retry(lambda:WebCoverageService(url, version="1.0.0"))
-
+    """Connect to a WCS service with retry logic and return the client."""
+    return retry(lambda: WebCoverageService(url, version="1.0.0"))
