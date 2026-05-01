@@ -1,3 +1,12 @@
+"""
+Topographic pre-processing: DEM extraction, slope, flow routing, and
+headwater delineation.
+
+Functions here use pysheds for hydrological enforcement and rasterio
+for raster I/O.  Outputs are written to each catchment's Topography
+folder within the FireImpactsProject directory structure.
+"""
+
 import os
 import numpy as np
 from numpy.typing import ArrayLike
@@ -13,49 +22,95 @@ from .project import FireImpactsProject, save_catchment_raster
 from .util import *
 import copy
 import logging
+
 logger = logging.getLogger(__name__)
+
 from ..const import *
 
-def ftoi(x,dp=5):
-    return int(round(x,dp))
+
+# ---------------------------------------------------------------------------
+# Small numeric helpers
+# ---------------------------------------------------------------------------
+
+def ftoi(x, dp=5):
+    """Round x to dp decimal places and return as an integer."""
+    return int(round(x, dp))
+
+
+# ---------------------------------------------------------------------------
+# DEM extraction
+# ---------------------------------------------------------------------------
 
 def extract_catchment_dems(
-        project:FireImpactsProject,
-        dem_path=None,
-        target_resolution=None
-        ):
-  '''
-  Extract DEMs for all catchments in the project from a single regional DEM.
+    project: FireImpactsProject,
+    dem_path=None,
+    target_resolution=None,
+):
+    """
+    Extract DEMs for all catchments in the project from a regional DEM.
 
-  Parameters:
-  - project (dict): Dictionary containing the project folder structure.
-  - dem_path (str): Path to the regional DEM file.
-  - target_resolution (tuple): OPTIONAL: Desired resolution for the output rasters. Default to automatic selection of resolution
-  '''
-  catchments = project.catchments
-  logger.info('Extracting %d catchment DEMs',len(catchments))
-  for catchment in catchments:
-      shapefile = project.boundary_files[catchment]
-      logger.info('Extracting DEM for catchment: %s',catchment)
+    Parameters:
+    - project: FireImpactsProject instance defining catchment paths.
+    - dem_path: path to the regional DEM file; if None, downloads the
+      DEMH mosaic from AWS.
+    - target_resolution: desired output pixel resolution; defaults to
+      automatic selection.
 
-      # Construct the output file names
-      output_path = os.path.join(project.catchment_path(catchment), 'Topography', 'DEM.tif')
+    Returns:
+    - None.  Writes DEM.tif to each catchment's Topography folder.
+    """
+    catchments = project.catchments
+    logger.info("Extracting %d catchment DEMs", len(catchments))
+    for catchment in catchments:
+        shapefile = project.boundary_files[catchment]
+        logger.info("Extracting DEM for catchment: %s", catchment)
 
-      if dem_path is None:
-          logger.info('No DEM path provided, downloading DEMH data from AWS for catchment: %s',catchment)
-          from .data_sources import DEMH
-          fn = DEMH
-      else:
-          fn = dem_path
-      # Clip and reproject the raster with the shapefile
-      clip_and_reproject_raster(fn, shapefile, output_path, target_resolution=target_resolution)
+        # Construct the output file path
+        output_path = os.path.join(
+            project.catchment_path(catchment), "Topography", "DEM.tif"
+        )
+
+        if dem_path is None:
+            logger.info(
+                "No DEM path provided — downloading DEMH from AWS "
+                "for catchment: %s",
+                catchment,
+            )
+            from .data_sources import DEMH
+            fn = DEMH
+        else:
+            fn = dem_path
+
+        # Clip and reproject the raster with the shapefile
+        clip_and_reproject_raster(
+            fn, shapefile, output_path,
+            target_resolution=target_resolution,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Stream network helpers
+# ---------------------------------------------------------------------------
 
 def calculate_movement_distance(point, spatial_index, lines):
-    '''
-    Function to calculate movement distance for a single pour point
-    '''
-    # Apply a small buffer around the point (e.g., 1 meter)
-    buffered_point = point.buffer(1)  # Adjust the buffer size as necessary
+    """
+    Calculate the movement distance from a pour point to a stream end.
+
+    Parameters:
+    - point: shapely Point representing the pour point.
+    - spatial_index: shapely STRtree built from the stream line segments.
+    - lines: list of shapely LineString objects (one per branch).
+
+    Returns:
+    - displacement: straight-line distance from the pour point to the
+      end of the branch, or None if no match found.
+    - movement_distance: distance along the branch from the pour point
+      to its end, or 0 if no match found.
+    - start_point: shapely Point at the start of the matched branch.
+    - end_point: shapely Point at the end of the matched branch.
+    """
+    # Apply a small buffer around the point to handle snapping errors
+    buffered_point = point.buffer(1)
 
     # Query the spatial index to get possible matching features
     possible_matches_indices = spatial_index.query(buffered_point)
@@ -65,51 +120,91 @@ def calculate_movement_distance(point, spatial_index, lines):
     end_point = None
 
     for idx in possible_matches_indices:
-        # Retrieve the corresponding LineString using the index
         line = lines[idx]
 
-        # Check if the buffered point intersects the line
         if line.intersects(buffered_point):
-            # Get the start point (pour point) of the feature
             start_point_coords = list(line.coords)[0]
             start_point = Point(start_point_coords)
 
-            # Get the end point of the feature
             end_point_coords = list(line.coords)[-1]
-            end_point = Point(end_point_coords)  # Convert to Shapely Point
+            end_point = Point(end_point_coords)
 
-            # Calculate displacement
-            displacement = np.sqrt((end_point.x - point.x)**2 + (end_point.y - point.y)**2)  # Straight-line distance
+            # Straight-line displacement from pour point to end
+            displacement = np.sqrt(
+                (end_point.x - point.x) ** 2
+                + (end_point.y - point.y) ** 2
+            )
 
-            # Calculate actual movement distance along the feature
-            found_pour_point = False  # Start from the pour point to the end point
+            # Actual movement distance along the branch from pour point
+            found_pour_point = False
             coords = list(line.coords)
 
             for i in range(len(coords) - 1):
-                if found_pour_point or np.allclose(coords[i], [point.x, point.y]):
+                if found_pour_point or np.allclose(
+                    coords[i], [point.x, point.y]
+                ):
                     found_pour_point = True
-                    # Calculate distance between consecutive points
-                    segment_distance = np.sqrt((coords[i+1][0] - coords[i][0])**2 + (coords[i+1][1] - coords[i][1])**2)
+                    segment_distance = np.sqrt(
+                        (coords[i + 1][0] - coords[i][0]) ** 2
+                        + (coords[i + 1][1] - coords[i][1]) ** 2
+                    )
                     movement_distance += segment_distance
                 # Stop once we reach the end point
-                if np.allclose(coords[i+1], end_point_coords):
+                if np.allclose(coords[i + 1], end_point_coords):
                     break
-            break  # Exit the loop once the relevant branch is found
+            break  # Exit once the relevant branch is found
+
     return displacement, movement_distance, start_point, end_point
 
 
-# Find the nearest index in the grid based on coordinates
 def find_nearest_index(x, y, transform):
-    col, row = ~transform * (x, y)  # Convert coordinates to grid indices
-    col, row = int(np.round(col)), int(np.round(row))  # Round to the nearest integer
+    """
+    Return the (row, col) grid index nearest to the given coordinates.
+
+    Parameters:
+    - x: x coordinate in the raster CRS.
+    - y: y coordinate in the raster CRS.
+    - transform: rasterio Affine transform for the grid.
+
+    Returns:
+    - (row, col) tuple of integer grid indices.
+    """
+    col, row = ~transform * (x, y)
+    col, row = int(np.round(col)), int(np.round(row))
     return row, col
 
+
 def get_adjacent_cells(row, col):
-    # Get the indices of the adjacent cells including the center cell itself
-    adjacent_indices = [(row + i, col + j) for i in range(-1, 2) for j in range(-1, 2)]
-    return adjacent_indices
+    """
+    Return the 3x3 neighbourhood of grid indices around (row, col).
+
+    Parameters:
+    - row: row index of the centre cell.
+    - col: column index of the centre cell.
+
+    Returns:
+    - List of (row, col) tuples for the 9-cell neighbourhood including
+      the centre cell itself.
+    """
+    return [
+        (row + i, col + j) for i in range(-1, 2) for j in range(-1, 2)
+    ]
+
 
 def find_closest_to_threshold(acc, row, col, threshold_cells):
+    """
+    Find the cell in a 3x3 neighbourhood whose accumulation is closest
+    to threshold_cells.
+
+    Parameters:
+    - acc: 2-D numpy array of flow accumulation values.
+    - row: row index of the starting cell.
+    - col: column index of the starting cell.
+    - threshold_cells: target cell count to snap to.
+
+    Returns:
+    - (row, col) tuple of the cell with the closest accumulation value.
+    """
     adjacent_indices = get_adjacent_cells(row, col)
     closest_cell = (row, col)
     min_diff = abs(acc[row, col] - threshold_cells)
@@ -123,88 +218,86 @@ def find_closest_to_threshold(acc, row, col, threshold_cells):
 
     return closest_cell
 
-###############################################################################
+
+# ---------------------------------------------------------------------------
+# Slope computation
+# ---------------------------------------------------------------------------
+
 def dem_to_slope(
-    project:FireImpactsProject,
-    dem:str | tuple,
-    catchment_name:str,
-    gradient:bool=False,
-    hydro:bool=False,
-    save:bool=True,
-    crs_unit_to_metres:float=None
-    ):
+    project: FireImpactsProject,
+    dem: str | tuple,
+    catchment_name: str,
+    gradient: bool = False,
+    hydro: bool = False,
+    save: bool = True,
+    crs_unit_to_metres: float = None,
+):
     """
-    Convert a DEM to a slope raster. Can be either raw, or a 
-    hydrologically-enforced DEM.
+    Convert a DEM to a slope raster (degrees or gradient).
 
     Parameters:
-    - project (FireImpactsProject): the current project which handles 
-    directory locations
-    - dem: This can be either of the following:
-        - A path including filename and extension that points to the 
-        DEM, as a string
-        - a tuple of rasterio (data, meta) objects for an in-memory 
-        raster
-    - catchment_name (string): name of the catchment this DEM is for
-    - hydro (bool, default False): whether this is a 
-    hydrologically-enforced DEM. Only effects the output file name, so 
-    will have no impact of save is set to False
-    - save (bool, default True): Whether the output slope DEM should 
-    be saved as a GeoTIFF
-    - crs_unit_to_metres (float): if the units of the DEM's crs are not 
-    metres, the number of those units per metre.
+    - project: FireImpactsProject instance defining catchment paths.
+    - dem: path string to the DEM file, or a (data, meta) tuple of
+      rasterio objects for an in-memory raster.
+    - catchment_name: name of the catchment this DEM belongs to.
+    - gradient: if True, return the raw terrain gradient instead of
+      degrees.
+    - hydro: if True, use the hydrologically-enforced output filename.
+      Has no effect if save is False.
+    - save: if True, write the slope raster to the Topography folder.
+    - crs_unit_to_metres: conversion factor from CRS units to metres;
+      required if the DEM CRS is not in metres.  Defaults to the
+      approximate degrees-to-metres constant.
 
     Returns:
-    - tuple of rasterio objects as (data, meta)
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
+    - data: 2-D numpy array of slope values.
+    - meta: rasterio metadata dict for the output raster.
     """
     # If we've been given a tuple, assume it is (data, meta)
     if isinstance(dem, tuple):
         data, meta = dem
-    #If it's a string, read in the raster:
+    # If it's a string, read in the raster
     elif isinstance(dem, str):
         data, meta = read_raster(dem)
     else:
         raise ValueError(
-            'topography.dem_to_slope() requires either a string path '
-            'pointing to a readable DEM, or a tuple of (data, meta) '
-            f'rasterio objects. Received {dem}'
+            "topography.dem_to_slope() requires either a string path "
+            "pointing to a readable DEM, or a tuple of (data, meta) "
+            f"rasterio objects. Received {dem}"
         )
     meta2 = meta.copy()
-    # Get other raster attributes for easy access:
-    transform = meta['transform']
-    crs = meta['crs']
-    nodata = meta['nodata']
+    # Get raster attributes for easy access
+    transform = meta["transform"]
+    crs = meta["crs"]
+    nodata = meta["nodata"]
 
     pix_width = transform[0]
     pix_height = abs(transform[4])
     pix_planar_area = pix_width * pix_height
     data_present = np.where(data == nodata, np.nan, data)
 
-    # Handle conversion of units to metres so that units are 
-    #standardised:
+    # Handle conversion of units to metres so that units are standardised
     if crs.linear_units not in CRS_METRE_UNITS:
-        # If units are not metres, and a conversion was not specified, 
-        #assume it's in degrees and convert from that:
+        # If units are not metres and no conversion was specified,
+        # assume degrees and convert using the approximate constant.
         if crs_unit_to_metres is None:
             crs_unit_to_metres = APPROX_DEGREES_TO_METRES
         logger.warning(
-            f'CRS should be in meters, was {crs.linear_units}. '
-            'Applying crs_unit_to_metres conversion '
-            f'({crs_unit_to_metres})'
-            )
-        pix_planar_area *= crs_unit_to_metres**2
+            "CRS should be in metres, was %s. "
+            "Applying crs_unit_to_metres conversion (%s)",
+            crs.linear_units, crs_unit_to_metres,
+        )
+        pix_planar_area *= crs_unit_to_metres ** 2
         pix_width *= crs_unit_to_metres
         pix_height *= crs_unit_to_metres
 
-    # Get the horizontal and vertical gradients for each cell to its 
-    #neighbours along that plane. 
-    horiz_grad, vert_grad = np.gradient(data_present, pix_width, pix_height)
-    # Get the actual terrain gradient:
-    terrain_grad = np.sqrt(horiz_grad**2 + vert_grad**2)
+    # Horizontal and vertical gradients along each cell axis
+    horiz_grad, vert_grad = np.gradient(
+        data_present, pix_width, pix_height
+    )
+    terrain_grad = np.sqrt(horiz_grad ** 2 + vert_grad ** 2)
 
-    # Get a version in degrees:
+    # Convert to degrees unless the caller wants raw gradient
     terr_slope_rad = np.arctan(terrain_grad)
     terr_slope_deg = np.degrees(terr_slope_rad)
 
@@ -213,10 +306,9 @@ def dem_to_slope(
     else:
         final_data = terr_slope_deg
 
-    # Save the slope raster if that's been requested:
+    # Save the slope raster if requested
     if save:
-        # Set output file name based on whether we've used a 
-        #hydrologically enforced DEM for this slope raster:
+        # Output filename depends on whether a hydro-enforced DEM was used
         if hydro:
             file_name = SLOPE_HYDRO_FN
         else:
@@ -225,404 +317,486 @@ def dem_to_slope(
             project=project,
             catchment_name=catchment_name,
             file_name=file_name,
-            section='Topography',
+            section="Topography",
             data=final_data,
-            meta=meta2
-            )
+            meta=meta2,
+        )
         logger.info(message)
-        
-    # Return the raster data and its metadata:
+
     return final_data, meta2
 
-###############################################################################
-def hydro_force_dem(dem_path:str):
+
+# ---------------------------------------------------------------------------
+# Hydrological enforcement
+# ---------------------------------------------------------------------------
+
+def hydro_force_dem(dem_path: str):
     """
-    Apply hydrological enforcements to a DEM: Fix pits, depressions, 
-    and flats.
+    Apply hydrological enforcement to a DEM: fix pits, depressions, and
+    flats.
 
     Parameters:
-    - dem_path (string): Path to the DEM which is to be processed.
+    - dem_path: path to the DEM to be processed.
 
     Returns:
-    - pysheds grid object which is a dem that can be used for 
-    hydrology operations.
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
+    - inflated_dem: pysheds Raster with pits, depressions, and flats
+      resolved.
+    - grid: pysheds Grid object used for subsequent routing operations.
     """
-    # Create a pysheds grid object from the DEM:
     grid = Grid.from_raster(dem_path)
     logger.info(
-        'Creating hydrologically-enforced DEM from %s', dem_path
-        )
+        "Creating hydrologically-enforced DEM from %s", dem_path
+    )
     dem = grid.read_raster(dem_path)
 
-    # Apply the hydrological fixes using pysheds:
-    logger.info('Filling pits')
+    # Apply hydrological fixes using pysheds
+    logger.info("Filling pits")
     fill_dem = grid.fill_pits(dem)
-    logger.info('Filling depressions')
-    flooded_dem = grid.fill_depressions(fill_dem) 
-    logger.info('Resolving flats')
+    logger.info("Filling depressions")
+    flooded_dem = grid.fill_depressions(fill_dem)
+    logger.info("Resolving flats")
     inflated_dem = grid.resolve_flats(flooded_dem)
 
     return inflated_dem, grid
 
-###############################################################################
+
+# ---------------------------------------------------------------------------
+# Flow routing
+# ---------------------------------------------------------------------------
+
 def rio_to_pysheds(
     data,
     meta,
     filename,
-    dirmap:tuple=D8_FLOW_DIRECTIONS,
-    routing:str=FLOW_ROUTING_TYPE
-    ) -> PyshedsRaster:
+    dirmap: tuple = D8_FLOW_DIRECTIONS,
+    routing: str = FLOW_ROUTING_TYPE,
+) -> PyshedsRaster:
     """
-    Convert rasterio data and meta objects to a Pysheds raster
+    Convert rasterio data and meta to a pysheds Raster object.
 
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
+    Reads the viewfinder from an existing file on disk, updates it with
+    the nodata value from meta, and wraps the provided numpy array.
+
+    Parameters:
+    - data: numpy array of raster values.
+    - meta: rasterio metadata dict (must include 'nodata').
+    - filename: path to an existing raster used to initialise the
+      pysheds Grid and derive the viewfinder.
+    - dirmap: D8 flow direction mapping tuple.
+    - routing: routing method string (e.g. 'd8').
+
+    Returns:
+    - PyshedsRaster wrapping data with the viewfinder from filename.
     """
-    # Create and populate the pyshed Grid
     grid = Grid.from_raster(filename)
     interim = grid.read_raster(filename)
 
-    # Get the viewfinder from the grid, and update its metadata as 
-    #required:
+    # Get the viewfinder from the grid and update its nodata value
     vf = interim.viewfinder.copy()
-    vf.nodata = meta['nodata']
+    vf.nodata = meta["nodata"]
 
-    # Create the PyshedRaster object:
     out_Raster = PyshedsRaster(
         input_array=data,
         viewfinder=vf,
         metadata={
-            'dirmap': dirmap,
-            'routing': routing
-            }
-        )
-    
+            "dirmap": dirmap,
+            "routing": routing,
+        },
+    )
+
     return out_Raster
 
-###############################################################################
-def compute_flow_dir(
-    hydro_dem:ArrayLike,
-    hydro_meta:dict,
-    grid:Grid,
-    dirmap:tuple,
-    project:FireImpactsProject,
-    catchment_name:str,
-    save:bool=True,
-    routing:str=FLOW_ROUTING_TYPE
-    ) -> tuple[PyshedsRaster, dict, Grid]:
-    """
-    Compute a flow direction raster from a hydrologically enforced DEM
 
-    --------------------------------------------------------------------
-    --------------------------------------------------------------------
+def compute_flow_dir(
+    hydro_dem: ArrayLike,
+    hydro_meta: dict,
+    grid: Grid,
+    dirmap: tuple,
+    project: FireImpactsProject,
+    catchment_name: str,
+    save: bool = True,
+    routing: str = FLOW_ROUTING_TYPE,
+) -> tuple[PyshedsRaster, dict, Grid]:
     """
-        
-    # Compute the flow direction grid:
-    logger.info('Computing flow direction')
+    Compute a flow direction raster from a hydrologically enforced DEM.
+
+    Parameters:
+    - hydro_dem: pysheds Raster of the hydrologically enforced DEM.
+    - hydro_meta: rasterio metadata dict for the DEM.
+    - grid: pysheds Grid object from hydro_force_dem.
+    - dirmap: D8 flow direction mapping tuple.
+    - project: FireImpactsProject instance defining catchment paths.
+    - catchment_name: name of the catchment being processed.
+    - save: if True, write the flow direction raster to disk.
+    - routing: routing method string (e.g. 'd8').
+
+    Returns:
+    - flow_dir_Raster: pysheds Raster of flow directions.
+    - flow_dir_meta: rasterio metadata dict for the flow direction raster.
+    - grid: the same pysheds Grid object (passed through).
+    """
+    logger.info("Computing flow direction")
     fdir = grid.flowdir(hydro_dem, dirmap=dirmap, routing=routing)
 
-    # Define input and output nodata values:
-    in_nodata = hydro_meta['nodata']
+    in_nodata = hydro_meta["nodata"]
     out_nodata = np.int32(NODATA_VAL_INT)
 
-    # Update the rasterio metadata:
+    # Update rasterio metadata for the flow direction output
     flow_dir_meta = hydro_meta.copy()
     flow_dir_meta.update(dtype=np.int32, nodata=out_nodata, count=1)
 
-    # Update the pysheds viewfinder with the target nodata value:
+    # Update the pysheds viewfinder with the integer nodata value
     flow_dir_vf = fdir.viewfinder.copy()
     flow_dir_vf.nodata = out_nodata
 
-    # Replace input nodata values with a useful integer one:
+    # Replace input nodata values with an integer sentinel
     flow_dir_data = np.where(
         fdir == in_nodata,
         out_nodata,
-        fdir
-        ).astype(np.int32)
-    
+        fdir,
+    ).astype(np.int32)
+
     flow_dir_Raster = PyshedsRaster(
         input_array=flow_dir_data,
         viewfinder=flow_dir_vf,
         metadata={
-            'dirmap': dirmap,
-            'routing': routing
-            }
-        )
-    
-    # Save the raster to file if requested:
+            "dirmap": dirmap,
+            "routing": routing,
+        },
+    )
+
     if save:
         success, message = save_catchment_raster(
             project=project,
             catchment_name=catchment_name,
             file_name=FLOW_DIRECTION_FN,
-            section = 'Topography',
+            section="Topography",
             data=flow_dir_data,
-            meta=flow_dir_meta
-            )
+            meta=flow_dir_meta,
+        )
         logger.info(message)
-    
+
     return flow_dir_Raster, flow_dir_meta, grid
 
-###############################################################################
-def compute_flow_accum(
-    flow_dir_data:ArrayLike,
-    flow_dir_meta:dict,
-    grid:Grid,
-    dirmap:tuple,
-    project:FireImpactsProject,
-    catchment_name:str,
-    save:bool=True,
-    routing:str=FLOW_ROUTING_TYPE
-    ) -> tuple[PyshedsRaster, dict, Grid]:
-    """
-    Compute a flow accumulation raster from a flow direction raster
 
-    --------------------------------------------------------------------
-    Notes:
-    - Assues the input flow direction has correct integer dtypes and 
-    nodata values.
-    --------------------------------------------------------------------
+def compute_flow_accum(
+    flow_dir_data: ArrayLike,
+    flow_dir_meta: dict,
+    grid: Grid,
+    dirmap: tuple,
+    project: FireImpactsProject,
+    catchment_name: str,
+    save: bool = True,
+    routing: str = FLOW_ROUTING_TYPE,
+) -> tuple[PyshedsRaster, dict, Grid]:
     """
-    # Compute the flow accumulation grid:
-    logger.info('Computing flow accumulation')
+    Compute a flow accumulation raster from a flow direction raster.
+
+    Parameters:
+    - flow_dir_data: pysheds Raster or array of flow direction values.
+    - flow_dir_meta: rasterio metadata dict for the flow direction raster.
+    - grid: pysheds Grid object from compute_flow_dir.
+    - dirmap: D8 flow direction mapping tuple.
+    - project: FireImpactsProject instance defining catchment paths.
+    - catchment_name: name of the catchment being processed.
+    - save: if True, write the flow accumulation raster to disk.
+    - routing: routing method string (e.g. 'd8').
+
+    Returns:
+    - flow_acc_data: numpy array of flow accumulation values.
+    - flow_acc_meta: rasterio metadata dict for the output raster.
+    - grid: the same pysheds Grid object (passed through).
+
+    ------------------------------------------------------------------------
+    Notes:
+    - Assumes the input flow direction raster has correct integer dtypes
+      and nodata values.
+    ------------------------------------------------------------------------
+    """
+    logger.info("Computing flow accumulation")
     flow_acc_data = grid.accumulation(
         flow_dir_data,
         dirmap=dirmap,
-        routing=routing) 
+        routing=routing,
+    )
     flow_acc_meta = flow_dir_meta.copy()
 
-    # Save the raster to file if requested:
     if save:
         success, message = save_catchment_raster(
             project=project,
             catchment_name=catchment_name,
             file_name=FLOW_ACCUMULATION_FN,
-            section='Topography',
+            section="Topography",
             data=flow_acc_data,
-            meta=flow_acc_meta
+            meta=flow_acc_meta,
         )
         logger.info(message)
 
     return flow_acc_data, flow_acc_meta, grid
-    
-###############################################################################
+
+
+# ---------------------------------------------------------------------------
+# Headwater delineation
+# ---------------------------------------------------------------------------
+
 def extract_headwaters(
-    project:FireImpactsProject,
-    name:str | None=None,
-    threshold_m2:float=DEFAULT_HW_THRESHOLD
-    ):
+    project: FireImpactsProject,
+    name: str | None = None,
+    threshold_m2: float = DEFAULT_HW_THRESHOLD,
+):
     """
-    Delinate headwaters for a catchment based on a flow accumulation 
+    Delineate headwaters for a catchment based on a flow accumulation
     threshold.
 
     Parameters:
-    - project (FireImpactsProject): project object for directory 
-    structure
-    - name (str): Name of the catchment to process. If None, process 
-    all catchments.
-    - threshold_m2 (float): Threshold area in square meters for 
-    headwaters. Default is 20,000 m^2.
+    - project: FireImpactsProject instance defining catchment paths.
+    - name: catchment name to process; if None, processes all
+      catchments in the project.
+    - threshold_m2: contributing area threshold in square metres for
+      headwater delineation (default DEFAULT_HW_THRESHOLD).
 
     Returns:
-    - Dataframe containing headwater summary data
+    - DataFrame containing headwater summary data.
 
-    Writes:
-    - Headwaters.shp: Shapefile containing the headwaters polygons.
-    - Headwaters.tif: Raster file containing the headwaters polygons.
-    - Headwaters.csv: CSV file containing the headwaters summary
-    - Flow_accumulation.tif: Raster file containing the flow 
-    accumulation data.
-    - Stream_Network.tif: Raster file containing the stream network 
-    data.
-    - Slope.tif: Raster file containing the slope data.
-    --------------------------------------------------------------------
-    TODO: move the writing of slope.tif out of this function to 
-    somewhere it's needed.
-    --------------------------------------------------------------------
+    ------------------------------------------------------------------------
+    Notes:
+    - Also writes slope.tif as a side-effect of calling dem_to_slope.
+    - Writes Headwaters.shp, Headwaters.tif, Headwaters.csv,
+      Flow_accumulation.tif, and Stream_Network.tif to the catchment's
+      Topography folder.
+    ------------------------------------------------------------------------
     """
     new_hw_id_field = project.headwater_id
-    # Extract CRS and transform and copy meta from DEM to write headwaters
+
     if name is None:
         return project.for_each_catchment(
-            lambda c: extract_headwaters(project,c,threshold_m2)
-            )
+            lambda c: extract_headwaters(project, c, threshold_m2)
+        )
 
-    logger.info(f'Extracting headwaters for catchment: {name}')
-    dem_fn = project.catchment_path(name,'Topography','DEM.tif')
-    
-    # Placeholder for consistency with old workflow, so calling this 
-    #function still saves the slope file:
+    logger.info("Extracting headwaters for catchment: %s", name)
+    dem_fn = project.catchment_path(name, "Topography", "DEM.tif")
+
+    # Compute and save slope as a side-effect (kept for workflow compatibility)
     slope_ras, meta = dem_to_slope(
         project=project,
         dem=dem_fn,
-        catchment_name=name
-        )
+        catchment_name=name,
+    )
 
-    crs = meta['crs']
-    transform = meta['transform']
+    crs = meta["crs"]
+    transform = meta["transform"]
     x_res = transform[0]
     y_res = abs(transform[4])
     res_sq = x_res * y_res
 
-    # Hyrdologically enforce the DEM:
+    # Hydrologically enforce the DEM
     prepared_dem, grid = hydro_force_dem(dem_fn)
-    # Get a flow direction raster:
+
+    # Compute flow direction and accumulation
     flow_dir_data, flow_dir_meta, grid = compute_flow_dir(
         hydro_dem=prepared_dem,
         hydro_meta=meta,
         grid=grid,
         dirmap=D8_FLOW_DIRECTIONS,
         project=project,
-        catchment_name=name
-        )
-    # Get a flow accumulation raster:
+        catchment_name=name,
+    )
     flow_acc_data, flow_acc_meta, grid = compute_flow_accum(
         flow_dir_data=flow_dir_data,
         flow_dir_meta=flow_dir_meta,
         grid=grid,
         dirmap=D8_FLOW_DIRECTIONS,
         project=project,
-        catchment_name=name
-        )
+        catchment_name=name,
+    )
 
-
-    
     threshold_cells = int(threshold_m2 / res_sq)
-    logger.info('Threshold # cells: %d (%f m^2)', threshold_cells, threshold_m2)
+    logger.info(
+        "Threshold # cells: %d (%f m^2)", threshold_cells, threshold_m2
+    )
 
     mask_at_threshold = flow_acc_data == threshold_cells
-    mask_above_threshold = flow_acc_data >= threshold_cells  # need to be equal or greater then threshold
-    # Extract river network based on flow accumulation threshold
-    logger.info('Extracting river network')
-    branches = grid.extract_river_network(flow_dir_data, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS,nodata_out=np.int64(0)) # mask if the flow acc is less than threshold
-    # Save the stream network as Stream_Network.tif
-    stream_network_file = project.catchment_path(name,'Topography','Stream_Network.tif')
+    mask_above_threshold = flow_acc_data >= threshold_cells
+
+    # Extract the river network above the accumulation threshold
+    logger.info("Extracting river network")
+    branches = grid.extract_river_network(
+        flow_dir_data,
+        mask_above_threshold,
+        dirmap=D8_FLOW_DIRECTIONS,
+        nodata_out=np.int64(0),
+    )
+
+    # Save the stream network raster
+    stream_network_file = project.catchment_path(
+        name, "Topography", "Stream_Network.tif"
+    )
     stream_meta = meta.copy()
     stream_meta.update({
-        'dtype': 'int32',
-        'count': 1,
-        'nodata': NODATA_VAL_INT
+        "dtype": "int32",
+        "count": 1,
+        "nodata": NODATA_VAL_INT,
     })
 
-    # Create an empty array for stream network output
-    stream_network_array = np.ones_like(flow_acc_data, dtype=np.int32) * -9999
+    stream_network_array = (
+        np.ones_like(flow_acc_data, dtype=np.int32) * -9999
+    )
 
-    for feature in branches['features']:
-        # print(feature)
-        # assert False
-        coords = np.array(feature['geometry']['coordinates'])
-        # Convert coordinates to row/col indices and update stream network array
+    for feature in branches["features"]:
+        coords = np.array(feature["geometry"]["coordinates"])
         for x, y in coords:
             col, row = ~transform * (x, y)
-            col, row = ftoi(col,0),ftoi(row,0) # OR round?
-            if 0 <= col < stream_network_array.shape[1] and 0 <= row < stream_network_array.shape[0]:
-                stream_network_array[row, col] = 1  # Mark the stream cells
+            col, row = ftoi(col, 0), ftoi(row, 0)
+            if (
+                0 <= col < stream_network_array.shape[1]
+                and 0 <= row < stream_network_array.shape[0]
+            ):
+                stream_network_array[row, col] = 1
 
-    with rio.open(stream_network_file, 'w', **stream_meta) as dst:
+    with rio.open(stream_network_file, "w", **stream_meta) as dst:
         dst.write(stream_network_array, 1)
-    logger.info(f'Saved Stream Network to: {stream_network_file}')
+    logger.info("Saved Stream Network to: %s", stream_network_file)
 
-    # Build a spatial index for the LineStrings in branches
-    logger.info('Building spatial index of %d branches',len(branches['features']))
-    lines = [LineString(branch['geometry']['coordinates']) for branch in branches['features']]
+    # Build a spatial index for quick branch lookups
+    logger.info(
+        "Building spatial index of %d branches",
+        len(branches["features"]),
+    )
+    lines = [
+        LineString(branch["geometry"]["coordinates"])
+        for branch in branches["features"]
+    ]
     spatial_index = STRtree(lines)
-    stream_order = grid.stream_order(flow_dir_data, mask_above_threshold, dirmap=D8_FLOW_DIRECTIONS, method='strahler') # get the stream order to filter the headwaters for first stream order
 
-    logger.info('Snapping start points to stream heads')
+    # Compute stream order to identify first-order (headwater) branches
+    stream_order = grid.stream_order(
+        flow_dir_data,
+        mask_above_threshold,
+        dirmap=D8_FLOW_DIRECTIONS,
+        method="strahler",
+    )
+
+    logger.info("Snapping start points to stream heads")
     start_xs = [list(l.coords)[0][0] for l in lines]
     start_ys = [list(l.coords)[0][1] for l in lines]
 
-    logger.info('Processing %d line segments',len(lines))
-    # Iterate through each branch in the river network
+    logger.info("Processing %d line segments", len(lines))
 
     geometries = []
     records = []
-    subcatchment_raster = np.zeros_like(slope_ras,dtype=np.int16)
+    subcatchment_raster = np.zeros_like(slope_ras, dtype=np.int16)
 
-    idx=1
+    idx = 1
     count = 0
-    for line,x,y in zip(lines,start_xs,start_ys):
+    for line, x, y in zip(lines, start_xs, start_ys):
         count += 1
         catchment_id = idx
-        if (count) % 100 == 0:
-            logger.info('Processing branch %d/%d',(count), len(lines))
+        if count % 100 == 0:
+            logger.info(
+                "Processing branch %d/%d", count, len(lines)
+            )
 
-        # Get the pour point (start point) from the river network branch
-        # start_point_coords = list(line.coords)[0]
-        start_point = Point([x,y])
+        start_point = Point([x, y])
 
-        # Find the nearest index for the start point in the grid
+        # Find the grid index for this pour point
         row, col = find_nearest_index(x, y, grid.affine)
-        # Check the stream order at this location
-        if stream_order[row, col] > 1:
-            continue  # Skip to the next line if stream order is greater than 1
 
-        # If the flow accumulation in the pour point is greater then threshold, get the an adjesent cell with the closest flow acc to the thrshold
+        # Skip branches with stream order greater than 1
+        if stream_order[row, col] > 1:
+            continue
+
+        # If the pour point has higher accumulation than the threshold,
+        # snap to the nearest cell that is closest to the threshold.
         if flow_acc_data[row, col] > threshold_cells:
-            # Find the closest cell with flow accumulation near to threshold
-            row, col = find_closest_to_threshold(flow_acc_data, row, col, threshold_cells)
-            x, y = grid.affine * (col, row)  # Update the coordinates
-        # Get the flow accumulation at the pour point and save it in the dataframe
+            row, col = find_closest_to_threshold(
+                flow_acc_data, row, col, threshold_cells
+            )
+            x, y = grid.affine * (col, row)
+
         pp_flow_acc = flow_acc_data[row, col]
         grid_1 = copy.deepcopy(grid)
 
-        catch = grid_1.catchment(x=x, y=y, fdir=flow_dir_data, dirmap=D8_FLOW_DIRECTIONS, xytype='coordinate') # snap the
+        catch = grid_1.catchment(
+            x=x, y=y,
+            fdir=flow_dir_data,
+            dirmap=D8_FLOW_DIRECTIONS,
+            xytype="coordinate",
+        )
         catchment_view = grid_1.view(catch)
         catchment_cells = catchment_view * catchment_id
         subcatchment_raster += catchment_cells
 
-        # Calculate movement distance using the optimized function
-        displacement, movement_distance, _, end_point = calculate_movement_distance(start_point, spatial_index, lines)
+        displacement, movement_distance, _, end_point = (
+            calculate_movement_distance(start_point, spatial_index, lines)
+        )
 
-        # Convert catchment to GeoDataFrame
+        # Convert catchment view to a polygon geometry
         catchment_view = np.array(catchment_view, dtype=np.int16)
         shapes_generator = shapes(catchment_view, transform=transform)
-        all_geometries = [shape(geom) for geom, value in shapes_generator if value == 1]
-        combined_geometry = gpd.GeoSeries(all_geometries).unary_union if len(all_geometries) > 1 else all_geometries[0]
+        all_geometries = [
+            shape(geom)
+            for geom, value in shapes_generator
+            if value == 1
+        ]
+        combined_geometry = (
+            gpd.GeoSeries(all_geometries).unary_union
+            if len(all_geometries) > 1
+            else all_geometries[0]
+        )
         geometries.append(combined_geometry)
 
         records.append({
             new_hw_id_field: catchment_id,
-            'Area_m2': round(combined_geometry.area, 0),
-            'Area_ha': round(combined_geometry.area / 10000, 1),
-            'PP_Flow_acc': pp_flow_acc,
-            'PourPt_X': x,
-            'PourPt_Y': y,
-            'Dist': round(displacement, 1) if displacement else 0,
-            'Move_dist': round(movement_distance, 1) if movement_distance else 0,
-            'X_EndP': end_point.x if end_point else None,
-            'Y_EndP': end_point.y if end_point else None
+            "Area_m2": round(combined_geometry.area, 0),
+            "Area_ha": round(combined_geometry.area / 10000, 1),
+            "PP_Flow_acc": pp_flow_acc,
+            "PourPt_X": x,
+            "PourPt_Y": y,
+            "Dist": round(displacement, 1) if displacement else 0,
+            "Move_dist": (
+                round(movement_distance, 1) if movement_distance else 0
+            ),
+            "X_EndP": end_point.x if end_point else None,
+            "Y_EndP": end_point.y if end_point else None,
         })
-        idx +=1
+        idx += 1
 
-    logger.info('Headwaters extraction completed for catchment: %s',name)
-    # Save the data as a DataFrame in a CSV file
+    logger.info(
+        "Headwaters extraction completed for catchment: %s", name
+    )
+
+    # Save as a GeoDataFrame / shapefile
     gdf = gpd.GeoDataFrame(records, geometry=geometries, crs=crs)
-    shp_output_path = project.catchment_path(name,'Topography','Headwaters.shp')
-    logger.info('Writing headwaters data to shapefile: %s',shp_output_path)
-    gdf.to_file(shp_output_path, driver='ESRI Shapefile')
+    shp_output_path = project.catchment_path(
+        name, "Topography", "Headwaters.shp"
+    )
+    logger.info(
+        "Writing headwaters data to shapefile: %s", shp_output_path
+    )
+    gdf.to_file(shp_output_path, driver="ESRI Shapefile")
 
+    # Save the subcatchment raster
     subcatchment_raster[subcatchment_raster == 0] = -9999
     meta.update({
-        'driver': 'GTiff',
-        'height': subcatchment_raster.shape[0],
-        'width': subcatchment_raster.shape[1],
-        'transform': transform,
-        'crs': crs,
-        'nodata': -9999
+        "driver": "GTiff",
+        "height": subcatchment_raster.shape[0],
+        "width": subcatchment_raster.shape[1],
+        "transform": transform,
+        "crs": crs,
+        "nodata": -9999,
     })
-    # Specify the path where the clipped catchment raster file will be saved
-    output_raster_path = project.catchment_path(name,'Topography','Headwaters.tif')
-    with rio.open(output_raster_path, 'w', **meta) as dst:
+    output_raster_path = project.catchment_path(
+        name, "Topography", "Headwaters.tif"
+    )
+    with rio.open(output_raster_path, "w", **meta) as dst:
         dst.write(subcatchment_raster, 1)
-    hw_data = pd.DataFrame.from_records(records)
 
-    csv_path = project.catchment_path(name,'Topography','Headwaters.csv')
-    logger.info('Writing summary data to CSV file: %s',csv_path)
+    # Save the headwater summary CSV
+    hw_data = pd.DataFrame.from_records(records)
+    csv_path = project.catchment_path(
+        name, "Topography", "Headwaters.csv"
+    )
+    logger.info("Writing summary data to CSV file: %s", csv_path)
     hw_data.to_csv(csv_path, index=False)
 
     return hw_data
-
-
