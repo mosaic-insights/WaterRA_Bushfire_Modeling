@@ -1,12 +1,10 @@
 """
-mask_dnbr.py
+Mask a dNBR raster to retain only naturally-vegetated pixels.
 
-Mask an existing dNBR raster so it only retains values where DEA Land Cover
-is class 112: Natural Terrestrial Vegetation (NTV).
-
-Outputs (per catchment) saved into FireSeverity:
-- masked_dNBR.tif
-- DEA_LC_<year>_<level>_match_dNBR.tif   (projected/aligned to dNBR grid)
+Uses the DEA Land Cover mosaic (class 112: Natural Terrestrial
+Vegetation) to exclude non-vegetated areas from downstream erosion
+calculations.  Outputs per-catchment masked_dNBR.tif and an aligned
+DEA_LC_<year>.tif into each catchment's FireSeverity folder.
 """
 
 from __future__ import annotations
@@ -38,12 +36,15 @@ DEFAULT_DEA_LEVEL = "level3"
 DEA_FALLBACK_NODATA = 255
 
 
-# ======================================================================================
+# ---------------------------------------------------------------------------
 # Helpers
-# ======================================================================================
+# ---------------------------------------------------------------------------
 
-def _build_bbox_polygon_gdf(bounds: Tuple[float, float, float, float], crs) -> gpd.GeoDataFrame:
-    """Create a GeoDataFrame polygon from raster bounds."""
+def _build_bbox_polygon_gdf(
+    bounds: Tuple[float, float, float, float],
+    crs,
+) -> gpd.GeoDataFrame:
+    """Create a single-row GeoDataFrame polygon from raster bounds."""
     geom = box(bounds[0], bounds[1], bounds[2], bounds[3])
     return gpd.GeoDataFrame({"id": [1]}, geometry=[geom], crs=crs)
 
@@ -58,18 +59,18 @@ def _find_latest_dea_url(
     Find the URL of the latest available DEA Land Cover mosaic.
 
     Tries start_year first, then falls back year-by-year on HTTP 404.
-    Fails immediately with an informative error for connectivity problems
-    or unexpected HTTP status codes — those are not year-specific issues
-    and retrying other years would not help.
+    Fails immediately with an informative error for connectivity
+    problems or unexpected HTTP status codes — those are not
+    year-specific issues and retrying other years would not help.
 
     Parameters:
-    - dea_level: DEA Land Cover level string (e.g. 'level3')
-    - start_year: most recent year to try; defaults to current year - 1
-    - lookback: how many years back to try before giving up
-    - timeout: per-request connect/read timeout in seconds
+    - dea_level: DEA Land Cover level string (e.g. 'level3').
+    - start_year: most recent year to try; defaults to current year - 1.
+    - lookback: how many years back to try before giving up.
+    - timeout: per-request connect/read timeout in seconds.
 
     Returns:
-    - (year, url) tuple for the first available mosaic found
+    - (year, url) tuple for the first available mosaic found.
     """
     if start_year is None:
         start_year = datetime.now().year - 1
@@ -78,7 +79,8 @@ def _find_latest_dea_url(
 
     for y in range(start_year, start_year - lookback - 1, -1):
         remote_fname = (
-            f"ga_ls_landcover_class_cyear_3_mosaic_{y}--P1Y_{dea_level}.tif"
+            f"ga_ls_landcover_class_cyear_3_mosaic_{y}"
+            f"--P1Y_{dea_level}.tif"
         )
         url = f"{DEA_LANDCOVER}/{y}--P1Y/{remote_fname}"
         years_tried.append(y)
@@ -147,7 +149,8 @@ def _find_latest_dea_url(
     # reachable but no mosaic was found — the URL pattern may have changed.
     raise RuntimeError(
         f"DEA Land Cover mosaic not found for any year in "
-        f"{years_tried[0]}\u2013{years_tried[-1]} (all returned HTTP 404).\n"
+        f"{years_tried[0]}–{years_tried[-1]} "
+        f"(all returned HTTP 404).\n"
         f"The URL structure may have changed. Check the DEA catalogue:\n"
         f"  {DEA_LANDCOVER}"
     )
@@ -159,22 +162,34 @@ def _clip_raster_to_geom_in_memory(
     fallback_nodata: int = DEA_FALLBACK_NODATA,
 ) -> rxr.rioxarray.RasterArray:
     """
-    Clip raster_path to geom_gdf using rasterio.mask, but keep the result in memory
-    (no on-disk clipped GeoTIFF).
+    Clip a raster to a geometry and return the result as a DataArray.
 
-    Returns a rioxarray DataArray (squeezable later).
+    Uses rasterio.mask to crop the raster, builds an in-memory GeoTIFF
+    so that rioxarray gets the correct CRS and transform, then returns
+    the result without writing anything to disk.
+
+    Parameters:
+    - raster_path: path or GDAL-readable URL to the source raster.
+    - geom_gdf: GeoDataFrame whose geometry defines the clip extent.
+    - fallback_nodata: nodata value to use if the source has none.
+
+    Returns:
+    - rioxarray DataArray clipped to geom_gdf (squeeze separately if
+      needed to remove the band dimension).
     """
     with rio.open(raster_path) as src:
         # Reproject the clipping geometry to the raster CRS
         geom_in = geom_gdf.to_crs(src.crs)
 
-        geoms = [g for g in geom_in.geometry if g is not None and (not g.is_empty)]
+        geoms = [
+            g for g in geom_in.geometry
+            if g is not None and not g.is_empty
+        ]
         if not geoms:
             raise RuntimeError("No valid geometry to clip against.")
 
         nd = src.nodata if src.nodata is not None else fallback_nodata
 
-        # Clip/crop
         img, tr = rio_mask(
             src,
             geoms,
@@ -183,7 +198,8 @@ def _clip_raster_to_geom_in_memory(
             filled=True,
         )
 
-        # Build an in-memory GeoTIFF so rioxarray can open it cleanly with CRS/transform
+        # Build an in-memory GeoTIFF so rioxarray can open it with a
+        # valid CRS and transform (rioxarray needs an open rasterio src).
         meta = src.meta.copy()
         meta.update(
             {
@@ -204,9 +220,9 @@ def _clip_raster_to_geom_in_memory(
     return da
 
 
-# ======================================================================================
+# ---------------------------------------------------------------------------
 # Main
-# ======================================================================================
+# ---------------------------------------------------------------------------
 
 def mask_dnbr(
     project: FireImpactsProject,
@@ -218,19 +234,33 @@ def mask_dnbr(
     quiet: bool = False,
 ) -> None:
     """
-    Mask an existing dNBR raster so only pixels overlapping DEA class natural_code remain.
+    Mask dNBR so only pixels over DEA natural vegetation are retained.
 
-    Saves to each catchment FireSeverity folder:
-      - masked_dNBR.tif
-      - DEA_LC_<year>.tif   (projected/aligned to dNBR grid)
+    Fetches the latest available DEA Land Cover mosaic via HTTP range
+    requests (only the blocks covering the catchment are downloaded),
+    reprojects it to match the dNBR grid, then sets non-vegetation
+    pixels to NaN.
 
-    The DEA Land Cover mosaic is accessed remotely via HTTP range requests
-    (GDAL vsicurl), so only the blocks covering the catchment are downloaded.
+    Parameters:
+    - project: FireImpactsProject instance defining catchment paths.
+    - catchment: catchment name to process; if None, processes all
+      catchments in the project.
+    - dea_level: DEA Land Cover level string (default 'level3').
+    - dea_start_year: most recent year to try for the DEA mosaic;
+      defaults to current year minus 1.
+    - dea_lookback: number of years back to search before giving up.
+    - natural_code: DEA Land Cover class code for natural vegetation
+      (default 112 = Natural Terrestrial Vegetation).
+    - quiet: if True, suppress INFO-level log output.
+
+    Returns:
+    - None.  Writes masked_dNBR.tif and DEA_LC_<year>.tif into each
+      catchment's FireSeverity folder.
     """
     if quiet:
         logger.setLevel(logging.WARNING)
 
-    # If a catchment is not specified, run for each catchment.
+    # If no catchment is specified, run for each catchment in the project.
     if catchment is None:
         return project.for_each_catchment(
             lambda c: mask_dnbr(
@@ -253,14 +283,18 @@ def mask_dnbr(
     dnbr_path = os.path.join(sev_folder, "dNBR.tif")
     if not os.path.exists(dnbr_path):
         raise FileNotFoundError(
-            f"dNBR raster not found for catchment='{catchment}'. Expected: {dnbr_path}\n"
+            f"dNBR raster not found for catchment='{catchment}'. "
+            f"Expected: {dnbr_path}\n"
             "Run severity.calculate_fire_severity(...) first."
         )
 
     # Read dNBR
     dnbr = rxr.open_rasterio(dnbr_path, masked=True).squeeze()
     if dnbr.rio.crs is None:
-        raise RuntimeError(f"dNBR has no CRS. Please ensure {dnbr_path} has a valid CRS.")
+        raise RuntimeError(
+            f"dNBR has no CRS. "
+            f"Please ensure {dnbr_path} has a valid CRS."
+        )
 
     dnbr_crs = dnbr.rio.crs
     dnbr_bounds = dnbr.rio.bounds()
@@ -271,7 +305,8 @@ def mask_dnbr(
     logger.info("mask_dnbr(): dNBR bounds=%s", dnbr_bounds)
 
     # -------------------------------
-    # Find latest DEA URL and read only the relevant window via HTTP range requests
+    # Find latest DEA URL; only the blocks covering the catchment
+    # are downloaded via GDAL vsicurl HTTP range requests.
     # -------------------------------
     latest_year, dea_url = _find_latest_dea_url(
         dea_level=dea_level,
@@ -279,7 +314,7 @@ def mask_dnbr(
         lookback=dea_lookback,
     )
 
-    # Clip DEA to dNBR bbox (reads only needed blocks via GDAL vsicurl)
+    # Clip DEA to dNBR bbox
     dea_da = _clip_raster_to_geom_in_memory(
         raster_path=dea_url,
         geom_gdf=dnbr_bbox_gdf,
@@ -293,20 +328,20 @@ def mask_dnbr(
     except Exception:
         pass
 
-    # Reproject to match dNBR grid (nearest for categorical classes)
+    # Reproject to match dNBR grid (nearest-neighbour for categorical data)
     dea_match = dea_da.rio.reproject_match(
         dnbr,
         resampling=rio.warp.Resampling.nearest,
     )
 
-    # Save ONLY the projected/aligned DEA
+    # Save the projected/aligned DEA raster
     dea_match_path = os.path.join(sev_folder, f"DEA_LC_{latest_year}.tif")
     logger.info("[write] %s", dea_match_path)
     dea_match.rio.to_raster(dea_match_path, compress="deflate")
     logger.info("[OK] Aligned DEA saved: %s", dea_match_path)
 
     # -------------------------------
-    # Mask: keep only natural_code
+    # Mask: keep only natural_code pixels
     # -------------------------------
     nd = dea_match.rio.nodata
     keep = (dea_match == natural_code)
@@ -316,9 +351,11 @@ def mask_dnbr(
     # Set non-vegetation pixels to NaN so they are excluded from
     # downstream erosion calculations (e.g. water bodies inside the
     # catchment boundary).
-    dnbr_masked = xr.where(keep, dnbr, float('nan')).astype('float32')
+    dnbr_masked = (
+        xr.where(keep, dnbr, float("nan")).astype("float32")
+    )
     dnbr_masked = dnbr_masked.rio.write_crs(dnbr_crs)
-    dnbr_masked = dnbr_masked.rio.write_nodata(float('nan'))
+    dnbr_masked = dnbr_masked.rio.write_nodata(float("nan"))
 
     out_path = os.path.join(sev_folder, "masked_dNBR.tif")
     logger.info("[write] %s", out_path)
