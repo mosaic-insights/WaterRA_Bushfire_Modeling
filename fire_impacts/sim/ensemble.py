@@ -15,23 +15,26 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Grid extraction helpers
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def _extract_grid(result_dict, result_key, time=None):
-    """Extract a 2-D numpy array from a single replicate's result dict.
+    """
+    Extract a 2-D numpy array from a single replicate's result dict.
 
-    Handles both 2-D numpy arrays and 3-D xarray DataArrays.  For 3-D
-    arrays, *time* selects a slice:
+    Handles both 2-D numpy arrays and 3-D xarray DataArrays. For 3-D
+    arrays, time selects a slice: None uses the sole time step (raises
+    if there is more than one); an int is a positional index (isel);
+    any other value is a coordinate label (sel).
 
-    - ``None`` — use the sole time step (error if more than one).
-    - ``int`` — positional index (``isel``).
-    - other — coordinate label (``sel``).
+    Parameters:
+    - result_dict: Per-replicate result dict keyed by result name.
+    - result_key: Key of the gridded result to extract.
+    - time: Time slice selector for 3-D DataArray results. See above.
 
-    Returns
-    -------
-    numpy.ndarray (2-D)
+    Returns:
+    - 2-D numpy.ndarray extracted from the result dict.
     """
     data = result_dict[result_key]
     if data is None:
@@ -63,7 +66,7 @@ def _extract_grid(result_dict, result_key, time=None):
 
 
 def _resolve_catchment(sample_replicate, catchment):
-    """Pick the catchment name, defaulting when there's only one."""
+    """Pick the catchment name, defaulting when there is only one."""
     catchment_names = [
         k for k in sample_replicate
         if isinstance(sample_replicate[k], dict)
@@ -91,9 +94,9 @@ def _iter_replicates(ensemble_results):
         yield from ensemble_results
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Exceedance probability computation
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def exceedance_probability(
     ensemble_results,
@@ -102,44 +105,29 @@ def exceedance_probability(
     catchment=None,
     time=None,
 ):
-    """Compute per-pixel probability of exceeding a threshold across
-    ensemble members.
+    """
+    Compute per-pixel probability of exceeding a threshold across the
+    ensemble.
 
-    Parameters
-    ----------
-    ensemble_results : dict or list
-        Output of :func:`run_rusle_all_replicates` (dict keyed by
-        replicate index) or a plain list of per-replicate result dicts.
-        Each replicate is ``{catchment_name: {result_key: grid, ...}}``.
-    result_key : str
-        Key identifying the gridded result to analyse, e.g.
-        ``'RUSLE_sum_yearly'``.
-    threshold : float
-        Value to test exceedance against, in the same units as the
-        grid (e.g. tonnes/ha).
-    catchment : str or None
-        Catchment name.  If *None* and only one catchment exists in
-        the results, it is used automatically.
-    time : int, timestamp, or None
-        For 3-D xarray results (e.g. yearly grids), selects which time
-        slice to analyse.  Pass an ``int`` for positional indexing or a
-        coordinate label (e.g. a ``pd.Timestamp``).  *None* works when
-        the result has exactly one time step.
+    Parameters:
+    - ensemble_results: Output of run_rusle_all_replicates() (dict keyed
+      by replicate index) or a plain list of per-replicate result dicts.
+      Each replicate has the form {catchment_name: {result_key: grid}}.
+    - result_key: Key identifying the gridded result to analyse, e.g.
+      'RUSLE_sum_yearly'.
+    - threshold: Value to test exceedance against, in the same units as
+      the grid (e.g. tonnes/ha).
+    - catchment: Catchment name. If None and only one catchment exists
+      in the results, it is selected automatically.
+    - time: For 3-D xarray results (e.g. yearly grids), selects which
+      time slice to analyse. Pass an int for positional indexing or a
+      coordinate label (e.g. a pd.Timestamp). None works when there is
+      exactly one time step.
 
-    Returns
-    -------
-    xarray.DataArray
-        2-D grid of exceedance probabilities (0–1) with dims
-        ``(y, x)``.
-
-    Examples
-    --------
-    Probability that year-1 erosion exceeds 0.25 t/ha::
-
-        prob = exceedance_probability(
-            results, 'RUSLE_sum_yearly', 0.25, time=0
-        )
-        plot_exceedance(prob, project=proj, catchment='Thomson')
+    Returns:
+    - xarray.DataArray of exceedance probabilities (0–1) with dims
+      (y, x) and attrs recording result_key, threshold, n_replicates,
+      and a description string.
     """
     replicates = list(_iter_replicates(ensemble_results))
     if not replicates:
@@ -147,7 +135,7 @@ def exceedance_probability(
 
     catchment = _resolve_catchment(replicates[0], catchment)
 
-    # Stack grids from all replicates
+    # Stack grids from all replicates into one array
     grids = []
     for rep in replicates:
         grid = _extract_grid(rep[catchment], result_key, time=time)
@@ -162,14 +150,20 @@ def exceedance_probability(
     )
 
     # Count exceedances, treating NaN pixels as never exceeding
-    exceed_count = np.nansum(stacked > threshold, axis=0).astype(np.float32)
+    exceed_count = np.nansum(
+        stacked > threshold, axis=0
+    ).astype(np.float32)
 
     # Count valid (non-NaN) replicates per pixel
-    valid_count = np.sum(~np.isnan(stacked), axis=0).astype(np.float32)
+    valid_count = np.sum(
+        ~np.isnan(stacked), axis=0
+    ).astype(np.float32)
 
     # Probability = exceedances / valid replicates
     with np.errstate(invalid='ignore'):
-        prob = np.where(valid_count > 0, exceed_count / valid_count, np.nan)
+        prob = np.where(
+            valid_count > 0, exceed_count / valid_count, np.nan
+        )
 
     return xr.DataArray(
         prob.astype(np.float32),
@@ -190,26 +184,20 @@ def ensemble_statistic(
     catchment=None,
     time=None,
 ):
-    """Compute a per-pixel summary statistic across ensemble members.
+    """
+    Compute a per-pixel summary statistic across ensemble members.
 
-    Parameters
-    ----------
-    ensemble_results : dict or list
-        Same format as :func:`exceedance_probability`.
-    result_key : str
-        Key identifying the gridded result.
-    statistic : str
-        One of ``'mean'``, ``'median'``, ``'std'``, ``'min'``,
-        ``'max'``, or ``'cv'`` (coefficient of variation).
-    catchment : str or None
-        Catchment name.
-    time : int, timestamp, or None
-        Time selector for 3-D results.
+    Parameters:
+    - ensemble_results: Same format as exceedance_probability().
+    - result_key: Key identifying the gridded result.
+    - statistic: Summary function to apply. One of 'mean', 'median',
+      'std', 'min', 'max', or 'cv' (coefficient of variation).
+    - catchment: Catchment name. If None and only one catchment exists,
+      it is selected automatically.
+    - time: Time slice selector for 3-D xarray results.
 
-    Returns
-    -------
-    xarray.DataArray
-        2-D grid with the requested statistic.
+    Returns:
+    - xarray.DataArray of the requested statistic with dims (y, x).
     """
     replicates = list(_iter_replicates(ensemble_results))
     catchment = _resolve_catchment(replicates[0], catchment)
@@ -247,9 +235,9 @@ def ensemble_statistic(
     )
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Plotting
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def _dem_meta(project, catchment):
     """Read the catchment DEM metadata (transform + CRS)."""
@@ -298,49 +286,36 @@ def plot_grid(
     boundary_linewidth=1.0,
     figsize=(8, 6),
 ):
-    """Plot a 2-D grid as a georeferenced map with colorbar and optional
+    """
+    Plot a 2-D grid as a georeferenced map with colorbar and optional
     catchment boundary overlay.
 
-    This is the general-purpose plotting function used by the
-    convenience wrappers :func:`plot_exceedance` and
-    :func:`plot_ensemble_grid`.
+    This is the general-purpose plotting function used by the convenience
+    wrappers plot_exceedance() and plot_ensemble_grid().
 
-    Parameters
-    ----------
-    grid : xarray.DataArray or numpy.ndarray
-        2-D grid to plot.
-    project : FireImpactsProject or None
-        If provided (along with *catchment*), overlays the catchment
-        boundary and infers the transform from the DEM.
-    catchment : str or None
-        Catchment name for boundary overlay and transform lookup.
-    transform : affine.Affine or None
-        Georeferencing transform.  If *None*, inferred from the
-        project DEM when *project* and *catchment* are given.
-    ax : matplotlib.axes.Axes or None
-        Axes to plot on.  If *None*, a new figure is created.
-    title : str or None
-        Plot title.
-    cmap : str
-        Matplotlib colormap name.
-    vmin, vmax : float or None
-        Colorbar range.
-    cbar_label : str
-        Label for the colorbar.
-    cbar_ticks : list or None
-        Explicit colorbar tick positions.
-    cbar_ticklabels : list or None
-        Labels corresponding to *cbar_ticks*.
-    boundary_color : str
-        Color for the catchment boundary line.
-    boundary_linewidth : float
-        Line width for the catchment boundary.
-    figsize : tuple
-        Figure size when creating a new figure.
+    Parameters:
+    - grid: 2-D xarray.DataArray or numpy.ndarray to plot.
+    - project: FireImpactsProject instance. When provided alongside
+      catchment, overlays the boundary and infers the transform from
+      the DEM.
+    - catchment: Catchment name for boundary overlay and transform
+      lookup.
+    - transform: Affine georeferencing transform. If None, inferred
+      from the project DEM when project and catchment are given.
+    - ax: Matplotlib Axes to plot on. If None, a new figure is created.
+    - title: Plot title string.
+    - cmap: Matplotlib colormap name. Default 'plasma'.
+    - vmin: Lower bound of the colorbar range.
+    - vmax: Upper bound of the colorbar range.
+    - cbar_label: Label for the colorbar.
+    - cbar_ticks: Explicit colorbar tick positions (list).
+    - cbar_ticklabels: Labels corresponding to cbar_ticks (list).
+    - boundary_color: Colour string for the catchment boundary line.
+    - boundary_linewidth: Line width for the catchment boundary.
+    - figsize: Figure size tuple when creating a new figure.
 
-    Returns
-    -------
-    matplotlib.axes.Axes
+    Returns:
+    - matplotlib.axes.Axes with the rendered map.
     """
     import matplotlib.pyplot as plt
     import matplotlib.ticker as mticker
@@ -359,7 +334,9 @@ def plot_grid(
     extent = _extent_from_transform(transform, data.shape)
 
     if ax is None:
-        fig, ax = plt.subplots(1, 1, figsize=figsize, constrained_layout=True)
+        fig, ax = plt.subplots(
+            1, 1, figsize=figsize, constrained_layout=True
+        )
     else:
         fig = ax.figure
 
@@ -426,27 +403,22 @@ def plot_grid(
 
 
 def plot_exceedance(prob_grid, title=None, cmap='RdYlGn_r', **kwargs):
-    """Plot an exceedance probability grid as a map.
+    """
+    Plot an exceedance probability grid as a georeferenced map.
 
-    Thin wrapper around :func:`plot_grid` with probability-appropriate
+    Thin wrapper around plot_grid() with probability-appropriate
     defaults (0–1 range, percentage colorbar labels).
 
-    Parameters
-    ----------
-    prob_grid : xarray.DataArray or numpy.ndarray
-        2-D grid of probabilities (0–1), as returned by
-        :func:`exceedance_probability`.
-    title : str or None
-        Plot title.  If *None*, auto-generated from ``prob_grid.attrs``.
-    cmap : str
-        Colormap.  Default ``'RdYlGn_r'`` (red = high probability).
-    **kwargs :
-        Passed to :func:`plot_grid` (``project``, ``catchment``,
-        ``transform``, ``ax``, ``figsize``, ``boundary_color``, etc.).
+    Parameters:
+    - prob_grid: 2-D grid of probabilities (0–1), as returned by
+      exceedance_probability().
+    - title: Plot title. If None, auto-generated from prob_grid.attrs.
+    - cmap: Colormap. Default 'RdYlGn_r' (red = high probability).
+    - **kwargs: Passed to plot_grid() (project, catchment, transform,
+      ax, figsize, boundary_color, etc.).
 
-    Returns
-    -------
-    matplotlib.axes.Axes
+    Returns:
+    - matplotlib.axes.Axes with the rendered map.
     """
     attrs = prob_grid.attrs if isinstance(prob_grid, xr.DataArray) else {}
 
@@ -468,28 +440,25 @@ def plot_exceedance(prob_grid, title=None, cmap='RdYlGn_r', **kwargs):
     )
 
 
-def plot_ensemble_grid(grid, units='', title=None, cmap='plasma', **kwargs):
-    """Plot an ensemble summary grid (mean, median, std, etc.).
+def plot_ensemble_grid(
+    grid, units='', title=None, cmap='plasma', **kwargs
+):
+    """
+    Plot an ensemble summary grid (mean, median, std, etc.) as a map.
 
-    Thin wrapper around :func:`plot_grid` with auto-generated title
-    from xarray attrs.
+    Thin wrapper around plot_grid() with auto-generated title from
+    xarray attrs.
 
-    Parameters
-    ----------
-    grid : xarray.DataArray or numpy.ndarray
-        2-D grid to plot, e.g. from :func:`ensemble_statistic`.
-    units : str
-        Colorbar label (e.g. ``'t/ha'``).
-    title : str or None
-        If *None*, auto-generated from ``grid.attrs``.
-    cmap : str
-        Colormap.  Default ``'plasma'``.
-    **kwargs :
-        Passed to :func:`plot_grid`.
+    Parameters:
+    - grid: 2-D xarray.DataArray or numpy.ndarray to plot, e.g. from
+      ensemble_statistic().
+    - units: Colorbar label, e.g. 't/ha'.
+    - title: Plot title. If None, auto-generated from grid.attrs.
+    - cmap: Colormap. Default 'plasma'.
+    - **kwargs: Passed to plot_grid().
 
-    Returns
-    -------
-    matplotlib.axes.Axes
+    Returns:
+    - matplotlib.axes.Axes with the rendered map.
     """
     attrs = grid.attrs if isinstance(grid, xr.DataArray) else {}
 
@@ -508,11 +477,14 @@ def plot_ensemble_grid(grid, units='', title=None, cmap='plasma', **kwargs):
     )
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Higher-level ensemble views
-# ===================================================================
+# ---------------------------------------------------------------------------
 
-def _stack_ensemble_grids(ensemble_results, result_key, catchment=None, time=None):
+def _stack_ensemble_grids(
+    ensemble_results, result_key, catchment=None, time=None,
+):
+    """Stack all replicate grids for result_key into a single array."""
     replicates = list(_iter_replicates(ensemble_results))
     if not replicates:
         raise ValueError("No replicates in ensemble_results.")
@@ -537,35 +509,30 @@ def plot_ensemble_statistics_panel(
     suptitle=None,
     figsize=(16, 5.5),
 ):
-    """Render a three-panel map of ensemble statistics (median, 90th
-    percentile, IQR) for a gridded result key.
+    """
+    Render a three-panel map showing median, 90th-percentile, and IQR
+    for a gridded result key across the ensemble.
 
-    Parameters
-    ----------
-    ensemble_results : dict or list
-        Output of :func:`run_rusle_all_replicates`.
-    result_key : str
-        Gridded result key (e.g. ``'RUSLE_sum_yearly'``).
-    catchment : str or None
-    time : int, timestamp, or None
-        Time slice for 3-D xarray results.
-    project : FireImpactsProject or None
-        When provided, adds georeferenced axes and boundary overlays.
-    cell_area_ha : float or None
-        If provided, grid values are divided by this area to convert
-        per-cell totals into an area-normalised rate (e.g. t/cell → t/ha).
-    units : str
-        Colorbar label (units after any *cell_area_ha* conversion).
-    cmap : str
-    vmax_percentile : float
-        Upper clip (percentile across replicates and pixels) for shared
-        colour scale — prevents single extreme cells from dominating.
-    suptitle : str or None
-    figsize : tuple
+    Parameters:
+    - ensemble_results: Output of run_rusle_all_replicates().
+    - result_key: Gridded result key, e.g. 'RUSLE_sum_yearly'.
+    - catchment: Catchment name. If None and only one exists, it is
+      selected automatically.
+    - time: Time slice selector for 3-D xarray results.
+    - project: FireImpactsProject instance. When provided, adds
+      georeferenced axes and boundary overlays.
+    - cell_area_ha: If provided, grid values are divided by this area
+      to convert per-cell totals to an area-normalised rate (t/ha).
+    - units: Colorbar label (after any cell_area_ha conversion).
+    - cmap: Matplotlib colormap name. Default 'YlOrRd'.
+    - vmax_percentile: Upper clip (percentile across all replicates and
+      pixels) for the shared colour scale. Prevents single extreme
+      cells from dominating. Default 99.
+    - suptitle: Figure super-title. Auto-generated if None.
+    - figsize: Figure size tuple.
 
-    Returns
-    -------
-    matplotlib.figure.Figure
+    Returns:
+    - matplotlib.figure.Figure with three subplots.
     """
     import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
@@ -589,9 +556,13 @@ def plot_ensemble_statistics_panel(
     norm = mcolors.Normalize(vmin=0, vmax=vmax)
     n = stacked.shape[0]
 
-    fig, axes = plt.subplots(1, 3, figsize=figsize, constrained_layout=True)
+    fig, axes = plt.subplots(
+        1, 3, figsize=figsize, constrained_layout=True
+    )
     if suptitle is None:
-        suptitle = f'{result_key} — ensemble statistics (n={n} replicates)'
+        suptitle = (
+            f'{result_key} — ensemble statistics (n={n} replicates)'
+        )
     fig.suptitle(suptitle, fontsize=13)
 
     panels = [
@@ -620,12 +591,19 @@ def catchment_total_per_replicate(
     catchment=None,
     time=None,
 ):
-    """Sum a gridded result over the catchment for every replicate.
+    """
+    Sum a gridded result over the catchment for every replicate.
 
-    Returns
-    -------
-    numpy.ndarray (1-D, length = n_replicates)
-        Spatial total for each replicate, NaN-aware.
+    Parameters:
+    - ensemble_results: Same format as exceedance_probability().
+    - result_key: Key identifying the gridded result to sum.
+    - catchment: Catchment name. If None and only one exists, it is
+      selected automatically.
+    - time: Time slice selector for 3-D xarray results.
+
+    Returns:
+    - 1-D numpy.ndarray of length n_replicates containing the NaN-aware
+      spatial total for each replicate.
     """
     stacked, _ = _stack_ensemble_grids(
         ensemble_results, result_key, catchment=catchment, time=time,
@@ -647,28 +625,26 @@ def plot_catchment_exceedance_curve(
     color='steelblue',
     figsize=(7, 5),
 ):
-    """Flood-frequency-style exceedance curve for a catchment-total
-    result across replicates.
+    """
+    Plot a flood-frequency-style exceedance curve for catchment totals
+    across all replicates.
 
-    Parameters
-    ----------
-    ensemble_results : dict or list
-    result_key : str
-    catchment : str or None
-    time : int, timestamp, or None
-    scale : float
-        Multiplier applied to the catchment totals before plotting
-        (e.g. ``1e-3`` to show kilotonnes).
-    value_units : str
-        Units label for the y-axis (after *scale*).
-    ax : matplotlib.axes.Axes or None
-    title : str or None
-    color : str
-    figsize : tuple
+    Parameters:
+    - ensemble_results: Same format as exceedance_probability().
+    - result_key: Key identifying the gridded result to sum.
+    - catchment: Catchment name. If None and only one exists, it is
+      selected automatically.
+    - time: Time slice selector for 3-D xarray results.
+    - scale: Multiplier applied to catchment totals before plotting,
+      e.g. 1e-3 to display kilotonnes.
+    - value_units: Units label for the y-axis after scale is applied.
+    - ax: Matplotlib Axes to plot on. If None, a new figure is created.
+    - title: Plot title. Auto-generated if None.
+    - color: Line and point colour string.
+    - figsize: Figure size tuple when creating a new figure.
 
-    Returns
-    -------
-    matplotlib.axes.Axes
+    Returns:
+    - matplotlib.axes.Axes with the rendered exceedance curve.
     """
     import matplotlib.pyplot as plt
 
@@ -685,7 +661,11 @@ def plot_catchment_exceedance_curve(
         _, ax = plt.subplots(figsize=figsize, constrained_layout=True)
     ax.plot(aep * 100, sorted_totals, 'o-', color=color, lw=2, ms=7)
     ax.set_xlabel('Annual exceedance probability (%)')
-    ax.set_ylabel(f'Catchment total ({value_units})' if value_units else 'Catchment total')
+    label = (
+        f'Catchment total ({value_units})' if value_units
+        else 'Catchment total'
+    )
+    ax.set_ylabel(label)
     if title is None:
         title = f'Exceedance curve — {result_key} (n={n})'
     ax.set_title(title)
@@ -704,28 +684,27 @@ def plot_ensemble_daily_ribbon(
     color='steelblue',
     figsize=(14, 5),
 ):
-    """Spread plot of a spatially-summed daily timeseries across
-    replicates — median line with IQR and P10–P90 ribbons.
+    """
+    Plot a spread of daily timeseries across replicates as a ribbon
+    chart with a median line and IQR/P10-P90 fill bands.
 
-    Parameters
-    ----------
-    ensemble_results : dict or list
-    catchment : str or None
-    timeseries_key : str
-        Key under each catchment's results holding a timeseries
-        DataFrame (rows = time, columns = subcatchments).
-    resample : str
-        Pandas resample rule applied to the spatial sum.  Default ``'D'``.
-    ax : matplotlib.axes.Axes or None
-    title : str or None
-    ylabel : str
-    color : str
-    figsize : tuple
+    Parameters:
+    - ensemble_results: Same format as exceedance_probability().
+    - catchment: Catchment name. If None and only one exists, it is
+      selected automatically.
+    - timeseries_key: Key in each catchment result dict holding a
+      timeseries DataFrame (rows = time, columns = subcatchments).
+    - resample: Pandas resample rule applied to the spatial sum before
+      plotting. Default 'D' (daily).
+    - ax: Matplotlib Axes to plot on. If None, a new figure is created.
+    - title: Plot title. Auto-generated if None.
+    - ylabel: Y-axis label string.
+    - color: Base colour for ribbons and individual replicate lines.
+    - figsize: Figure size tuple when creating a new figure.
 
-    Returns
-    -------
-    matplotlib.axes.Axes or None
-        ``None`` if no replicate exposes *timeseries_key*.
+    Returns:
+    - matplotlib.axes.Axes, or None if no replicate exposes
+      timeseries_key.
     """
     import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
@@ -747,7 +726,8 @@ def plot_ensemble_daily_ribbon(
 
     if not daily_totals:
         logger.warning(
-            "No replicate exposes timeseries key '%s' — skipping ribbon plot.",
+            "No replicate exposes timeseries key '%s' "
+            "— skipping ribbon plot.",
             timeseries_key,
         )
         return None
@@ -765,9 +745,17 @@ def plot_ensemble_daily_ribbon(
         fig = ax.figure
 
     for col in daily_df.columns:
-        ax.plot(daily_df.index, daily_df[col], color=color, alpha=0.15, lw=0.8)
-    ax.fill_between(p10.index, p10, p90, alpha=0.20, color=color, label='P10–P90')
-    ax.fill_between(p25.index, p25, p75, alpha=0.35, color=color, label='IQR (P25–P75)')
+        ax.plot(
+            daily_df.index, daily_df[col],
+            color=color, alpha=0.15, lw=0.8,
+        )
+    ax.fill_between(
+        p10.index, p10, p90, alpha=0.20, color=color, label='P10–P90'
+    )
+    ax.fill_between(
+        p25.index, p25, p75, alpha=0.35, color=color,
+        label='IQR (P25–P75)',
+    )
     ax.plot(p50.index, p50, color='darkblue', lw=2, label='Median')
 
     ax.set_ylabel(ylabel)
@@ -784,10 +772,21 @@ def plot_ensemble_daily_ribbon(
 
 
 def _subcatchment_label_map(project, catchment, label_field):
-    """Return a ``{sc_ID: label}`` dict for *catchment*, or ``None`` if
-    unavailable.  Silently returns ``None`` when no subcatchment layer
-    is registered, when *label_field* is falsy, or when the field is
-    absent — callers fall back to the raw ``sc_ID`` columns."""
+    """
+    Build a {sc_ID: label} dict for a catchment, or None if unavailable.
+
+    Returns None when no subcatchment layer is registered, when
+    label_field is falsy, or when the field is absent from the
+    subcatchment table. Callers fall back to raw sc_ID columns.
+
+    Parameters:
+    - project: FireImpactsProject instance, or None.
+    - catchment: Name of the catchment to look up.
+    - label_field: Column name in the subcatchment GeoDataFrame.
+
+    Returns:
+    - Dict mapping sc_ID values to label strings, or None.
+    """
     if project is None or not label_field:
         return None
     try:
@@ -801,10 +800,11 @@ def _subcatchment_label_map(project, catchment, label_field):
 
 
 def _apply_label_map(df, label_map):
+    """Rename DataFrame columns using label_map; keep only mapped ones."""
     if label_map is None:
         return df
     renamed = df.rename(columns=label_map)
-    # drop columns whose label we don't have a mapping for — keeps the
+    # Drop columns whose label we don't have a mapping for — keeps the
     # output clean when the subcatchment shapefile is a subset of the
     # RUSLE/debris zones.
     keep = [c for c in renamed.columns if c in set(label_map.values())]
@@ -826,67 +826,45 @@ def combine_rusle_and_debris_subcatchment(
     rusle_timeseries_key='erosion_daily_time_series',
     rusle_scale=1000.0,
 ):
-    """Combine RUSLE and debris-flow subcatchment timeseries across the
-    ensemble, aggregated to the requested temporal resolution and
-    labelled by a string subcatchment attribute.
+    """
+    Combine RUSLE and debris-flow subcatchment timeseries across the
+    ensemble, aggregated to the requested temporal resolution.
 
-    Parameters
-    ----------
-    rusle_results : dict
-        ``{replicate: {catchment: {<timeseries_key>: DataFrame, ...}}}``
-        as produced by :func:`run_rusle_all_replicates`.  Column keys
-        in the RUSLE timeseries are numeric subcatchment indices
-        (``sc_ID``).
-    debris_subcatchment_ts : dict
-        ``{replicate: DataFrame}`` — per-replicate subcatchment debris
-        timeseries (kg), e.g. from ``postprocess_debris_flow``'s
-        ``'resampled'`` entry for the chosen catchment.  Column keys
-        are also numeric ``sc_ID`` values.
-    project : FireImpactsProject or None
-        Required when *subcatchment_label_field* is used — the project
-        is queried for the subcatchment attribute table so columns can
-        be relabelled from ``sc_ID`` to the chosen string attribute.
-    catchment : str or None
-        Which catchment to pull from *rusle_results*.
-    freq : str or None
-        Pandas resample rule for the combined output:
+    Parameters:
+    - rusle_results: Dict of the form {replicate: {catchment: {key:
+      DataFrame, ...}}} as produced by run_rusle_all_replicates().
+      Column keys in the RUSLE timeseries are numeric subcatchment
+      indices (sc_ID).
+    - debris_subcatchment_ts: Dict of the form {replicate: DataFrame}
+      — per-replicate subcatchment debris timeseries in kg. Column keys
+      are also numeric sc_ID values.
+    - project: FireImpactsProject instance. Required when
+      subcatchment_label_field is used — the project is queried for the
+      subcatchment attribute table to relabel columns from sc_ID to the
+      chosen string attribute.
+    - catchment: Which catchment to pull from rusle_results.
+    - freq: Pandas resample rule for the combined output. Options:
+      'h'/'H' (hourly), 'D' (daily), 'MS' (monthly), 'YS' (annual,
+      default), None/'total' (single row summing the full simulation).
+      Note that RUSLE timeseries are recorded at whatever timestep was
+      requested via default_rusle_recorders (daily by default), so
+      requesting 'h' without first re-running RUSLE with
+      timeseries_timestep='1h' simply up-samples the daily series.
+    - subcatchment_label_field: Column in
+      project.get_subcatchments(catchment) to use as output column
+      labels. When omitted, the project's configured label field is
+      used. Pass None explicitly to keep raw sc_ID integer columns.
+    - rusle_timeseries_key: Key in each replicate's RUSLE result dict
+      holding the subcatchment timeseries DataFrame.
+    - rusle_scale: Multiplier applied to the RUSLE timeseries to match
+      the debris units. Default 1000.0 (tonnes → kilograms).
 
-        - ``'h'`` / ``'H'`` — hourly
-        - ``'D'`` — daily
-        - ``'MS'`` — monthly (month-start)
-        - ``'YS'`` — annual (year-start, default)
-        - ``None`` or ``'total'`` — single row summing the entire
-          simulation.
-
-        Note that RUSLE timeseries are recorded at whatever timestep
-        was requested via ``default_rusle_recorders`` (daily by
-        default), so requesting ``'h'`` without first re-running RUSLE
-        with ``timeseries_timestep='1h'`` simply up-samples the daily
-        RUSLE series via forward-fill divided by 24.  In practice,
-        request the native RUSLE resolution up-front when you need
-        hourly output.
-    subcatchment_label_field : str or None
-        Column in ``project.get_subcatchments(catchment)`` to use as
-        output column labels.  When omitted, the project's configured
-        label field is used — set via ``add_subcatchments(...,
-        label_field=...)`` or
-        :meth:`FireImpactsProject.set_subcatchment_label_field` and
-        persisted per catchment in ``settings.json``.  Pass *None*
-        explicitly to keep the raw ``sc_ID`` integer columns.
-    rusle_timeseries_key : str
-    rusle_scale : float
-        Multiplier applied to the RUSLE timeseries to bring it into the
-        same units as the debris timeseries.  Default ``1000.0``
-        (tonnes → kilograms).
-
-    Returns
-    -------
-    dict
-        ``{replicate: DataFrame}``.  Each DataFrame has time on the
-        index (one row per period; a single row labelled ``'total'``
-        when ``freq`` is ``None``/``'total'``) and subcatchment labels
-        as columns.  Values are in kilograms.  Only subcatchments
-        present in both inputs are included.
+    Returns:
+    - Dict of the form {replicate: DataFrame}. Each DataFrame has time
+      on the index (one row per period, or a single row labelled
+      'total' when freq is None) and subcatchment labels as columns.
+      Values are in kilograms. Only subcatchments present in both
+      inputs are included.
     """
     if not rusle_results:
         raise ValueError('rusle_results is empty.')
@@ -923,13 +901,12 @@ def combine_rusle_and_debris_subcatchment(
     return combined
 
 
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Per-modality helpers used by combine_rusle_and_debris_subcatchment
-# -------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def _resolve_label_map(project, catchment, subcatchment_label_field):
-    """Resolve the label field sentinel and build the ``sc_ID → label``
-    map used to rename subcatchment columns."""
+    """Resolve the label field sentinel and return a sc_ID → label map."""
     if subcatchment_label_field is _SENTINEL:
         subcatchment_label_field = (
             project.subcatchment_label_field(catchment)
@@ -941,12 +918,23 @@ def _resolve_label_map(project, catchment, subcatchment_label_field):
 
 
 def _make_resampler(freq):
-    """Return a function that resamples a wide timeseries to *freq*.
-
-    ``freq=None`` or ``'total'`` collapses the whole series to a single
-    row indexed ``'total'``.
     """
-    is_total = freq is None or (isinstance(freq, str) and freq.lower() == 'total')
+    Return a function that resamples a wide timeseries to freq.
+
+    When freq is None or 'total', the function collapses the whole
+    series to a single row indexed 'total'.
+
+    Parameters:
+    - freq: Pandas resample rule string, or None/'total'.
+
+    Returns:
+    - A callable that accepts a DataFrame and returns the resampled
+      result.
+    """
+    is_total = (
+        freq is None
+        or (isinstance(freq, str) and freq.lower() == 'total')
+    )
 
     def _resample(df):
         if is_total:
@@ -968,27 +956,32 @@ def rusle_subcatchment_ensemble(
     rusle_timeseries_key='erosion_daily_time_series',
     scale=1000.0,
 ):
-    """Extract per-replicate RUSLE subcatchment timeseries in the form
-    ``{replicate: DataFrame}``, aggregated to *freq* and labelled by the
-    configured subcatchment label field.
+    """
+    Extract per-replicate RUSLE subcatchment timeseries aggregated to
+    freq and labelled by the configured subcatchment label field.
 
-    This produces the same shape as
-    :func:`combine_rusle_and_debris_subcatchment` so the same plotting
-    and reduction helpers (e.g. :func:`reduce_ensemble_subcatchments`,
-    :func:`plot_subcatchment_ensemble`) can map RUSLE outputs alone.
+    Produces the same {replicate: DataFrame} shape as
+    combine_rusle_and_debris_subcatchment(), so the same plotting and
+    reduction helpers can be applied to RUSLE outputs alone.
 
-    Parameters
-    ----------
-    rusle_results : dict
-        ``{replicate: {catchment: {<timeseries_key>: DataFrame, ...}}}``
-        from :func:`run_rusle_all_replicates`.
-    scale : float
-        Multiplier applied to each replicate's timeseries.  Default
-        ``1000.0`` (tonnes → kilograms) to match the combined output.
-        Pass ``1.0`` to keep tonnes.
+    Parameters:
+    - rusle_results: Dict of the form {replicate: {catchment: {key:
+      DataFrame, ...}}} from run_rusle_all_replicates().
+    - project: FireImpactsProject instance (required for label lookup).
+    - catchment: Catchment name. If None and only one exists, it is
+      selected automatically.
+    - freq: Pandas resample rule. See combine_rusle_and_debris_
+      subcatchment() for supported values.
+    - subcatchment_label_field: Column to use as output column labels.
+      See combine_rusle_and_debris_subcatchment() for detail.
+    - rusle_timeseries_key: Key in each replicate's RUSLE result dict
+      holding the subcatchment timeseries DataFrame.
+    - scale: Multiplier applied to each replicate's timeseries. Default
+      1000.0 (tonnes → kilograms) to match the combined output.
 
-    Other parameters are as for
-    :func:`combine_rusle_and_debris_subcatchment`.
+    Returns:
+    - Dict of the form {replicate: DataFrame} at the requested
+      temporal resolution and subcatchment labelling.
     """
     if not rusle_results:
         raise ValueError('rusle_results is empty.')
@@ -1019,18 +1012,25 @@ def debris_subcatchment_ensemble(
     freq='YS',
     subcatchment_label_field=_SENTINEL,
 ):
-    """Resample and relabel per-replicate debris-flow subcatchment
-    timeseries into the common ``{replicate: DataFrame}`` form.
+    """
+    Resample and relabel per-replicate debris-flow subcatchment
+    timeseries into the common {replicate: DataFrame} form.
 
-    Parameters
-    ----------
-    debris_subcatchment_ts : dict
-        ``{replicate: DataFrame}`` — native-resolution per-subcatchment
-        debris-flow timeseries (kg), e.g. the ``'aggregated'`` entry
-        from :func:`postprocess_debris_flow` for the chosen catchment.
+    Parameters:
+    - debris_subcatchment_ts: Dict of the form {replicate: DataFrame}
+      — native-resolution per-subcatchment debris timeseries in kg,
+      e.g. the 'aggregated' entry from postprocess_debris_flow() for
+      the chosen catchment.
+    - project: FireImpactsProject instance (required for label lookup).
+    - catchment: Catchment name (used for label field lookup only).
+    - freq: Pandas resample rule. See combine_rusle_and_debris_
+      subcatchment() for supported values.
+    - subcatchment_label_field: Column to use as output column labels.
+      See combine_rusle_and_debris_subcatchment() for detail.
 
-    Other parameters are as for
-    :func:`combine_rusle_and_debris_subcatchment`.
+    Returns:
+    - Dict of the form {replicate: DataFrame} at the requested
+      temporal resolution and subcatchment labelling.
     """
     if not debris_subcatchment_ts:
         raise ValueError('debris_subcatchment_ts is empty.')
@@ -1045,9 +1045,9 @@ def debris_subcatchment_ensemble(
     return out
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Subcatchment choropleth helpers
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 _AREA_UNIT_FACTORS = {
     # Multiplier converting an area in m² to the named unit.
@@ -1070,9 +1070,18 @@ _AREA_UNIT_LABEL = {
 
 
 def _subcatchment_areas(project, catchment, kind):
-    """Series of subcatchment areas keyed by the registered label (or
-    sc_ID when no label field is configured).  *kind* is one of
-    ``'area_m2'``, ``'area_ha'``, ``'area_km2'``."""
+    """
+    Return a Series of subcatchment areas keyed by label (or sc_ID).
+
+    Parameters:
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment.
+    - kind: Area unit key: 'area_m2', 'area_ha', or 'area_km2'.
+
+    Returns:
+    - pandas.Series of subcatchment areas in the requested unit,
+      indexed by label or sc_ID.
+    """
     if kind not in _AREA_UNIT_FACTORS:
         raise ValueError(
             f"Unknown area unit '{kind}'. "
@@ -1096,8 +1105,18 @@ def _subcatchment_areas(project, catchment, kind):
 
 
 def _resolve_normaliser(normalise_by, project, catchment):
-    """Return ``(denominator_series, suffix, unit_label)`` for the chosen
-    normalisation, or ``(None, '', '')`` when *normalise_by* is None."""
+    """
+    Return (denominator_series, suffix, unit_label) for the chosen
+    normalisation, or (None, '', '') when normalise_by is None.
+
+    Parameters:
+    - normalise_by: None, an area-unit key string, or a callable.
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment.
+
+    Returns:
+    - Tuple of (denom, suffix, unit_label).
+    """
     if normalise_by is None:
         return None, '', ''
     if callable(normalise_by):
@@ -1111,7 +1130,11 @@ def _resolve_normaliser(normalise_by, project, catchment):
         return denom, f'per_{name}', f'/{name}'
     if normalise_by in _AREA_UNIT_FACTORS:
         denom = _subcatchment_areas(project, catchment, normalise_by)
-        return denom, _AREA_UNIT_SUFFIX[normalise_by], _AREA_UNIT_LABEL[normalise_by]
+        return (
+            denom,
+            _AREA_UNIT_SUFFIX[normalise_by],
+            _AREA_UNIT_LABEL[normalise_by],
+        )
     raise ValueError(
         f"Unknown normalise_by '{normalise_by}'. "
         f"Pass one of {sorted(_AREA_UNIT_FACTORS)}, a callable, or None."
@@ -1119,12 +1142,16 @@ def _resolve_normaliser(normalise_by, project, catchment):
 
 
 def _select_time(df, time):
-    """Reduce a wide per-subcatchment frame to a Series indexed by
-    subcatchment label.
+    """
+    Reduce a wide per-subcatchment frame to a Series indexed by label.
 
-    - ``time=None``  — sum all rows.
-    - ``time=int``   — positional (``iloc``) row.
-    - otherwise      — label-based (``loc``) row.
+    Parameters:
+    - df: Wide DataFrame with time on the index.
+    - time: None to sum all rows; int for positional (iloc) row; any
+      other value for label-based (loc) row.
+
+    Returns:
+    - pandas.Series indexed by subcatchment label.
     """
     if time is None:
         return df.sum(axis=0)
@@ -1134,9 +1161,19 @@ def _select_time(df, time):
 
 
 def _long_frame(series, project, catchment, value_col):
-    """Convert a Series indexed by subcatchment label into a long
-    DataFrame with the subcatchment id column (``sc_ID``), the label
-    column, and *value_col* — ready for ``plot_subcatchments``."""
+    """
+    Convert a Series indexed by subcatchment label into a long DataFrame
+    ready for plot_catchment_polygons().
+
+    Parameters:
+    - series: Series indexed by subcatchment label.
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment.
+    - value_col: Column name for the values in the output DataFrame.
+
+    Returns:
+    - DataFrame with columns [sc_ID, label_field, value_col].
+    """
     subs = project.get_subcatchments(catchment)
     id_col = getattr(project, 'subcatchment_id', 'sc_ID')
     label_field = project.subcatchment_label_field(catchment)
@@ -1152,7 +1189,7 @@ def _long_frame(series, project, catchment, value_col):
     out = out.reset_index()
     out[id_col] = out[key_name].map(label_to_id)
     # Drop rows whose label we can't match to a subcatchment (keeps the
-    # output aligned with the geometry layer):
+    # output aligned with the geometry layer)
     out = out.dropna(subset=[id_col])
     return out[[id_col, key_name, value_col]]
 
@@ -1166,28 +1203,27 @@ def subcatchment_series_to_long(
     normalise_by=None,
     value_col=None,
 ):
-    """Reshape a wide per-subcatchment timeseries into the long form
-    expected by :meth:`FireImpactsProject.plot_subcatchments`.
+    """
+    Reshape a wide per-subcatchment timeseries into the long form
+    expected by FireImpactsProject.plot_subcatchments().
 
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Wide-form frame with time on the index and one column per
-        subcatchment (labelled by ``SiteID`` or similar).  Typical
-        input: a single replicate's output from
-        :func:`combine_rusle_and_debris_subcatchment`.
-    project : FireImpactsProject
-    catchment : str
-    time : None, int, or label
-        Row selection; see module docs.  ``None`` sums the full series.
-    normalise_by : None, str, or callable
-        ``None`` → native units; ``'area_ha'``/``'area_km2'``/``'area_m2'``
-        → divide by subcatchment area; a callable receives the
-        subcatchment ``GeoDataFrame`` and returns a Series of
-        denominators indexed by subcatchment label.
-    value_col : str or None
-        Output column name for the value.  When *None*, an informative
-        default is used (``'value'``, ``'value_per_ha'``, etc.).
+    Parameters:
+    - df: Wide DataFrame with time on the index and one column per
+      subcatchment. Typical input: a single replicate from
+      combine_rusle_and_debris_subcatchment().
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment.
+    - time: Row selection: None sums the full series; int is positional;
+      any other value is label-based.
+    - normalise_by: None for native units; 'area_ha', 'area_km2', or
+      'area_m2' to divide by subcatchment area; a callable that receives
+      the subcatchment GeoDataFrame and returns a Series of denominators
+      indexed by subcatchment label.
+    - value_col: Output column name for the value. If None, an
+      informative default is used ('value', 'value_per_ha', etc.).
+
+    Returns:
+    - Long-form DataFrame with columns [sc_ID, label_field, value_col].
     """
     series = _select_time(df, time)
     denom, suffix, _ = _resolve_normaliser(normalise_by, project, catchment)
@@ -1205,7 +1241,7 @@ _REDUCTION_SUFFIX = {
 
 
 def _apply_reduction(stack, reduction):
-    """Collapse a ``(replicate × subcatchment)`` frame along axis 0."""
+    """Collapse a (replicate × subcatchment) DataFrame along axis 0."""
     if callable(reduction):
         name = getattr(reduction, '__name__', 'custom')
         if name == '<lambda>':
@@ -1227,7 +1263,8 @@ def _apply_reduction(stack, reduction):
         if kind == 'exceedance':
             return (stack > arg).mean(axis=0), f'exceed_{arg:g}'
         raise ValueError(
-            f"Unknown tuple reduction '{kind}'. Use 'quantile' or 'exceedance'."
+            f"Unknown tuple reduction '{kind}'. "
+            "Use 'quantile' or 'exceedance'."
         )
     raise TypeError(f"Unsupported reduction spec: {reduction!r}")
 
@@ -1242,30 +1279,30 @@ def reduce_ensemble_subcatchments(
     normalise_by=None,
     value_col=None,
 ):
-    """Collapse an ensemble of wide per-subcatchment timeseries into a
+    """
+    Collapse an ensemble of wide per-subcatchment timeseries into a
     single long-form frame ready for choropleth plotting.
 
-    Normalisation is applied **per replicate before the reduction**, so
-    that e.g. ``('exceedance', 0.5)`` with ``normalise_by='area_ha'``
-    gives "probability that per-hectare load exceeds 0.5 (in whatever
-    units the input was in)" — not "exceedance probability of the
-    total load, divided by area" (which would be nonsensical).
+    Normalisation is applied per replicate before the reduction, so that
+    e.g. ('exceedance', 0.5) with normalise_by='area_ha' gives the
+    probability that the per-hectare load exceeds 0.5 — not the
+    exceedance probability of the total load divided by area.
 
-    Parameters
-    ----------
-    ensemble : dict
-        ``{replicate: wide DataFrame}``; e.g. output of
-        :func:`combine_rusle_and_debris_subcatchment`.
-    time : as for :func:`subcatchment_series_to_long`.
-    reduction : str, tuple, or callable
-        - ``'mean'`` / ``'median'``
-        - ``('quantile', q)`` with ``0 <= q <= 1``
-        - ``('exceedance', threshold)`` — probability of exceeding
-          *threshold* (in post-normalisation units)
-        - callable: ``f(stack_df) -> Series`` indexed by subcatchment
-          label.  *stack_df* is a ``(replicate × subcatchment)`` frame
-          with normalisation already applied.
-    normalise_by, value_col : as for :func:`subcatchment_series_to_long`.
+    Parameters:
+    - ensemble: Dict of the form {replicate: wide DataFrame}, e.g.
+      output of combine_rusle_and_debris_subcatchment().
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment.
+    - time: Row selection — as for subcatchment_series_to_long().
+    - reduction: Collapse function for the (replicate × subcatchment)
+      stack. Options: 'mean', 'median'; ('quantile', q) with 0 ≤ q ≤ 1;
+      ('exceedance', threshold) for exceedance probability; a callable
+      f(stack_df) → Series indexed by subcatchment label.
+    - normalise_by: As for subcatchment_series_to_long().
+    - value_col: Output column name. Auto-generated if None.
+
+    Returns:
+    - Long-form DataFrame with columns [sc_ID, label_field, value_col].
     """
     if not ensemble:
         raise ValueError("ensemble is empty.")
@@ -1291,13 +1328,17 @@ def reduce_ensemble_subcatchments(
     return _long_frame(reduced, project, catchment, value_col)
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Subcatchment choropleth plot wrappers
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def _choropleth_units_label(normalise_by, base_units, reduction=None):
     """Derive a human-readable units string for the colour bar."""
-    if isinstance(reduction, tuple) and reduction and reduction[0] == 'exceedance':
+    if (
+        isinstance(reduction, tuple)
+        and reduction
+        and reduction[0] == 'exceedance'
+    ):
         return 'probability'
     if normalise_by is None:
         return base_units
@@ -1311,10 +1352,29 @@ def _plot_subcatchment_long(
     long_df, *, project, catchment, value_col, title, units, cmap,
     vmin, vmax, existing_figure, existing_axes,
 ):
-    """Hand a long-form frame to ``plot_catchment_polygons`` with a
-    vis_params dict built from *units*/*cmap*.  Avoids
-    ``plot_subcatchments``' column-name auto-detection so that generic
-    column names like ``value_mean_per_ha`` render cleanly."""
+    """
+    Pass a long-form frame to plot_catchment_polygons() with a vis_params
+    dict built from units and cmap.
+
+    Bypasses plot_subcatchments' column-name auto-detection so that
+    generic column names like 'value_mean_per_ha' render cleanly.
+
+    Parameters:
+    - long_df: Long-form DataFrame with [sc_ID, label_field, value_col].
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment.
+    - value_col: Name of the value column to map to colour.
+    - title: Plot title string.
+    - units: Units label for the colorbar.
+    - cmap: Matplotlib colormap name.
+    - vmin: Lower bound of the colour scale, or None.
+    - vmax: Upper bound of the colour scale, or None.
+    - existing_figure: Existing matplotlib Figure, or None.
+    - existing_axes: Existing matplotlib Axes, or None.
+
+    Returns:
+    - Return value of project.plot_catchment_polygons().
+    """
     subs = project.get_subcatchments(catchment)
     id_col = getattr(project, 'subcatchment_id', 'sc_ID')
     vis_params = {
@@ -1358,14 +1418,31 @@ def plot_subcatchment_simulation(
     existing_figure=None,
     existing_axes=None,
 ):
-    """Choropleth map of a single-simulation per-subcatchment timeseries.
+    """
+    Choropleth map of a single-simulation per-subcatchment timeseries.
 
-    *df* is a wide frame (one subcatchment per column, time on the
-    index), typically a single replicate from
-    :func:`combine_rusle_and_debris_subcatchment`.
+    df is a wide frame (one subcatchment per column, time on the index),
+    typically a single replicate from combine_rusle_and_debris_
+    subcatchment(). vmin/vmax lock the colour-scale endpoints; when
+    either is None the corresponding endpoint is taken from the data.
 
-    *vmin* / *vmax* lock the colour-scale endpoints; when either is
-    ``None`` the corresponding endpoint is taken from the data range.
+    Parameters:
+    - df: Wide per-subcatchment timeseries DataFrame.
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment.
+    - time: Row selector — as for subcatchment_series_to_long().
+    - normalise_by: As for subcatchment_series_to_long().
+    - units: Units label for the colorbar.
+    - title: Plot title string.
+    - cmap: Matplotlib colormap name.
+    - value_col: Output column name. Auto-generated if None.
+    - vmin: Lower bound of the colour scale.
+    - vmax: Upper bound of the colour scale.
+    - existing_figure: Existing matplotlib Figure, or None.
+    - existing_axes: Existing matplotlib Axes, or None.
+
+    Returns:
+    - Return value of project.plot_catchment_polygons().
     """
     long = subcatchment_series_to_long(
         df, project=project, catchment=catchment,
@@ -1398,16 +1475,34 @@ def plot_subcatchment_ensemble(
     existing_figure=None,
     existing_axes=None,
 ):
-    """Choropleth map of an ensemble-reduced per-subcatchment timeseries.
+    """
+    Choropleth map of an ensemble-reduced per-subcatchment timeseries.
 
-    *ensemble* is a ``{replicate: wide DataFrame}`` dict; see
-    :func:`reduce_ensemble_subcatchments` for the reduction options.
+    ensemble is a {replicate: wide DataFrame} dict; see
+    reduce_ensemble_subcatchments() for the supported reduction options.
+    vmin/vmax lock the colour-scale endpoints. For exceedance reductions
+    the output is a probability in [0, 1], so missing vmin/vmax default
+    to 0/1 — pass explicit values to override.
 
-    *vmin* / *vmax* lock the colour-scale endpoints.  When either is
-    ``None`` the corresponding endpoint is taken from the data.  For
-    ``reduction=('exceedance', ...)`` the output is a probability in
-    ``[0, 1]`` so a missing *vmin*/*vmax* defaults to ``0``/``1`` —
-    pass explicit values to override.
+    Parameters:
+    - ensemble: Dict of the form {replicate: wide DataFrame}.
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment.
+    - time: Row selector — as for subcatchment_series_to_long().
+    - reduction: Collapse function — as for reduce_ensemble_
+      subcatchments().
+    - normalise_by: As for subcatchment_series_to_long().
+    - units: Units label for the colorbar.
+    - title: Plot title string.
+    - cmap: Matplotlib colormap name.
+    - value_col: Output column name. Auto-generated if None.
+    - vmin: Lower bound of the colour scale.
+    - vmax: Upper bound of the colour scale.
+    - existing_figure: Existing matplotlib Figure, or None.
+    - existing_axes: Existing matplotlib Axes, or None.
+
+    Returns:
+    - Return value of project.plot_catchment_polygons().
     """
     long = reduce_ensemble_subcatchments(
         ensemble, project=project, catchment=catchment,
@@ -1441,13 +1536,25 @@ def combine_rusle_and_debris_annual(
     rusle_timeseries_key='erosion_daily_time_series',
     rusle_scale=1000.0,
 ):
-    """Annual-resolution wrapper around
-    :func:`combine_rusle_and_debris_subcatchment`.
+    """
+    Annual-resolution wrapper around combine_rusle_and_debris_
+    subcatchment(), retained for backwards compatibility.
 
-    Retained for backwards compatibility.  Keeps the original
-    behaviour: numeric ``sc_ID`` column labels (no project lookup),
-    annual totals in kilograms.  New code should call
-    :func:`combine_rusle_and_debris_subcatchment` directly.
+    Keeps the original behaviour: numeric sc_ID column labels (no
+    project lookup), annual totals in kilograms. New code should call
+    combine_rusle_and_debris_subcatchment() directly.
+
+    Parameters:
+    - rusle_results: As for combine_rusle_and_debris_subcatchment().
+    - debris_subcatchment_ts: As for combine_rusle_and_debris_
+      subcatchment().
+    - catchment: Catchment name. If None and only one exists, it is
+      selected automatically.
+    - rusle_timeseries_key: Key in each replicate's RUSLE result dict.
+    - rusle_scale: Multiplier applied to RUSLE values. Default 1000.0.
+
+    Returns:
+    - Dict of the form {replicate: DataFrame} at annual resolution.
     """
     return combine_rusle_and_debris_subcatchment(
         rusle_results,
