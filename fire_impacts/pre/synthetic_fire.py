@@ -38,23 +38,20 @@ _SEVERITY_ALIASES = {
 }
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # Low-level functions — data in, data out
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def extract_dnbr_distribution(dnbr_array):
-    """Extract the empirical dNBR distribution from a raster array.
+    """
+    Extract the empirical dNBR distribution from a raster array.
 
-    Parameters
-    ----------
-    dnbr_array : numpy.ndarray
-        2-D array of dNBR values.  NaN marks pixels outside the burn
-        area.
+    Parameters:
+    - dnbr_array: 2-D numpy array of dNBR values.  NaN marks pixels
+      outside the burn area.
 
-    Returns
-    -------
-    numpy.ndarray
-        1-D array of valid (non-NaN) dNBR values.
+    Returns:
+    - 1-D array of valid (non-NaN) dNBR values.
     """
     flat = dnbr_array.ravel()
     valid = flat[~np.isnan(flat)]
@@ -70,28 +67,21 @@ def generate_synthetic_dnbr(
     shape,
     random_seed=None,
 ):
-    """Sample from an empirical dNBR distribution onto a target grid.
+    """
+    Sample from an empirical dNBR distribution onto a target grid.
 
-    Parameters
-    ----------
-    distribution : numpy.ndarray
-        1-D array of dNBR values to sample from (as returned by
-        :func:`extract_dnbr_distribution`).
-    catchment_boundary : GeoDataFrame or list of geometries
-        Polygon(s) defining the area to fill.  Must be in the same CRS
-        as the target grid.
-    transform : affine.Affine
-        Affine transform for the target grid.
-    shape : tuple of int
-        ``(rows, cols)`` of the target grid.
-    random_seed : int or None
-        Seed for reproducibility.
+    Parameters:
+    - distribution: 1-D array of dNBR values to sample from (as
+      returned by extract_dnbr_distribution).
+    - catchment_boundary: GeoDataFrame or list of geometries defining
+      the area to fill.  Must be in the same CRS as the target grid.
+    - transform: affine.Affine transform for the target grid.
+    - shape: (rows, cols) of the target grid.
+    - random_seed: integer seed for reproducibility, or None.
 
-    Returns
-    -------
-    dnbr : numpy.ndarray
-        2-D float32 array with synthetic dNBR values inside the
-        catchment and NaN outside.
+    Returns:
+    - 2-D float32 array with synthetic dNBR values inside the
+      catchment and NaN outside.
     """
     rng = np.random.default_rng(random_seed)
 
@@ -122,23 +112,20 @@ def generate_synthetic_dnbr(
 
 
 def load_reference_dnbr(url_or_path):
-    """Load a reference dNBR raster and return its distribution.
+    """
+    Load a reference dNBR raster and return its value distribution.
 
     The source can be a local file path or an HTTPS URL (read directly
-    by rasterio/GDAL).
+    by rasterio/GDAL without downloading the full file).
 
-    Parameters
-    ----------
-    url_or_path : str
-        Path or URL to a GeoTIFF with pre-clipped dNBR values (NaN
-        outside burned area).
+    Parameters:
+    - url_or_path: path or URL to a GeoTIFF with pre-clipped dNBR
+      values (NaN outside the burned area).
 
-    Returns
-    -------
-    distribution : numpy.ndarray
-        1-D array of valid dNBR values.
-    meta : dict
-        Rasterio metadata from the source raster (useful for cell size).
+    Returns:
+    - distribution: 1-D array of valid dNBR values.
+    - meta: rasterio metadata dict from the source raster (useful for
+      cell size and CRS).
     """
     logger.info("Loading reference dNBR from %s", url_or_path)
     with rio.open(url_or_path) as src:
@@ -152,9 +139,9 @@ def load_reference_dnbr(url_or_path):
     return distribution, meta
 
 
-# ===================================================================
+# ---------------------------------------------------------------------------
 # High-level function — project-aware
-# ===================================================================
+# ---------------------------------------------------------------------------
 
 def generate_synthetic_fire(
     project,
@@ -163,38 +150,33 @@ def generate_synthetic_fire(
     random_seed=None,
     reference_url=None,
 ):
-    """Generate a synthetic dNBR map for a catchment and save it.
+    """
+    Generate a synthetic dNBR map for a catchment and save it.
 
     Fetches a pre-clipped reference dNBR raster for the requested
     severity, extracts its empirical distribution, samples onto the
-    catchment's DEM grid, and saves the result as ``masked_dNBR.tif``
-    in the catchment's ``FireSeverity`` folder.
+    catchment's DEM grid, and saves the result as masked_dNBR.tif
+    in the catchment's FireSeverity folder.
 
     This is the synthetic-fire equivalent of the real-fire pipeline
-    (``severity.calculate_fire_severity`` + ``mask_dnbr.mask_dnbr``).
-    The output is consumed directly by the RUSLE preprocessing and
+    (severity.calculate_fire_severity + mask_dnbr.mask_dnbr). The
+    output is consumed directly by the RUSLE preprocessing and
     simulation modules.
 
-    Parameters
-    ----------
-    project : FireImpactsProject
-        Current project with at least the DEM already extracted.
-    catchment : str or None
-        Catchment name.  If *None*, processes all catchments.
-    severity : str
-        Fire severity template to use: ``'medium'`` or ``'high'``
-        (also accepts ``'med'``, ``'m'``, ``'hi'``, ``'h'``).
-    random_seed : int or None
-        Seed for reproducible output.
-    reference_url : str or None
-        Override the default reference dNBR URL for the given severity.
-        Useful for custom or locally-hosted reference fires.
+    Parameters:
+    - project: FireImpactsProject instance with at least the DEM
+      already extracted.
+    - catchment: catchment name to process; if None, processes all
+      catchments in the project.
+    - severity: fire severity template to use: 'medium' or 'high'
+      (also accepts 'med', 'm', 'hi', 'h').
+    - random_seed: integer seed for reproducible output, or None.
+    - reference_url: override the default reference dNBR URL for the
+      given severity.  Useful for custom or locally-hosted fires.
 
-    Returns
-    -------
-    dnbr : numpy.ndarray
-        The generated synthetic dNBR array (for the last catchment
-        processed).
+    Returns:
+    - The generated synthetic dNBR array (for the last catchment
+      processed).
     """
     if catchment is None:
         return project.for_each_catchment(
