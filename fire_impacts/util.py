@@ -1,3 +1,8 @@
+"""
+Shared utility functions for visualisation, raster handling, and
+general data manipulation within the fire_impacts package.
+"""
+
 import os
 import re
 import logging
@@ -15,90 +20,185 @@ import rasterstats as rs
 
 from . import const as constants
 
-STATS=constants.STATS
+STATS = constants.STATS
 
 logger = logging.getLogger(__name__)
 
-def retry(fn,retries=5,initial_delay=8,delay_scale=3,specific_exceptions=None):
+
+###############################################################################
+def retry(
+    fn,
+    retries=5,
+    initial_delay=8,
+    delay_scale=3,
+    specific_exceptions=None,
+    ):
+    """
+    Call fn() and retry on failure with exponential back-off.
+
+    Parameters:
+    - fn: Callable to attempt.
+    - retries: Maximum number of retries before re-raising.
+    - initial_delay: Seconds to wait before the first retry.
+    - delay_scale: Multiplier applied to the delay after each retry.
+    - specific_exceptions: If given, only retry on these exception
+      classes; all others are re-raised immediately.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
     import time
 
     try:
         return fn()
     except Exception as e:
-        if retries<=0:
+        # If all retries are exhausted, give up and re-raise:
+        if retries <= 0:
             raise e
 
+        # Re-raise immediately for exception types not in the
+        # allowed list:
         if specific_exceptions is not None:
             if e.__class__ not in specific_exceptions:
                 raise e
 
-        logger.warning('Failed with %s. Retrying after %d seconds'%(str(e),initial_delay))
+        logger.warning(
+            f'Failed with {e}. Retrying after {initial_delay} seconds'
+            )
         time.sleep(initial_delay)
-        return retry(fn,retries-1,initial_delay*delay_scale,delay_scale,specific_exceptions)
+        return retry(
+            fn, retries - 1, initial_delay * delay_scale,
+            delay_scale, specific_exceptions,
+            )
+
 
 ###############################################################################
 def package_data_path(fn=None):
     """
-    Point to where static lookup tables are currently stored in the 
-    package and join them to a specified file name to produce a usable 
-    path
+    Return the path to the package's static data directory.
+
+    Parameters:
+    - fn: Optional filename to join onto the data directory path.
+
+    Returns:
+    - Full path to the data directory, or to the specified file
+      within it.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
     """
-    dirname = os.path.join(os.path.dirname(__file__),'..','data')
+    dirname = os.path.join(os.path.dirname(__file__), '..', 'data')
     if fn is None:
         return dirname
-    return os.path.join(dirname,fn)
+    return os.path.join(dirname, fn)
+
 
 ###############################################################################
 def load_package_data(fn):
     """
-    For static package lookup tables, get the full path/filename.ext 
-    and then make sure the output is a csv.
+    Load a static package lookup table by filename.
+
+    Parameters:
+    - fn: Filename of the data file within the package data directory.
+
+    Returns:
+    - DataFrame if the file is a CSV, otherwise None.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
     """
     fn = package_data_path(fn)
     if fn.endswith('.csv'):
-        logger.info(f"Loading data from {fn}")
+        logger.info(f'Loading data from {fn}')
         import pandas as pd
         return pd.read_csv(fn)
-    logger.error(f"Unsupported file type: {fn}")
+    logger.error(f'Unsupported file type: {fn}')
     return None
 
-def file_matching_all(path,*substrings):
-    """Check if a file contains all substrings and return a list of matches"""
+
+###############################################################################
+def file_matching_all(path, *substrings):
+    """
+    Return all files in a directory whose names contain every substring.
+
+    Parameters:
+    - path: Directory to list.
+    - substrings: One or more substrings that must all appear in the
+      filename.
+
+    Returns:
+    - List of matching filenames (not full paths).
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
     files = os.listdir(path)
     return [fn for fn in files if all(p in fn for p in substrings)]
 
-def unique_file_matching(path,*substrings,extension=None):
-    """Check if a single file contains all substrings and return the unique match"""
-    matches = file_matching_all(path,*substrings)
+
+###############################################################################
+def unique_file_matching(path, *substrings, extension=None):
+    """
+    Return the single file in a directory matching all given substrings.
+
+    Parameters:
+    - path: Directory to search.
+    - substrings: One or more substrings that must all appear in the
+      filename.
+    - extension: If provided, also filter by this file extension
+      (e.g. '.tif').
+
+    Returns:
+    - Filename of the unique match (not the full path).
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    matches = file_matching_all(path, *substrings)
     if extension is not None:
         matches = [fn for fn in matches if fn.endswith(extension)]
     if len(matches) == 0:
-        raise FileNotFoundError(f"No file found in {path} matching patterns: {substrings}")
+        raise FileNotFoundError(
+            f'No file found in {path} matching patterns: {substrings}'
+            )
     elif len(matches) > 1:
-        raise FileExistsError(f"Multiple files found in {path} matching patterns: {substrings}")
+        raise FileExistsError(
+            f'Multiple files found in {path} matching patterns: '
+            f'{substrings}'
+            )
     return matches[0]
 
+
 ###############################################################################
-def check_acceptable_param(param:str, acceptable_types) -> str:
+def check_acceptable_param(param: str, acceptable_types) -> str:
     """
-    Check that a string used for a function parameter is coded for, and 
-    return it formatted in a standard way
+    Validate a string parameter value and return it normalised.
+
+    Parameters:
+    - param: Parameter value to check.
+    - acceptable_types: Collection of valid lower-cased strings.
+
+    Returns:
+    - The parameter value, stripped and lower-cased.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
     cleaned_param = param.lower().strip()
     if cleaned_param not in acceptable_types:
         raise ValueError(
-            f'Received argument of {param} for a function, but it must '
-            f'be one of {acceptable_types}.'
+            f'Received argument of {param} for a function, but it '
+            f'must be one of {acceptable_types}.'
             )
     else:
         return cleaned_param
 
+
 ###############################################################################
-def date_rel(date:str, days:int):
+def date_rel(date: str, days: int):
     """
-    Helper function to calculate date differences by number of days
+    Shift a date string by a number of days.
+
+    Parameters:
+    - date: Date string in 'YYYY-MM-DD' format.
+    - days: Number of days to add (negative to subtract).
+
+    Returns:
+    - New date string in 'YYYY-MM-DD' format.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
@@ -108,172 +208,176 @@ def date_rel(date:str, days:int):
         ).strftime('%Y-%m-%d')
     return new_date
 
+
 ###############################################################################
 def fig_ax_admin(
     ex_figure=None,
     ex_axes=None,
-    new_subplot:bool=True,
-    ex_ax_idx=None
+    new_subplot: bool = True,
+    ex_ax_idx=None,
     ):
     """
-    For visualisations, determine plotting behaviour based on whether 
-    the user provides an existing figure and/or axes
+    Resolve a matplotlib figure and axes for a visualisation call.
 
     Parameters:
-    - figure (mpl.figure): existing matplotlib figure object if 
-    provided to the calling function
-    - axes (mpl.axes): existing matplotlib axes object if provided to 
-    the calling function
-    - new_subplot (bool): Whether a new subplot is to be created
-    - ex_ax_idx: index of the existing axes to plot on. Required if a
-    figure is provided but no axes object, but an existing axes is
-    to be drawn on.
+    - ex_figure: Existing matplotlib figure. If both ex_figure and
+      ex_axes are None, a new figure and axes are created.
+    - ex_axes: Existing matplotlib axes. If provided without a
+      figure, the parent figure is taken from the axes object.
+    - new_subplot: If True and a figure is given without axes, add a
+      new subplot rather than selecting an existing one.
+    - ex_ax_idx: Index of the existing axes to use when new_subplot
+      is False and no axes object is provided.
 
     Returns:
-    - The existing matplotlib figure if provided by the user, otherwise
-    a brand new one
-    - The existing matplotlib axes if provided by the user, otherwise a
-    brand new one
+    - Resolved matplotlib figure.
+    - Resolved matplotlib axes.
     --------------------------------------------------------------------
     Notes:
-    - Assumes that if the user provides an axes, that it is not
-    figureless.
-    - This is designed to allow provision of an integer axes index 
-    instead of an axes object if desired.
+    - Assumes that if ex_axes is provided it already belongs to a
+      figure.
+    - Accepts an integer axes index via ex_ax_idx as an alternative
+      to passing an axes object directly.
     --------------------------------------------------------------------
     """
-    # Create both figure and axes if we haven't been provided with them:
+    # Create both figure and axes if neither is provided:
     if ex_figure is None and ex_axes is None:
         out_fig, out_ax = plt.subplots()
 
-    #-----  This is the tricky case --------
-    # If we're given a figure but no axes:
+    # Figure provided but no axes - resolve which axes to draw on:
     elif ex_axes is None:
         out_fig = ex_figure
-        # If a new subplot is requested, just add it:
         if new_subplot:
+            # Add a fresh subplot to the existing figure:
             out_ax = out_fig.add_subplot()
-        # If we're not adding a new subplot, use the user's provided
-        #index to decide which axes to plot on:
         else:
-            # If the user hasn't specified an index, we'll use the last
-            #one:
+            # Select an existing axes by index; default to the last
+            # one if no index is specified:
             if ex_ax_idx is None:
                 out_ax_idx = len(out_fig.axes) + 1
-            # Otherwise use what they specified:
             else:
                 out_ax_idx = ex_ax_idx
-            # Get the axes with the provided index:
             out_ax = out_fig.axes[out_ax_idx]
-            
-    # If axes but no figure, get the parent figure of the axes:
+
+    # Axes provided but no figure - get the parent figure:
     elif ex_figure is None:
         out_fig = ex_axes.figure
         out_ax = ex_axes
-    # If we've been provided with both, just use those:
+
+    # Both provided - use them directly:
     else:
         out_fig = ex_figure
         out_ax = ex_axes
-    
+
     return out_fig, out_ax
+
 
 ###############################################################################
 def mapify_axes(
     ax,
     crs,
-    units:str,
+    units: str,
     ):
     """
-    Settings for maps based on whether the data is in a projected or
-    geographic coordinate system
+    Apply map-appropriate axis formatting for a given coordinate system.
 
     Parameters:
-    - ax (mpl.axes): matplotlib axes object being uses as a map
-    - crs: crs object which can be a GeoDataFrame.crs (for vectors) or
-    rasterio's pyplot crs object. 
-    - units (str): text describing the units use by the axes object
+    - ax: matplotlib axes object to format.
+    - crs: CRS object with a boolean is_projected attribute (e.g.
+      a GeoDataFrame.crs or a rasterio CRS).
+    - units: Text describing the axis units (used for scalebar
+      configuration on projected CRS).
     --------------------------------------------------------------------
     Notes:
-    - The crs object can be more flexible; all it needs is a boolean
-    is_projected attribute which equals True for projected CRS and False
-    for geographic.
-    - For projected CRS, units is assumed to be 'metres', and 'm' will
-    be passed to the scalebar indicating metres. If your PCS is not in 
-    metres, this may cause the scalebar to fail altogether or have an
-    incorrect label.
+    - For projected CRS, ticks are hidden and a scalebar is added.
+      units is assumed to be metres; a non-metre PCS may produce an
+      incorrect or missing scalebar label.
+    - For geographic CRS, tick labels are formatted to two decimal
+      places and longitude/latitude axis labels are added.
     --------------------------------------------------------------------
     """
-    
     if crs.is_projected:
-        # No ticks for a projects CS, we'll use a scalebar
-        #instead:
+        # Projected CRS: suppress ticks and add a scalebar instead:
         ax.set_xticks([])
         ax.set_yticks([])
         from matplotlib_scalebar.scalebar import ScaleBar
 
-        # Set the font size for the scalebar text
-        sb_fontprops = {
-            'size': 'xx-small'
-            }
-
+        sb_fontprops = {'size': 'xx-small'}
         these_units = units[0]
-        # Create the scalebar object:
+
+        # Create the scalebar (dx=1 means one pixel = one map unit):
         this_scalebar = ScaleBar(
-            dx=1, #size of one pixel
-            units=these_units, #units of the pixel size
+            dx=1,
+            units=these_units,
             loc='lower left',
             font_properties=sb_fontprops,
-            box_alpha=0.5
+            box_alpha=0.5,
             )
-        # Plot the scalebar onto the map:
         ax.add_artist(this_scalebar)
 
     if crs.is_geographic:
-        # Set number format to always two decimal places:
-        this_tick_label_formatter = mpl.ticker.FormatStrFormatter('%.2f')
+        # Geographic CRS: format tick labels to two decimal places:
+        this_tick_label_formatter = mpl.ticker.FormatStrFormatter(
+            '%.2f'
+            )
         ax.xaxis.set_major_formatter(this_tick_label_formatter)
         ax.yaxis.set_major_formatter(this_tick_label_formatter)
-        # 3-5 ticks on x-axis
+
+        # Aim for 3-5 ticks on each axis:
         tick_number_formatter_x = mpl.ticker.MaxNLocator(
-            min_n_ticks=3,
-            nbins=5
+            min_n_ticks=3, nbins=5
             )
         ax.xaxis.set_major_locator(tick_number_formatter_x)
-        # Same on y-axis
+
         tick_number_formatter_y = mpl.ticker.MaxNLocator(
-            min_n_ticks=3,
-            nbins=5
+            min_n_ticks=3, nbins=5
             )
         ax.yaxis.set_major_locator(tick_number_formatter_y)
 
         ax.set_xlabel('Longitude')
         ax.set_ylabel('Latitude')
 
+
 ###############################################################################
 def fit_multi_figs(fig):
     """
-    Adjusts size of figure to fit its axes nicely.
+    Adjust the size of a figure to fit its axes nicely.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
     pass
 
+
 ###############################################################################
 def make_axes_title(
-    catchment_name:str,
-    area_type:str,
-    var_name:str,
-    colour_column_name:str,
+    catchment_name: str,
+    area_type: str,
+    var_name: str,
+    colour_column_name: str,
     ) -> str:
     """
-    
+    Build a standardised axes title from catchment, area, and variable
+    information.
+
+    Parameters:
+    - catchment_name: Name of the catchment (underscores and EPSG
+      codes are cleaned up automatically).
+    - area_type: Spatial unit type, e.g. 'Headwaters'.
+    - var_name: Variable or measure name to include in the title.
+    - colour_column_name: Column name used for colouring; year and
+      aggregation type are extracted from this where present.
+
+    Returns:
+    - Cleaned title string with extra spaces collapsed.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
     catch_title = clean_chart_title(catchment_name)
     area_title = area_type.title().strip()
-    # Most columns will have an aggregation type which is separate to 
-    #the variable name, which we still want to keep if it exists:
+
+    # Extract the aggregation type from the column name if present.
+    # Most columns carry a stat suffix (e.g. _mean, _sum) which is
+    # worth including in the title alongside the variable name:
     clean_name = colour_column_name.replace('_', '').lower().strip()
     for stat in STATS:
         if stat in clean_name:
@@ -281,8 +385,8 @@ def make_axes_title(
             break
         else:
             agg = ''
-    
-    # Include a year in the title if it's part of the column name:
+
+    # Include a year label if the column name encodes one:
     if 'year' in clean_name:
         if 'year1' in clean_name:
             year = 'Year 1'
@@ -292,54 +396,67 @@ def make_axes_title(
             year = ''
     else:
         year = ''
-    
-    # Put the title together then clean extra spaces:
-    base_title = f'{catch_title} {area_title}: {var_name} {year} {agg}'
+
+    # Assemble the title and collapse any duplicate spaces:
+    base_title = (
+        f'{catch_title} {area_title}: {var_name} {year} {agg}'
+        )
     neat_title = ' '.join(base_title.split())
-    
+
     return neat_title
+
 
 ###############################################################################
 def clean_chart_title(text):
     """
-    Removes underscores, ending-EPSG codes, camel-case
+    Clean a raw string for use as a chart title.
+
+    Parameters:
+    - text: Raw string (e.g. a catchment folder name).
+
+    Returns:
+    - Title string with trailing EPSG codes removed and underscores
+      and camel case expanded to spaces.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    # Remove trailing underscores etc. (EPSG code):
+    # Remove a trailing numeric EPSG code (e.g. '_28355'):
     int_title = re.sub(r'_\d+$', '', text)
-    # Expand camel case to spaced words:
+    # Expand camel case to space-separated words:
     int_title = re.sub(r'(?<!^)(?=[A-Z])', ' ', int_title)
-
     title = int_title.replace('_', ' ').strip()
     return title
 
-###########################################################################
+
+###############################################################################
 def get_cmap_normer(
     data,
-    scale:str,
+    scale: str,
     min_val=None,
     max_val=None,
     clipped=False,
-    clipped_pct=(2, 98)
+    clipped_pct=(2, 98),
     ):
     """
-    Create a colourmap that can be used for both normalised and log
-    scales, and can be used for an image itself and its colourbar.
+    Create a matplotlib Normalize object for colourmapping.
 
     Parameters:
-    - data: array of values that will be mapped
-    - scale: 'log' if log scale is desired, otherwise will be linear
-    - min_val: desired value for the minimum of the colour range
-    - max_val: desired value for the maximum of the colour range
-    - clipped: whether to clip the most extreme values by percentile
+    - data: Array of values to be mapped.
+    - scale: 'log' for logarithmic scale; 'boundary' for a discrete
+      integer scale; any other value gives a linear scale.
+    - min_val: Desired minimum of the colour range. Derived from data
+      if not provided.
+    - max_val: Desired maximum of the colour range. Derived from data
+      if not provided.
+    - clipped: If True, derive vmin/vmax from percentiles of the data
+      rather than the full range.
+    - clipped_pct: (low, high) percentile tuple used when clipped is
+      True.
 
     Returns:
-    - matplotlib Normalize object which maps the values in the data in
-    a way that can be used for colourmaps for plots and colourbars.
+    - matplotlib Normalize (or BoundaryNorm / LogNorm) object for
+      use with colourmaps and colourbars.
     --------------------------------------------------------------------
-    Notes:
-    - 
     --------------------------------------------------------------------
     """
     arr1 = np.asanyarray(data)
@@ -347,181 +464,176 @@ def get_cmap_normer(
     # Select finite and unmasked values only:
     if np.ma.isMaskedArray(arr1):
         finite = arr1[
-            np.isfinite(#this gets all non-infinite values
-                arr1.filled(np.nan) #This fills masked values with nan
+            np.isfinite(
+                arr1.filled(np.nan)  # fill masked values with nan
                 )
             ].compressed()
     else:
         finite = arr1[np.isfinite(arr1)]
 
-    # Raise error if no non-infinite, non-masked values
+    # Raise an error if no usable values remain:
     if finite.size == 0:
         raise ValueError(
             'util.get_cmap_normer() received an array with no valid '
             'values.'
-        )
-    
-    # Get vmin and vmax values from the data if not provided:
+            )
+
+    # Derive vmin and vmax from the data when not provided:
     if min_val is None or max_val is None:
         if clipped:
-            # Calculate the low and high percentiles provided in the
-            #clipped_pct tuple:
+            # Use the provided low/high percentiles as the range:
             lo, hi = np.nanpercentile(finite, clipped_pct)
-            # Use the calculated values if the user hasn't specified:
             vmin = lo if min_val is None else min_val
             vmax = hi if max_val is None else max_val
         else:
             vmin = np.nanmin(finite) if min_val is None else min_val
             vmax = np.nanmax(finite) if max_val is None else max_val
-        # Degenerate case: all data values equal (or the clipped
-        # percentiles coincide).  Matplotlib silently expands such a
-        # Normalize to ±0.1, which makes the colourbar show nonsensical
-        # negatives for non-negative measures like probabilities.
-        # Widen to a useful range instead: [0, 1] when the constant
-        # value sits inside that interval (natural for probabilities /
-        # fractions), otherwise a unit window around the value.
+
+        # Degenerate case: all values are equal (or clipped
+        # percentiles coincide). Matplotlib silently expands such a
+        # Normalize to +/-0.1, producing nonsensical negatives for
+        # non-negative measures like probabilities. Widen to a useful
+        # range instead: [0, 1] when the constant value is in that
+        # interval, otherwise a unit window centred on the value:
         if vmin == vmax:
             if 0.0 <= vmin <= 1.0:
                 vmin, vmax = 0.0, 1.0
             else:
                 vmin, vmax = vmin - 0.5, vmin + 0.5
-    # If both values are provided, make sure they're valid:
+
+    # Validate explicitly provided vmin/vmax:
     else:
-        # If one of the values is invalid:
         if not np.isfinite(min_val) or not np.isfinite(max_val):
             raise ValueError(
                 'util.get_cmap_normer() received invalid values ('
-                f'{min_val} to {max_val}) for min_val and/or max_val '
-                'arguments.'
-            )
+                f'{min_val} to {max_val}) for min_val and/or max_val.'
+                )
         elif max_val <= min_val:
             raise ValueError(
                 'util.get_cmap_normer() received a max value of '
                 f'{max_val}, which is not larger than the min value '
                 f'of {min_val}.'
-            )
+                )
         else:
             vmin = min_val
             vmax = max_val
 
-    # For now we're going to make everything linear unless the user
-    #specifies logarithmic:
+    # Return the appropriate normaliser for the requested scale type:
     if scale is None or scale.lower().strip() == 'linear':
         return Normalize(vmin=vmin, vmax=vmax)
+
     elif scale.lower().strip() == 'boundary':
-        # Update the vmin and max to integers:
+        # Discrete integer bins centred on whole numbers:
         vmin = int(vmin)
         vmax = int(vmax)
         bounds = np.arange((vmin - 0.5), (vmax + 1.5), 1)
         num_boundaries = len(bounds)
         return mpl.colors.BoundaryNorm(bounds, num_boundaries)
 
-
-    # Handle logarithmic scale in a safe way;
     else:
-        # Lift vmin above 0 if it's not already, and check that not all
-        #the values are non-positive
+        # Logarithmic scale: lift vmin above zero if needed and verify
+        # that at least some positive values exist in the data:
         if vmin <= 0:
-            # Check for positive values first:
             posvals = finite[finite > 0]
             if posvals.size == 0:
                 raise ValueError(
-                    'Log colour scale requires some positive values; ' 
+                    'Log colour scale requires some positive values; '
                     'none were found.'
                     )
-            # Use the minimum positive value as the new minimum
             vmin = np.nanmin(posvals)
         if vmax <= 0:
             raise ValueError(
                 'Log color scale requires vmax > 0'
                 )
         return LogNorm(vmin=vmin, vmax=vmax)
-    
+
+
 ###############################################################################
 def insert_colourbar(axes, normaliser, vis_params):
     """
-    Insert a relevant colourbar that fits nicely with a raster plot
+    Add a fitted colourbar to a spatial plot.
 
     Parameters:
-    - axes: matplotlib axes object which the colourbar is for
-    - normaliser: matplotlib Normalize object for the data
-    - vis_params: dictionary of relevant visualisation settings
+    - axes: matplotlib axes that the colourbar is associated with.
+    - normaliser: matplotlib Normalize object for the data.
+    - vis_params: Dict of visualisation parameters (must include
+      'norm', 'cmap', 'measure', 'units', 'cbar_extend').
+
+    Returns:
+    - matplotlib Colorbar object.
     --------------------------------------------------------------------
     Notes:
-    - Requires matplotlib toolkits (mpl_toolkits)
-    - use util.get_cmap_normer() first to ensure the colourbar scale
-    matches that of the plot
+    - Use get_cmap_normer() first so the colourbar scale matches the
+      plot.
+    - Colourbar is placed on the right for roughly square or portrait
+      plots, and on the bottom for wide landscape projected plots.
     --------------------------------------------------------------------
     """
-    # Get the width and height of the figure:
+    # Decide placement based on plot aspect ratio:
     width = abs(axes.get_xlim()[1] - axes.get_xlim()[0])
     height = abs(axes.get_ylim()[1] - axes.get_ylim()[0])
-    # Put the colourbar on the right unless the plot is notably
-    #landscape in proportions. Exception is if it's projected,
-    #in which case colourbar on the bottom looks bad.
     if width / height >= 1.5 and axes.loaded_crs.is_projected:
         position = 'bottom'
     else:
         position = 'right'
-    
+
     norm_type = vis_params['norm']
     cmap_name = vis_params['cmap']
 
-    # Create a special discrete mapper if we're using a boundary 
-    #normaliser:
     if norm_type == 'boundary':
+        # Build a discrete colourmap and compute tick positions at
+        # the centre of each colour band:
         num_colours = normaliser.N - 1
-        # Get a version of the colourmap with the specific number of 
-        #colours needed:
         boundary_cmap = plt.cm.get_cmap(cmap_name, num_colours)
-        # Create the mappable object:
         mappable = ScalarMappable(norm=normaliser, cmap=boundary_cmap)
 
         max_ticks = 10
-        # Update the ticks to go in the centre of the discrete colours:
         bounds = normaliser.boundaries
         centres = 0.5 * (bounds[:-1] + bounds[1:])
         int_labels = np.round(centres).astype(int)
-        if num_colours > 1:
-            
-            int_min, int_max = int_labels[0], int_labels[-1]
 
-            # If the number of labels is less than the maximum, show all:
+        if num_colours > 1:
+            int_min, int_max = int_labels[0], int_labels[-1]
+            # Show all ticks if there are few enough; otherwise space
+            # evenly and ensure the maximum is always included:
             if num_colours <= max_ticks:
                 vals_to_show = np.arange(int_min, int_max + 1)
-            # Otherwise, work out a roughly optimal spacing:
             else:
-                int_between_ticks = np.ceil(num_colours / (max_ticks - 1))
-                vals_to_show = np.arange(int_min, int_max + 1, int_between_ticks)
-                # If we haven't naturally included the maximum, add it in again:
+                int_between_ticks = np.ceil(
+                    num_colours / (max_ticks - 1)
+                    )
+                vals_to_show = np.arange(
+                    int_min, int_max + 1, int_between_ticks
+                    )
                 if vals_to_show[-1] != int_max:
                     vals_to_show = np.append(vals_to_show, int_max)
-            # Make a lookup of what labels to use for what ticks:
             val_centre_dict = dict(zip(int_labels, centres))
             labels_to_show = vals_to_show.astype(int)
-            tick_positions = [val_centre_dict[v] for v in vals_to_show]
+            tick_positions = [
+                val_centre_dict[v] for v in vals_to_show
+                ]
         else:
             tick_positions = centres
             labels_to_show = centres.astype(int)
 
-    # Otherwise we're using a normal continuous one:
+    # Continuous colourbar (linear or log):
     else:
-        # Create a mappable object using the previously-created normaliser:
-        mappable = ScalarMappable(norm=normaliser, cmap=vis_params['cmap'])
-    
-    mappable.set_array([]) #avoid warnings
+        mappable = ScalarMappable(
+            norm=normaliser, cmap=vis_params['cmap']
+            )
 
-    # Create a divider to manage spacing of axis and colourbar:
+    mappable.set_array([])  # suppress matplotlib warning
+
+    # Attach the colourbar neatly using make_axes_locatable:
     divider = make_axes_locatable(axes)
     cax = divider.append_axes(position, size='5%', pad=0.05)
 
-    # Create the colourbar:
     cbar = axes.figure.colorbar(
         mappable,
         cax=cax,
         location=position,
         label=f"{vis_params['measure']} ({vis_params['units']})",
-        extend=vis_params['cbar_extend']
+        extend=vis_params['cbar_extend'],
         )
     if norm_type == 'boundary':
         cbar.set_ticks(tick_positions)
@@ -533,103 +645,97 @@ def insert_colourbar(axes, normaliser, vis_params):
 
     return cbar
 
+
 ###############################################################################
 def plot_spatial_raster(
     existing_axes,
-    full_raster_path:str,
-    vis_params:dict,
-    title:str,
-    colourbar:bool=True,
-    clip_geometry=None
+    full_raster_path: str,
+    vis_params: dict,
+    title: str,
+    colourbar: bool = True,
+    clip_geometry=None,
     ):
     """
-    Plot a raster in a standardised way
+    Plot a raster onto matplotlib axes in a standardised way.
 
     Parameters:
-    - existing_axes: matplotlib axes to plot onto
-    - full_raster_path (str): path to the raster file
-    - vis_params (dict): dictionary of visualisation parameters
-    - title (str): title for the axes
-    - colourbar (bool): whether to add a colourbar
-    - clip_geometry (GeoDataFrame): optional boundary to clip the raster
-      to in-memory before plotting. Cells outside the boundary are masked
-      out, and the colourmap range is derived only from in-boundary
-      values. The GeoDataFrame is reprojected to match the raster CRS if
-      needed.
+    - existing_axes: matplotlib axes to plot onto.
+    - full_raster_path: Path to the raster file.
+    - vis_params: Dict of visualisation parameters (cmap, norm, vmin,
+      vmax, cbar_extend, measure, units, and optionally
+      scale_to_per_ha).
+    - title: Title for the axes.
+    - colourbar: If True, add a colourbar.
+    - clip_geometry: Optional GeoDataFrame to clip the raster to
+      in-memory before plotting. Cells outside the boundary are
+      masked; the colourmap range is derived from in-boundary values
+      only. Reprojected to the raster CRS if needed.
 
     Returns:
-    - img, the raster image artist created by this function
+    - img: The raster image artist.
+    - this_crs: CRS of the raster.
+    - this_cbar: Colourbar object, or None if colourbar is False.
     --------------------------------------------------------------------
     Notes:
-    - The image artist returned by this function can be used to set
-    colourmaps etc.
-    - Requires rasterio and numpy
+    - The returned image artist can be used to adjust colourmaps
+      after the fact.
     --------------------------------------------------------------------
     """
-    # Ensure we have a valid figure and axes for plotting:
     ax = existing_axes
 
-    # Open the raster and start building the plot:
     with rio.open(full_raster_path) as src:
-        # Optionally clip the raster to the supplied boundary in-memory.
-        # rasterio.mask requires the geometry CRS to match the raster,
-        # so reproject if needed.
+        # Optionally clip the raster to the supplied boundary. rasterio
+        # requires geometry CRS to match the raster, so reproject if
+        # needed. filled=False gives a masked array; masked cells are
+        # set to NaN below so they are excluded from colour scaling:
         if clip_geometry is not None:
             from rasterio.mask import mask as rio_mask
             boundary = clip_geometry.to_crs(src.crs)
-            shapes = [geom.__geo_interface__
-                      for geom in boundary.geometry]
-            # filled=False returns a numpy masked array, which works
-            # for any dtype (including int). We convert to float and
-            # set masked cells to NaN below.
+            shapes = [
+                geom.__geo_interface__ for geom in boundary.geometry
+                ]
             clipped, transform = rio_mask(
-                src, shapes, crop=True, filled=False)
+                src, shapes, crop=True, filled=False
+                )
             data = clipped[0].astype(float)
             data[clipped[0].mask] = np.nan
         else:
             data = src.read(1).astype(float)
             transform = src.transform
 
-        # Replace any raster nodata value with NaN:
+        # Replace any declared nodata value with NaN:
         no_data_value = src.nodata
         if no_data_value is not None:
             data = np.where(data == no_data_value, np.nan, data)
 
         # Optionally rescale from per-cell to per-hectare units.
-        # The transform is in scope from both code paths above.
+        # Cell area in hectares comes from the affine transform:
         if vis_params.get('scale_to_per_ha'):
             cell_area_ha = (
                 transform[0] * abs(transform[4])
-            ) / 10000
+                ) / 10000
             data = data / cell_area_ha
 
-        # Grab the crs while we have it:
         this_crs = src.crs
 
-        # Tie the vis params and crs to the axes for access elsewhere:
+        # Attach vis params and CRS to the axes for downstream access:
         ax.loaded_vis_params = vis_params
         ax.loaded_crs = this_crs
-        
-        # Get the minimum value from vis_params if there is one:
-        try:
-            req_min = vis_params['vmin']
-        except KeyError:
-            req_min = None
-        # Same for the maximum value:
-        try:
-            req_max = vis_params['vmax']
-        except KeyError:
-            req_max = None
 
-        # Get a Normalize object to handle colourmapping:
+        # Get the requested colour range from vis_params if provided:
+        req_min = vis_params.get('vmin')
+        req_max = vis_params.get('vmax')
+
+        # Build a Normalize object for colourmapping:
         this_normaliser = get_cmap_normer(
             data,
             vis_params['norm'],
             min_val=req_min,
-            max_val=req_max
+            max_val=req_max,
             )
 
-        # Plot the raster values onto the axes:
+        # Plot the raster as an image; the spatial extent is derived
+        # from the affine transform:
         img = ax.imshow(
             data,
             cmap=vis_params['cmap'],
@@ -638,52 +744,65 @@ def plot_spatial_raster(
                 transform[2],
                 transform[2] + transform[0] * data.shape[1],
                 transform[5] + transform[4] * data.shape[0],
-                transform[5]
-                )
+                transform[5],
+                ),
             )
-        
+
         if colourbar:
             this_cbar = insert_colourbar(
-                ax,
-                this_normaliser,
-                vis_params
+                ax, this_normaliser, vis_params
                 )
         else:
-            this_cbar=None
+            this_cbar = None
 
         existing_axes.set_title(title)
 
         return img, this_crs, this_cbar
 
+
 ###############################################################################
 def plot_spatial_vector(
     existing_axes,
-    vector_path_or_data:str | gpd.GeoDataFrame,
-    vis_params:dict,
-    title:str, #title for this axes
-    legend:bool=False,
-    label:str=None, #Label to go in the legend
-    colourbar:bool=True,
+    vector_path_or_data: str | gpd.GeoDataFrame,
+    vis_params: dict,
+    title: str,
+    legend: bool = False,
+    label: str = None,
+    colourbar: bool = True,
     symbol_data=None,
-    id_col_name:str='ID',
-    data_col_name=None
+    id_col_name: str = 'ID',
+    data_col_name=None,
     ):
     """
-    Plot a vector in a standardised way
+    Plot a vector layer onto matplotlib axes in a standardised way.
+
+    Parameters:
+    - existing_axes: matplotlib axes to plot onto.
+    - vector_path_or_data: Path to a shapefile, or a GeoDataFrame.
+    - vis_params: Dict of visualisation parameters.
+    - title: Title for the axes.
+    - legend: Whether to add a legend.
+    - label: Label string for the legend entry.
+    - colourbar: If True and symbol_data is provided, add a colourbar.
+    - symbol_data: Optional DataFrame for symbolising polygons. Must
+      contain id_col_name and data_col_name columns.
+    - id_col_name: Column name used to join symbol_data to the vector
+      layer.
+    - data_col_name: Column in symbol_data containing the values to
+      use for polygon colouring.
+
+    Returns:
+    - this_crs: CRS of the vector data.
+    - this_cbar: Colourbar object, or None.
+    - existing_axes: The axes after plotting.
     --------------------------------------------------------------------
     Notes:
-    - We should assume for now that we're getting two things. A 
-    polygon file with areas, and (optionally) a DataFrame with 
-    values for symbolising the polygons.
-    - If a data-based fill is required, this function should
-    receive a two-column dataframe. It will have an ID in the first
-    column and the value in the second. Will be joined to the 
-    spatial file by the ID.
+    - When symbol_data is None, polygons are plotted without a data
+      fill.
     --------------------------------------------------------------------
     """
-
+    # Load the vector data from a file path or use directly:
     if isinstance(vector_path_or_data, str):
-        # Read in the spatial data file:
         shapes = gpd.read_file(vector_path_or_data)
     elif isinstance(vector_path_or_data, gpd.GeoDataFrame):
         shapes = vector_path_or_data
@@ -692,93 +811,90 @@ def plot_spatial_vector(
             'util.plot_spatial_vector() requires either a path to a '
             'shapefile, or a GeoDataFrame, as the vector_path_or_data '
             f'parameter, but received {vector_path_or_data}'
-        )
-    # Get useful metadata:
-    this_crs = shapes.crs
+            )
 
+    this_crs = shapes.crs
     existing_axes.loaded_vis_params = vis_params
     existing_axes.loaded_crs = this_crs
 
-    # Get relevant values
     norm_type = vis_params['norm']
     cmap_name = vis_params['cmap']
 
-    # If a symbolisation DataFrame is provided:
     if symbol_data is not None:
-        # Merge in id_col_name so we have the value for each vector
-        #feature to use for symbolising:
+        # Merge the symbolisation data onto the geometry by id column:
         geom_with_data = pd.merge(
-            shapes,
-            symbol_data,
-            on=id_col_name
+            shapes, symbol_data, on=id_col_name
             )
         colour_col = data_col_name
-        geom_with_data.to_csv('\\zz_TempDump\\geom_with_data.csv', index=False)
+        geom_with_data.to_csv(
+            '\\zz_TempDump\\geom_with_data.csv', index=False
+            )
 
-        # Get a normaliser to use for both plot and colourbar.  Honour
-        # vis_params['vmin']/['vmax'] when provided so callers can lock
-        # the colour range (e.g. 0-1 for probability maps) instead of
-        # auto-scaling to the data extent.
+        # Build a normaliser, honouring any fixed vmin/vmax from
+        # vis_params so callers can lock the colour range:
         normer = get_cmap_normer(
             data=symbol_data[colour_col],
             scale=vis_params['norm'],
             min_val=vis_params.get('vmin'),
             max_val=vis_params.get('vmax'),
             )
-        min_plot_val = normer.vmin
-        max_plot_val = normer.vmax
 
-        # Create a special discrete mapper if we're using a boundary 
-        #normaliser:
+        # Use a discrete colourmap for boundary norm:
         if norm_type == 'boundary':
             num_colours = normer.N - 1
-            # Get a version of the colourmap with the specific number of 
-            #colours needed:
             boundary_cmap = plt.cm.get_cmap(cmap_name, num_colours)
-            # Create the mappable object:
             use_this_cmap = boundary_cmap
         else:
             use_this_cmap = cmap_name
 
-        thing_to_plot=geom_with_data
-    # Populate empty values for symbolisations
+        thing_to_plot = geom_with_data
+
     else:
+        # No symbolisation data - plot plain polygon outlines:
         colour_col = None
-        use_this_cmap=None
-        normer=None
+        use_this_cmap = None
+        normer = None
         thing_to_plot = shapes
 
-    # Use Geopandas' built-in plot method:
+    # Plot using GeoPandas' built-in plot method:
     existing_axes = thing_to_plot.plot(
         ax=existing_axes,
         column=colour_col,
         cmap=use_this_cmap,
-        norm=normer
+        norm=normer,
         )
-    
-    # If we're symbolising by column and a colourbar is requested,
-    #add one:
+
+    # Add a colourbar when symbolising by data column:
     if symbol_data is not None and colourbar:
         this_cbar = insert_colourbar(
             axes=existing_axes,
             normaliser=normer,
-            vis_params=vis_params
+            vis_params=vis_params,
             )
     else:
         this_cbar = None
-    
+
     existing_axes.set_title(title)
 
     return this_crs, this_cbar, existing_axes
 
-###########################################################################
-def get_erosion_title(file_or_col:str, type:str):
+
+###############################################################################
+def get_erosion_title(file_or_col: str, type: str):
     """
-    Construct the 'title varname' attribute when plotting the 
-    different types of erosion outputs
-    ----------------------------------------------------------------
-    ----------------------------------------------------------------
+    Build the title_varname string for an erosion or delivery plot.
+
+    Parameters:
+    - file_or_col: Raster filename or column name (year and
+      aggregation type are detected via keyword matching).
+    - type: Measure type label, e.g. 'erosion' or 'delivered'.
+
+    Returns:
+    - Title string combining aggregation type, measure, and year.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
     """
+    # Detect year from the filename or column name:
     if 'y1' in file_or_col:
         year = 'Year 1'
     elif 'y2' in file_or_col:
@@ -786,6 +902,7 @@ def get_erosion_title(file_or_col:str, type:str):
     else:
         year = '-'
 
+    # Detect whether this is a peak or total aggregation:
     if 'peak' in file_or_col:
         agg = 'Peak 30-min'
     elif 'total' in file_or_col:
@@ -798,60 +915,65 @@ def get_erosion_title(file_or_col:str, type:str):
 
     return title
 
+
 ###############################################################################
-def get_zonal_stats(gdf, raster_path, label, extra_stats=None,
-                    all_touched=False, stats=None):
+def get_zonal_stats(
+    gdf,
+    raster_path,
+    label,
+    extra_stats=None,
+    all_touched=False,
+    stats=None,
+    ):
     """
-    Compute zonal statistics for each polygon in *gdf* against a raster.
+    Compute zonal statistics for each polygon in gdf against a raster.
 
-    Parameters
-    ----------
-    gdf : GeoDataFrame
-        Zone polygons.
-    raster_path : str
-        Path to the raster file.
-    label : str
-        Label for logging.
-    extra_stats : list of str, optional
-        Additional rasterstats statistics to include in the output
-        (e.g. ``['count', 'nodata']``).  These are appended to the
-        standard STATS list.
-    all_touched : bool
-        If True, include every raster cell touched by a geometry, not
-        just those with centres inside the polygon.  Useful for coarse
-        rasters where small zones may otherwise have zero pixel overlap.
-    stats : list of str, optional
-        If given, replaces the default STATS list entirely (and ignores
-        *extra_stats*).  Use when only a single aggregation is needed.
+    Parameters:
+    - gdf: GeoDataFrame of zone polygons.
+    - raster_path: Path to the raster file.
+    - label: Label string used in log messages.
+    - extra_stats: Additional rasterstats statistics to include (e.g.
+      ['count', 'nodata']). Appended to the standard STATS list.
+    - all_touched: If True, include every raster cell touched by a
+      polygon, not just those with centres inside it. Useful for
+      coarse rasters where small zones may have zero pixel overlap.
+    - stats: If given, replaces the default STATS list entirely
+      (extra_stats is then ignored).
 
-    Returns
-    -------
-    list of dict
-        One dict per zone with keys for each requested statistic.
+    Returns:
+    - List of dicts, one per zone, with a key for each requested
+      statistic.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
     """
+    # Build the list of statistics to request from rasterstats:
     if stats is not None:
         requested = list(stats)
     else:
         requested = list(STATS)
         if extra_stats:
-            requested = requested + [s for s in extra_stats if s not in requested]
-
+            requested = requested + [
+                s for s in extra_stats if s not in requested
+                ]
 
     with rio.open(raster_path) as src:
         logger.info(
-            f'Getting zonal stats for raster in EPSG:{src.crs.to_epsg()}.'
+            f'Getting zonal stats for raster in '
+            f'EPSG:{src.crs.to_epsg()}. '
             f'Zonal vector is in EPSG:{gdf.crs.to_epsg()}.'
             )
+        # Reproject zones to the raster CRS if they differ:
         if src.crs != gdf.crs:
-            logger.info(f'Reprojecting zones to {src.crs.to_epsg()}...')
+            logger.info(
+                f'Reprojecting zones to {src.crs.to_epsg()}...'
+                )
             temp_gdf = gdf.to_crs(src.crs)
         else:
             temp_gdf = gdf
 
-        # Determine the effective nodata value.  For float rasters
-        # without a declared nodata, use NaN — this is the standard
-        # convention and ensures NaN pixels in soil/aridity grids are
-        # correctly excluded from statistics.
+        # Determine the effective nodata value. For float rasters
+        # without a declared nodata, use NaN - this is the standard
+        # convention and ensures NaN pixels are correctly excluded:
         nd = src.nodata
         if nd is None and np.issubdtype(src.dtypes[0], np.floating):
             nd = float('nan')
@@ -864,7 +986,7 @@ def get_zonal_stats(gdf, raster_path, label, extra_stats=None,
                 'ignore',
                 message='Warning: converting a masked element to nan',
                 category=UserWarning,
-            )
+                )
             zstats = rs.zonal_stats(
                 temp_gdf,
                 raster_path,
@@ -873,4 +995,3 @@ def get_zonal_stats(gdf, raster_path, label, extra_stats=None,
                 all_touched=all_touched,
                 )
     return zstats
-
