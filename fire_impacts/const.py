@@ -1,5 +1,9 @@
+"""
+Shared constants, conversion factors, file names, and field names
+used throughout the fire_impacts package.
+"""
 
-#------- Conversions: --------------------------------------------------
+# ------- Conversions: -------------------------------------------------
 # Basic units:
 M_TO_KM = 1e-3
 M2_TO_HA = 1e-4
@@ -9,39 +13,39 @@ APPROX_KM_PER_DEGREE = 111
 APPROX_DEGREES_TO_METRES = 111000
 KG_TO_TONNES = 1e-3
 
-#------ General lookups: -----------------------------------------------
-CRS_METRE_UNITS={'m','meter','meters','metre','metres'}
-STATS=['mean', 'max', 'min', 'median', 'std']
+# ------- General lookups: ---------------------------------------------
+CRS_METRE_UNITS = {'m', 'meter', 'meters', 'metre', 'metres'}
+STATS = ['mean', 'max', 'min', 'median', 'std']
 
-#------- Hydrology constants: ------------------------------------------
-DEFAULT_HW_THRESHOLD=20000
+# ------- Hydrology constants: -----------------------------------------
+DEFAULT_HW_THRESHOLD = 20000
 D8_FLOW_DIRECTIONS = (
-    64, #north
-    128, #northeast
-    1, #east
-    2, #southeast
-    4, #south
-    8, #southwest
-    16, #west
-    32 #northwest
+    64,   # north
+    128,  # northeast
+    1,    # east
+    2,    # southeast
+    4,    # south
+    8,    # southwest
+    16,   # west
+    32,   # northwest
     )
 FLOW_ROUTING_TYPE = 'd8'
 
-#------ Debris flow Constants: -----------------------------------------
+# ------- Debris flow constants: ---------------------------------------
 HILLSLOPE_AREA = 1.3e4
 CHANNELISED_FLOW_THRESHOLD = 1.4e7
-SEDIMENT_BULK_DENSITY=1270 # kg/m3
-ROCK_BULK_DENSITY=2220 # kg/m3
-HILLSLOPE_ROCK_FRACTION=0.12
-CHANNEL_ROCK_FRACTION=0.45
-HILLSLOPE_PARAMETERS=dict(
+SEDIMENT_BULK_DENSITY = 1270  # kg/m3
+ROCK_BULK_DENSITY = 2220  # kg/m3
+HILLSLOPE_ROCK_FRACTION = 0.12
+CHANNEL_ROCK_FRACTION = 0.45
+HILLSLOPE_PARAMETERS = dict(
     ae=4.5e-4,
     be=0.36,
-    ad=0.3*4.5e-4,
+    ad=0.3 * 4.5e-4,
     bd=0.36,
     rock=HILLSLOPE_ROCK_FRACTION
     )
-CHANNEL_PARAMETERS=dict(
+CHANNEL_PARAMETERS = dict(
     ae=4.1e-4,
     be=0.52,
     ad=3.7e-7,
@@ -50,10 +54,10 @@ CHANNEL_PARAMETERS=dict(
     )
 NUM_SIM_YEARS = 2
 
-#------ Dtype standards: -----------------------------------------------
+# ------- Dtype standards: ---------------------------------------------
 
-# Convert numpy one-character dtype.kind attributes into more general 
-#descriptors that will map in default_dtypes_raster:
+# Convert numpy one-character dtype.kind attributes into more
+# general descriptors that map into default_dtypes_raster:
 numpy_kind_to_desc = {
     'i': 'int',
     'u': 'int',
@@ -61,7 +65,7 @@ numpy_kind_to_desc = {
     }
 NODATA_VAL_INT = -9999
 
-#------ Standardised file names: ---------------------------------------
+# ------- Standardised file names: ------------------------------------
 # Key hydrology files:
 DEM_FN = 'DEM'
 FLOW_ACCUMULATION_FN = 'Flow_accumulation'
@@ -74,7 +78,7 @@ ERO_CUM_M_ALL_FN = 'Erosion_cum_mass_all'
 ERO_CUM_M_CLY_FN = 'Erosion_cum_mass_clay'
 ERO_CUM_M_SED_FN = 'Erosion_cum_mass_sediment'
 
-#------ Standardised field names: --------------------------------------
+# ------- Standardised field names: -----------------------------------
 # Debris flow:
 CLY_M_ACC_KG = 'Clay mass accumulation (kg)'
 TOT_EM_ACC_KG = 'Total erosion mass accumulation (kg)'
@@ -91,7 +95,7 @@ SC_ID = 'sc_ID'
 # Debris flow constituents lookup:
 PCLE_CTUENT_NAME = 'Particulate constituent'
 AVG_CTUENT_MGPKG = 'Average amount (mgkg-1)'
-#HFlookup:
+# HF lookup:
 HF_ARID_IDX_THRESH = 'AI'
 HF_DNBR_THRESH = 'dNBR'
 HF_YEARS_THRESH = 'years'
@@ -108,14 +112,14 @@ SLOPE_DEG_MEAN = 'Slope_mean'
 SLOPE_DEG_MEAN_ADJ = SLOPE_DEG_MEAN + adjusted_suffix
 I12_CRIT_Y = HF_I12_CRIT + year_suffix
 
-#------ Output file names: ---------------------------------------------
+# ------- Output file names: ------------------------------------------
 # RUSLE erosion:
 RUSLE_OP_PEAK_Y1_NAME = 'peak_erosion_y1'
 RUSLE_OP_PEAK_Y2_NAME = 'peak_erosion_y2'
 RUSLE_OP_TOTAL_Y1_NAME = 'erosion_y1'
 RUSLE_OP_TOTAL_Y2_NAME = 'erosion_y2'
 RUSLE_OP_TIMESERIES_NAME = 'daily_time_series'
-# Sediment delivered to streams (RUSLE × SDR ratio):
+# Sediment delivered to streams (RUSLE x SDR ratio):
 DELIVERED_OP_PEAK_Y1_NAME = 'peak_delivered_y1'
 DELIVERED_OP_PEAK_Y2_NAME = 'peak_delivered_y2'
 DELIVERED_OP_TOTAL_Y1_NAME = 'delivered_y1'
@@ -140,7 +144,7 @@ DEBRIS_SC_SUMMARY_NAME = 'DebrisFlowData_subcatchments'
 # Rainfall:
 RAIN_DAILY_DEPTH_TIMESERIES_NAME = 'rain_depth_daily_time_series'
 
-#------- Directory folder names: ---------------------------------------
+# ------- Directory folder names: -------------------------------------
 TOPOGRAPHY_FOLDER_NAME = 'Topography'
 FIRE_SEVERITY_FOLDER_NAME = 'FireSeverity'
 SOILS_FOLDER_NAME = 'Soils'
