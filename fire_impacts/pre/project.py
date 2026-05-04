@@ -1,6 +1,7 @@
-'''
-This module contains the classes and functions that are used to manage the data for the fire_impacts module.
-'''
+"""
+Classes and functions for managing fire impacts project folder
+structure and data.
+"""
 
 import os
 from glob import glob
@@ -19,6 +20,7 @@ import matplotlib.pyplot as plt
 
 from .. import util as toputil
 from .. import const
+
 logger = logging.getLogger(__name__)
 
 # Sentinel used to distinguish "kwarg omitted" from an explicit None
@@ -26,20 +28,20 @@ logger = logging.getLogger(__name__)
 # value" vs. "keep what's there").
 _UNSET = object()
 
-# These are the default directories that need to exist inside every 
-#catchments directory:
+# Default directories required inside every catchment directory.
 PER_CATCHMENT_FOLDERS = const.PER_CATCHMENT_FOLDERS
 
 STATS = const.STATS
-APPROX_KM_PER_DEGREE = const.APPROX_KM_PER_DEGREE  
+APPROX_KM_PER_DEGREE = const.APPROX_KM_PER_DEGREE
 
-# State exactly what dtypes we're happy to save rasters in:
+# State exactly what dtypes we're happy to save rasters in.
 default_dtypes_raster = {
     'int': rio.int32,
-    'float': rio.float32
+    'float': rio.float32,
     }
-# Convert numpy one-character dtype.kind attributes into more general 
-#descriptors that will map in default_dtypes_raster:
+
+# Convert numpy one-character dtype.kind attributes into more
+# general descriptors that map into default_dtypes_raster.
 numpy_kind_to_desc = const.numpy_kind_to_desc
 
 
@@ -48,27 +50,28 @@ numpy_kind_to_desc = const.numpy_kind_to_desc
 ###############################################################################
 class FireImpactsProject(object):
     """
-    Object representing the project folder structure for a fire impacts 
-    study.
+    Represents the project folder structure for a fire impacts study.
     --------------------------------------------------------------------
     Notes:
-    - Keeps track of data related to one or more catchments
-    - Register catchments using the add_catchment or add_all_catchments 
-    methods.
+    - Keeps track of data related to one or more catchments.
+    - Register catchments using add_catchment() or
+      add_all_catchments().
     --------------------------------------------------------------------
     """
+
+    # --- Persistence --------------------------------------------------------
+
     ###########################################################################
-    def __init__(self,project_path,exist_ok=False,clear=False):
+    def __init__(self, project_path, exist_ok=False, clear=False):
         """
-        Initialise a project object from a given project path based on 
-        the file found in the project path.
-        
+        Initialise a project from a project path.
+
         Parameters:
-        - project_path (str): Path to the project folder.
-        - exist_ok (bool): If True, do not raise an error if the 
-        project folder already exists.
-        - clear (bool): If True, clear the project folder if it already 
-        exists.
+        - project_path: Path to the project folder.
+        - exist_ok: If True, do not raise an error if the project
+          folder already exists.
+        - clear: If True, clear the project folder if it already
+          exists.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
@@ -78,22 +81,23 @@ class FireImpactsProject(object):
         self.boundary_files = {}
         self.source_data = {}
         # Per-catchment name of the string field in the subcatchment
-        # layer that should be used as the label in downstream outputs
-        # (e.g. 'SiteID' for Avon).  Populated by add_subcatchments()
+        # layer used as the label in downstream outputs
+        # (e.g. 'SiteID' for Avon). Populated by add_subcatchments()
         # or set_subcatchment_label_field() and persisted in settings.
         self.subcatchment_label_fields: dict = {}
 
-        # If the user has said to clear the existing folder OR they have
-        #said to proceed with loading a new project even if there is
-        #already a folder there:
+        # If the user has said to clear the existing folder OR they
+        # have said to proceed even if there is already a folder:
         if clear or not exist_ok:
-            self.initialise_project(norm_path,exist_ok=exist_ok,clear=clear)
+            self.initialise_project(
+                norm_path, exist_ok=exist_ok, clear=clear
+                )
         else:
             try:
                 self.load_project()
             except:
                 self.initialise_project(
-                    norm_path,exist_ok=exist_ok,clear=clear
+                    norm_path, exist_ok=exist_ok, clear=clear
                     )
 
         self.load_vis_defaults()
@@ -102,17 +106,16 @@ class FireImpactsProject(object):
     ###########################################################################
     def _settings_fn(self):
         """
-        Load settings from a .json file in the project folder
+        Return the path to the project's settings.json file.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        return os.path.join(self.project_path,'settings.json')
+        return os.path.join(self.project_path, 'settings.json')
 
     ###########################################################################
     def _settings(self):
         """
-        Get the settings from the project that are required for the
-        settings.json file
+        Return the settings dict to be written to settings.json.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
@@ -127,48 +130,46 @@ class FireImpactsProject(object):
     ###########################################################################
     def _write(self):
         """
-        Write the settings from the current project to a .json file
+        Write current project settings to settings.json.
         ----------------------------------------------------------------
         Notes:
-        - All this really does is save the paths for the boundary files
-        in a json-friendly way
+        - Saves paths for boundary files in a JSON-friendly format.
         ----------------------------------------------------------------
         """
-        # Use _settings_fn() to get the path in write mode:
-        with open(self._settings_fn(),'w') as f:
-            json.dump(self._settings(),f,indent=2)
+        with open(self._settings_fn(), 'w') as f:
+            json.dump(self._settings(), f, indent=2)
+
+    # --- Path helpers -------------------------------------------------------
 
     ###########################################################################
-    def catchment_path(self,catchment_name=None,*args):
+    def catchment_path(self, catchment_name=None, *args):
         """
-        Expand a path based on key words to a usable path relative to 
-        a particular catchment
+        Build a path relative to a particular catchment's folder.
 
         Parameters:
-        - catchment_name (str): Name of the catchment to expand the 
-        path for. If not provided, the path will be expanded to the 
-        main Catchments folder.
-        - args (list): Additional path components to expand.
+        - catchment_name: Name of the catchment. If not provided,
+          returns the top-level Catchments folder path.
+        - args: Additional sub-path components below the catchment
+          folder (e.g. 'Erodibility', 'KLSCP.tif').
 
         Returns:
-        - Path to the catchment folder, or base as a fallback
+        - Full path to the catchment folder or sub-path.
         ----------------------------------------------------------------
         Notes:
-        - Args should correspond to subfolder names, for example 
-        'Erodibility', 'KLSCP.tif' gives the full path to that file
+        - Args should correspond to subfolder names; for example
+          'Erodibility', 'KLSCP.tif' gives the full path to that
+          file.
         ----------------------------------------------------------------
         """
         # Every project will have a Catchments folder:
-        base = os.path.join(self.project_path,'Catchments')
-        # If they haven't provided additional arguments, just return
-        #the top level:
+        base = os.path.join(self.project_path, 'Catchments')
         if catchment_name is None:
             assert len(args) == 0, (
                 'Cannot specify additional arguments without a '
                 'catchment name.'
                 )
             return base
-        return os.path.join(base,catchment_name,*args)
+        return os.path.join(base, catchment_name, *args)
 
     ###########################################################################
     def ensemble_path(
@@ -178,112 +179,146 @@ class FireImpactsProject(object):
         event: str = 'default',
         ensemble: str = 'default',
         ):
-        """Resolve a path under a given catchment's event + ensemble
-        results folder.
+        """
+        Resolve a path under a catchment's event + ensemble folder.
 
-        Structure::
+        Parameters:
+        - catchment_name: Name of the catchment.
+        - args: Path components appended below the ensemble folder.
+        - event: Event name. Defaults to 'default' so single-event
+          projects can ignore this parameter entirely.
+        - ensemble: Ensemble name within the event. Defaults to
+          'default'.
 
-            Catchments/<catchment>/Events/<event>/Ensemble/<ensemble>/<args>
-
-        Multiple ensembles per event support comparing, e.g., the same
-        fire under current vs. future climate.  The ``Events/`` layer
-        is the forward-compatible seam for the planned multi-event
-        support — single-event projects simply use ``event='default'``.
-
-        Parameters
-        ----------
-        catchment_name : str
-        *args : str
-            Path components appended below the ensemble folder.
-        event : str
-            Event name.  Defaults to ``'default'`` so single-event
-            projects can ignore this parameter entirely.
-        ensemble : str
-            Ensemble name within the event.  Defaults to ``'default'``.
+        Returns:
+        - Full path under Catchments/<catchment>/Events/<event>/
+          Ensemble/<ensemble>/<args>.
+        ----------------------------------------------------------------
+        Notes:
+        - Multiple ensembles per event support comparing the same
+          fire under current vs. future climate.
+        - The Events/ layer is the forward-compatible seam for
+          planned multi-event support.
+        ----------------------------------------------------------------
         """
         return os.path.join(
             self.catchment_path(catchment_name),
             'Events', event, 'Ensemble', ensemble,
             *args,
-        )
+            )
+
+    # --- Project initialisation and loading ---------------------------------
 
     ###########################################################################
     def load_project(self):
         """
-        (re)Load the project settings from the settings file.
+        (Re)load project settings from settings.json.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # Get the current path and load the settings file in:
-        with open(self._settings_fn(),'r') as f:
+        with open(self._settings_fn(), 'r') as f:
             settings = json.load(f)
-        # Get the names of the current catchments and assign to 
-        #class instance:
-        self.catchments = settings.get('catchments',[])
-        # If Source data has been loaded, assign to class instance:
-        self.source_data = settings.get('source_data',{})
-        # Load boundary files to class instance:
-        self.boundary_files = settings.get('boundary_files',{})
-        # Per-catchment subcatchment label field (e.g. 'SiteID'):
+        self.catchments = settings.get('catchments', [])
+        self.source_data = settings.get('source_data', {})
+        self.boundary_files = settings.get('boundary_files', {})
         self.subcatchment_label_fields = settings.get(
             'subcatchment_label_fields', {}
-        )
-
-
+            )
         self.ensure_catchment_folders()
         self.load_vis_defaults()
         self.load_name_defaults()
 
     ###########################################################################
+    def initialise_project(
+        self, project_path, exist_ok=False, clear=False
+        ):
+        """
+        Create a new project at the given path.
+
+        Parameters:
+        - project_path: Desired location, with the project name as
+          the final folder component.
+        - exist_ok: If True, allow creation inside an existing folder.
+        - clear: If True, remove project-managed entries
+          (settings.json, Catchments/) before re-initialising.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # If there is already a folder and the user has said NOT to
+        # clear it:
+        if not clear and os.path.exists(project_path):
+            raise FileExistsError(
+                f'Project folder already exists: {project_path}'
+                )
+        # If there is already a folder and the user has said it is ok
+        # to clear its contents. Only remove project-managed entries
+        # (settings.json and Catchments/) rather than the entire
+        # folder so that initialising into an existing directory
+        # (e.g. '.') is safe and doesn't blow away unrelated files.
+        if clear and os.path.exists(project_path) and not exist_ok:
+            logger.info(
+                f'Clearing project entries (settings.json, '
+                f'Catchments/) in: {project_path}'
+                )
+            settings_path = self._settings_fn()
+            if os.path.isfile(settings_path):
+                os.remove(settings_path)
+            catchments_dir = self.catchment_path()
+            if os.path.isdir(catchments_dir):
+                shutil.rmtree(catchments_dir)
+        # Create a new Catchments folder and write empty settings:
+        os.makedirs(self.catchment_path(), exist_ok=exist_ok)
+        self._write()
+
+    # --- Catchment registration ---------------------------------------------
+
+    ###########################################################################
     def add_catchment(
         self,
-        catchment_shapefile:str|Path,
+        catchment_shapefile: str | Path,
         name=None,
         replace_existing=False,
-        subcatchment_id_cols:list=None,
+        subcatchment_id_cols: list = None,
         subcatchment_label_field=_UNSET,
         ):
         """
         Register a new catchment in the project.
 
-        Parameters
-        ----------
-        catchment_shapefile : str or Path
-            Shapefile of the catchment boundary.  When this file
-            contains multiple polygons it is treated as a subcatchment
-            coverage: the geometries are dissolved to a single boundary
-            (saved alongside the catchment) and the original file is
-            registered as the subcatchment coverage via
-            :meth:`add_subcatchments`.
-        name : str, optional
-            Catchment name.  Defaults to the shapefile basename.
-        replace_existing : bool
-            If True, replace an existing catchment of the same name.
-            Otherwise raise.
-        subcatchment_id_cols, subcatchment_label_field
-            Forwarded to :meth:`add_subcatchments` when the source
-            shapefile is dissolved into both a boundary and a
-            subcatchment coverage.  Ignored for single-polygon inputs.
+        Parameters:
+        - catchment_shapefile: Shapefile of the catchment boundary.
+          When this file contains multiple polygons it is treated as
+          a subcatchment coverage: geometries are dissolved to a
+          single boundary and the original file is registered via
+          add_subcatchments().
+        - name: Catchment name. Defaults to the shapefile basename.
+        - replace_existing: If True, replace an existing catchment
+          of the same name. Otherwise raise.
+        - subcatchment_id_cols: Forwarded to add_subcatchments()
+          when the source shapefile is dissolved into a boundary and
+          a subcatchment coverage. Ignored for single-polygon inputs.
+        - subcatchment_label_field: Forwarded to add_subcatchments()
+          in the same circumstances as subcatchment_id_cols.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
         """
         # If a name hasn't been specified, derive one from the
-        #shapefile name:
+        # shapefile name:
         if name is None:
-            name = os.path.splitext(os.path.basename(catchment_shapefile))[0]
+            name = os.path.splitext(
+                os.path.basename(catchment_shapefile)
+                )[0]
 
-        # Check if the catchment is already there:
+        # Check if the catchment is already registered:
         have_already = name in self.catchments
-        # If so, and the user hasn't said to replace, raise an error:
         if have_already and not replace_existing:
             raise ValueError(
                 f'Catchment {name} already exists in project.'
                 )
-        # If the catchment isn't already there, add its name to the
-        #list of catchments in the class instance
         if not have_already:
             self.catchments.append(name)
 
         # Inspect the input: a multi-feature shapefile is interpreted
-        # as a subcatchment coverage.  Dissolve to a single boundary
+        # as a subcatchment coverage. Dissolve to a single boundary
         # for the catchment itself; the original file is then
         # registered as the subcatchment layer below.
         src_gdf = gpd.read_file(catchment_shapefile)
@@ -297,215 +332,240 @@ class FireImpactsProject(object):
             dissolved = src_gdf.dissolve()
             boundary_path = os.path.join(
                 self.catchment_path(name), f'{name}_boundary.shp'
-            )
+                )
             dissolved.to_file(boundary_path)
             self.boundary_files[name] = boundary_path
             logger.info(
-                'Source shapefile %s contains %d features; dissolved '
-                'to a single boundary at %s.  The original coverage '
-                'will be registered as subcatchments.',
-                catchment_shapefile, len(src_gdf), boundary_path,
-            )
+                f'Source shapefile {catchment_shapefile} contains '
+                f'{len(src_gdf)} features; dissolved to a single '
+                f'boundary at {boundary_path}. The original coverage '
+                f'will be registered as subcatchments.'
+                )
         else:
             self.boundary_files[name] = str(catchment_shapefile)
 
-        # Update the settings.json file so it includes the new
-        #catchment:
+        # Update settings.json with the new catchment:
         self._write()
 
         # When the source was a coverage, register it as the
-        # subcatchment layer for this catchment.  This must run after
-        # the boundary is in place — add_subcatchments() clips against
-        # it.
+        # subcatchment layer. This must run after the boundary is in
+        # place - add_subcatchments() clips against it.
         if is_coverage:
             self.add_subcatchments(
                 name,
                 str(catchment_shapefile),
                 id_cols=subcatchment_id_cols or [],
                 label_field=subcatchment_label_field,
-            )
+                )
 
     ###########################################################################
     def add_subcatchments(
         self,
-        catchment_name:str,
-        subcatch_shapefile_path:str,
-        id_cols:list=[],
+        catchment_name: str,
+        subcatch_shapefile_path: str,
+        id_cols: list = [],
         label_field=_UNSET,
         ):
         """
-        Load subcatchments from a shapefile.
+        Load subcatchments for a catchment from a shapefile.
 
-        Parameters
-        ----------
-        catchment_name : str
-        subcatch_shapefile_path : str
-        id_cols : list
-            Attribute columns from the source shapefile to retain
-            alongside the internal ``sc_ID`` index.
-        label_field : str, None, or omitted
-            Which of the retained columns should be treated as the
-            preferred string label for downstream outputs (e.g.
-            ``'SiteID'``).
-
-            Three cases:
-
-            - **Omitted** — if a label field is already registered
-              for this catchment (typical when re-running to refresh
-              the shapefile) it is preserved and a warning is
-              logged.  When no prior registration exists, defaults
-              to the first entry of *id_cols* when that looks like a
-              string column.
-            - **Explicit ``None``** — clear any registered label
-              field for this catchment (no warning).
-            - **String** — use as the label; a warning is logged if
-              this changes a previously-registered value.
-
-            The final choice is persisted in ``settings.json`` so
-            functions like
-            :func:`combine_rusle_and_debris_subcatchment` can pick
-            it up automatically.
-
-        Notes
-        -----
-        - Reprojects to the catchment CRS.
+        Parameters:
+        - catchment_name: Name of the catchment to attach
+          subcatchments to.
+        - subcatch_shapefile_path: Path to the subcatchment shapefile.
+        - id_cols: Attribute columns from the source shapefile to
+          retain alongside the internal sc_ID index.
+        - label_field: Which of the retained columns to treat as the
+          preferred string label for downstream outputs (e.g.
+          'SiteID').
+        ----------------------------------------------------------------
+        Notes:
+        - label_field has three-way semantics:
+          - Omitted: keeps any existing registration if the field
+            is still present, else defaults to the first id_col
+            that is a string column.
+          - Explicit None: clears any registered label field.
+          - String: sets the field explicitly; warning logged if
+            it replaces a prior registration.
+        - The resolved label is persisted in settings.json so that
+          helpers like combine_rusle_and_debris_subcatchment() can
+          pick it up automatically.
+        - Reprojects to the catchment CRS if needed.
         - Clips to the catchment boundary.
-        - Keeps identifying attributes.
-        - Saves processed boundary as shapefile in the Subcatchments
-          folder and updates ``settings.json``.
+        - Retains identifying attributes from id_cols.
+        - Saves the processed shapefile in the Subcatchments folder
+          and updates settings.json.
+        ----------------------------------------------------------------
         """
-        # Read in the proposed subcatchments:
         in_gdf = gpd.read_file(subcatch_shapefile_path)
-        # Check and compare CRS of subcatchment and existing catchment:
+
+        # Check and compare CRS of subcatchment and existing
+        # catchment; reproject if needed:
         subcatch_crs = in_gdf.crs
         catch_crs = self.catchment_crs(catchment_name)
         if subcatch_crs != catch_crs:
             catch_epsg = catch_crs.to_epsg()
             subcatch_epsg = subcatch_crs.to_epsg()
             logger.info(
-                f'Subcatchment shapefile CRS is EPSG: {subcatch_epsg}. '
-                'Reprojecting/transforming to the catchment CRS which '
-                f'is EPSG: {catch_epsg}.'
+                f'Subcatchment shapefile CRS is EPSG: {subcatch_epsg}.'
+                f' Reprojecting to catchment CRS (EPSG: {catch_epsg}).'
                 )
             int_gdf = in_gdf.to_crs(catch_crs)
         else:
             int_gdf = in_gdf
 
-        # Check that there is at least some overlap in the bounding 
-        #boxes of the newly 
+        # Clip the subcatchments to the catchment boundary:
         catch_gdf = self.catchment_boundary(catchment_name)
         logger.info(
             'Clipping subcatchments to the catchment polygon...'
             )
-        # Clip the subcatchments to the catchment boundary
         subcatch_clipped = int_gdf.clip(catch_gdf)
-        # Raise an error if there's no shared area:
+
+        # Raise an error if there is no shared area:
         if subcatch_clipped.empty:
             raise ValueError(
-                'Only subcatchment areas within the catchment boundary '
-                'can be processed, but there were none left after '
-                'clipping.'
+                'Only subcatchment areas within the catchment '
+                'boundary can be processed, but there were none '
+                'left after clipping.'
                 )
-        # Add original subcatchment geodataframe to boundary files:
+
+        # Register the source shapefile path in boundary_files:
         key_name = catchment_name + '_' + 'subcatchments'
         previous_source = self.boundary_files.get(key_name)
-        previous_label = self.subcatchment_label_fields.get(catchment_name)
-        if previous_source is not None and previous_source != subcatch_shapefile_path:
-            logger.warning(
-                "Replacing registered subcatchments for catchment "
-                "'%s': source was %s, now %s. The saved clipped "
-                "shapefile will be overwritten.",
-                catchment_name, previous_source, subcatch_shapefile_path,
+        previous_label = self.subcatchment_label_fields.get(
+            catchment_name
             )
+        if (previous_source is not None
+                and previous_source != subcatch_shapefile_path):
+            logger.warning(
+                f"Replacing registered subcatchments for catchment "
+                f"'{catchment_name}': source was {previous_source}, "
+                f"now {subcatch_shapefile_path}. The saved clipped "
+                f"shapefile will be overwritten."
+                )
         self.boundary_files[key_name] = subcatch_shapefile_path
 
-        # Resolve the label field with three-way semantics for
-        # *label_field*: omitted (sentinel) → preserve existing;
-        # explicit None → clear registration; string → use as-is.
+        # Resolve the label field with three-way semantics:
+        # omitted (sentinel) -> preserve existing;
+        # explicit None -> clear registration; string -> use as-is.
         if label_field is _UNSET:
             if previous_label is not None:
                 if previous_label in in_gdf.columns:
                     logger.warning(
-                        "add_subcatchments() called for catchment "
-                        "'%s' without label_field=, but '%s' is "
-                        "already registered and present in %s — "
-                        "keeping it. Pass label_field=None "
-                        "explicitly to clear the registration.",
-                        catchment_name, previous_label,
-                        subcatch_shapefile_path,
-                    )
+                        f"add_subcatchments() called for catchment "
+                        f"'{catchment_name}' without label_field=, "
+                        f"but '{previous_label}' is already "
+                        f"registered and present in "
+                        f"{subcatch_shapefile_path} - keeping it. "
+                        f"Pass label_field=None to clear."
+                        )
                     resolved_label = previous_label
                 else:
                     logger.warning(
-                        "add_subcatchments() called for catchment "
-                        "'%s' without label_field=, and the "
-                        "previously registered field '%s' is not "
-                        "present in %s. Subcatchment outputs will "
-                        "fall back to integer indices.",
-                        catchment_name, previous_label,
-                        subcatch_shapefile_path,
-                    )
+                        f"add_subcatchments() called for catchment "
+                        f"'{catchment_name}' without label_field=, "
+                        f"and the previously registered field "
+                        f"'{previous_label}' is not present in "
+                        f"{subcatch_shapefile_path}. Subcatchment "
+                        f"outputs will fall back to integer indices."
+                        )
                     resolved_label = None
             elif id_cols:
                 first = id_cols[0]
-                if first in in_gdf.columns and in_gdf[first].dtype == object:
+                if (first in in_gdf.columns
+                        and in_gdf[first].dtype == object):
                     resolved_label = first
                 else:
                     resolved_label = None
             else:
                 resolved_label = None
         else:
-            # Caller specified explicitly (either a name or None).
+            # Caller specified explicitly (either a name or None):
             resolved_label = label_field
             if (resolved_label is not None
                     and previous_label is not None
                     and resolved_label != previous_label):
                 logger.warning(
-                    "Changing subcatchment label field for catchment "
-                    "'%s' from '%s' to '%s'.",
-                    catchment_name, previous_label, resolved_label,
-                )
+                    f"Changing subcatchment label field for "
+                    f"catchment '{catchment_name}' from "
+                    f"'{previous_label}' to '{resolved_label}'."
+                    )
 
         if resolved_label is not None:
-            self.subcatchment_label_fields[catchment_name] = resolved_label
+            self.subcatchment_label_fields[catchment_name] = (
+                resolved_label
+                )
         else:
             self.subcatchment_label_fields.pop(catchment_name, None)
 
         self._write()
 
-        # Get only the useful columns, plus geometry. Always retain the
-        # resolved label column so downstream code can label outputs by
-        # subcatchment name rather than integer index.
+        # Get only the useful columns plus geometry. Always retain
+        # the resolved label column so downstream code can label
+        # outputs by subcatchment name rather than integer index.
         good_cols = list(id_cols)
-        if resolved_label is not None and resolved_label not in good_cols:
+        if (resolved_label is not None
+                and resolved_label not in good_cols):
             if resolved_label in subcatch_clipped.columns:
                 good_cols.append(resolved_label)
         good_cols.append(subcatch_clipped.geometry.name)
         int_gdf = subcatch_clipped[good_cols]
 
-        #Use the index as the internal integer subcatchment id (sc_ID)
-        out_gdf = int_gdf.reset_index(drop=False, names=self.subcatchment_id)
+        # Use the index as the internal integer subcatchment id
+        # (sc_ID):
+        out_gdf = int_gdf.reset_index(
+            drop=False, names=self.subcatchment_id
+            )
 
-        # Save the clipped subcatchments to the subcatchments folder:
-        save_path = self.catchment_path(catchment_name, 'Subcatchments')
+        # Save the clipped subcatchments to the Subcatchments folder:
+        save_path = self.catchment_path(
+            catchment_name, 'Subcatchments'
+            )
         key_file_name = key_name + '.shp'
         key_file_path = os.path.join(save_path, key_file_name)
         out_gdf.to_file(key_file_path)
         logger.info(
-            'Saved clipped subcatchments shapefile in the catchment '
-            f'crs to {key_file_path}'
+            f'Saved clipped subcatchments shapefile to {key_file_path}'
             )
 
     ###########################################################################
-    def subcatchment_label_field(self, catchment_name: str):
-        """Return the preferred string label field for a catchment's
-        subcatchments, or *None* if not set.
+    def add_all_catchments(self, catchment_shapefiles):
+        """
+        Register all catchments in the project from a list of
+        shapefiles.
 
-        Set via :meth:`add_subcatchments` (``label_field=`` argument)
-        or :meth:`set_subcatchment_label_field`.  Consumed by
-        downstream helpers like
-        :func:`combine_rusle_and_debris_subcatchment` so that output
-        columns carry meaningful names without per-call configuration.
+        Parameters:
+        - catchment_shapefiles: List of paths to the shapefiles
+          defining the catchment boundaries.
+        ----------------------------------------------------------------
+        Notes:
+        - Replaces any existing catchments with the same names.
+        ----------------------------------------------------------------
+        """
+        for shapefile in catchment_shapefiles:
+            logger.info(f'Adding catchment from: {shapefile}')
+            self.add_catchment(shapefile, replace_existing=True)
+
+    # --- Subcatchment label field -------------------------------------------
+
+    ###########################################################################
+    def subcatchment_label_field(self, catchment_name: str):
+        """
+        Return the preferred subcatchment label field, or None.
+
+        Parameters:
+        - catchment_name: Name of the catchment to look up.
+
+        Returns:
+        - The registered label field name, or None if not set.
+        ----------------------------------------------------------------
+        Notes:
+        - Set via add_subcatchments() (label_field= argument) or
+          set_subcatchment_label_field().
+        - Consumed by helpers like
+          combine_rusle_and_debris_subcatchment() so that output
+          columns carry meaningful names without per-call config.
+        ----------------------------------------------------------------
         """
         return self.subcatchment_label_fields.get(catchment_name)
 
@@ -513,9 +573,17 @@ class FireImpactsProject(object):
     def set_subcatchment_label_field(
         self, catchment_name: str, field: str | None,
         ):
-        """Set (or clear with *None*) the preferred subcatchment label
-        field for a catchment, persisting it to ``settings.json``.
         """
+        Set or clear the preferred subcatchment label field.
+
+        Parameters:
+        - catchment_name: Name of the catchment to update.
+        - field: Field name to register, or None to clear.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        # None clears the registration; a string is validated against
+        # the subcatchment columns before being set:
         if field is None:
             self.subcatchment_label_fields.pop(catchment_name, None)
         else:
@@ -525,99 +593,47 @@ class FireImpactsProject(object):
                     f"Field '{field}' not found on "
                     f"{catchment_name} subcatchments. Available: "
                     f"{list(subs.columns)}"
-                )
+                    )
             self.subcatchment_label_fields[catchment_name] = field
         self._write()
 
+    # --- Directory management -----------------------------------------------
+
     ###########################################################################
-    def ensure_catchment_folders(self,catchment_name:str=None):
+    def ensure_catchment_folders(self, catchment_name: str = None):
         """
-        Make sure the project directory structure is as expected. 
-        Create the required folders if they don't already exist.
+        Create required catchment sub-folders if they don't exist.
+
+        Parameters:
+        - catchment_name: Name of the catchment to check. If not
+          provided, runs for all registered catchments.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # Run for all catchments if none is specified:
+        # If no name given, recurse for every registered catchment:
         if catchment_name is None:
             for catchment in self.catchments:
                 self.ensure_catchment_folders(catchment)
             return
-        # Get the catchment-level folder:
         catchment_path = self.catchment_path(catchment_name)
-        # Go throuh each of the required folders:
+        # Create each standard subfolder if it doesn't already exist:
         for folder in PER_CATCHMENT_FOLDERS:
-            # Make a new one if it's not already there:
-            os.makedirs(os.path.join(catchment_path,folder),exist_ok=True)
-
-    ###########################################################################
-    def add_all_catchments(self,catchment_shapefiles):
-        """
-        Register all catchments in the project from a list of 
-        shapefiles.
-
-        Parameters:
-        - catchment_shapefiles (list): List of paths to the shapefiles 
-        defining the catchment boundaries.
-        ----------------------------------------------------------------
-        Notes:
-        - This method will replace any existing catchments in the 
-        project.
-        ----------------------------------------------------------------
-        """
-        for shapefile in catchment_shapefiles:
-            logger.info('Adding catchment from: %s',shapefile)
-            self.add_catchment(shapefile,replace_existing=True)
-
-    ###########################################################################
-    def initialise_project(self,project_path,exist_ok=False,clear=False):
-        """
-        Load a brand new project in the specified path. Throw an error 
-        if it already exists but user has said not to clear.
-
-        Parameters:
-        - project_path: path to the desired location, including the 
-        desired project name as the final folder
-        ----------------------------------------------------------------
-        ----------------------------------------------------------------
-        """
-        # If there is already a folder and the user has said NOT to
-        #clear it:
-        if not clear and os.path.exists(project_path):
-            raise FileExistsError(
-                f'Project folder already exists: {project_path}'
+            os.makedirs(
+                os.path.join(catchment_path, folder), exist_ok=True
                 )
-        # If there is already a folder and the user as said it's ok to
-        #clear its contents.  Only remove the project-managed entries
-        #(settings.json and Catchments/) rather than the entire folder
-        #so that initialising into an existing directory (e.g. '.') is
-        #safe and doesn't blow away unrelated files.
-        if clear and os.path.exists(project_path) and not exist_ok:
-            logger.info(
-                'Clearing project entries (settings.json, Catchments/) '
-                'in: %s', project_path,
-            )
-            settings_path = self._settings_fn()
-            if os.path.isfile(settings_path):
-                os.remove(settings_path)
-            catchments_dir = self.catchment_path()
-            if os.path.isdir(catchments_dir):
-                shutil.rmtree(catchments_dir)
-        # Create a new folder in the location of the project path:
-        os.makedirs(self.catchment_path(),exist_ok=exist_ok)
-        # Write the settings (which will initially be shells):
-        self._write()
+
+    # --- Geometry access ----------------------------------------------------
 
     ###########################################################################
-    def catchment_boundary(self,catchment:str) -> gpd.GeoDataFrame:
+    def catchment_boundary(self, catchment: str) -> gpd.GeoDataFrame:
         """
         Get the catchment boundary as a GeoDataFrame.
 
         Parameters:
-        - catchment: name of the catchment loaded into the class 
-        instance
+        - catchment: Name of the catchment.
 
         Returns:
-        - Geodataframe of the catchment boundary file
+        - GeoDataFrame of the catchment boundary file.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
@@ -626,92 +642,89 @@ class FireImpactsProject(object):
         return gdf
 
     ###########################################################################
-    def get_subcatchments(self,catchment:str) -> gpd.GeoDataFrame:
+    def get_subcatchments(self, catchment: str) -> gpd.GeoDataFrame:
         """
         Get the subcatchment boundaries as a GeoDataFrame.
 
         Parameters:
-        - Name of the catchment to get subcatchments for
+        - catchment: Name of the catchment.
 
         Returns:
-        - Geodataframe of subcatchments if it exists, otherwise just 
-        the catchment boundary itself
+        - GeoDataFrame of subcatchments if available, otherwise the
+          catchment boundary itself.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # Load basic path elements:
         shape_name = catchment + '_subcatchments.shp'
         project_folder = 'Subcatchments'
         new_id_col_name = self.subcatchment_id
-        # Read in the shapefile:
         gdf = self.get_catchment_polygons(
             catchment,
             project_folder,
             shape_name,
-            new_id_col_name
+            new_id_col_name,
             )
-        
         return gdf
-    
+
     ###########################################################################
-    def get_headwaters(self, catchment:str) -> gpd.GeoDataFrame:
+    def get_headwaters(self, catchment: str) -> gpd.GeoDataFrame:
         """
-        Get the headwater boundaries and basic attributes as a 
-        GeoDataFrame.
+        Get the headwater boundaries as a GeoDataFrame.
 
         Parameters:
-        - Name of the catchment to get subcatchments for
+        - catchment: Name of the catchment.
 
         Returns:
-        - Geodataframe of headwaters
+        - GeoDataFrame of headwaters.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # Load basic path elements:
         shape_name = 'Headwaters.shp'
         project_folder = 'Topography'
         new_id_col_name = self.headwater_id
-        # Read in the shapefile:
         gdf = self.get_catchment_polygons(
             catchment,
             project_folder,
             shape_name,
-            new_id_col_name
+            new_id_col_name,
             )
         return gdf
 
-        
     ###########################################################################
     def get_catchment_polygons(
         self,
-        catchment:str,
-        folder:str,
-        poly_file_name:str,
-        auto_id_col_name:str
+        catchment: str,
+        folder: str,
+        poly_file_name: str,
+        auto_id_col_name: str,
         ) -> gpd.GeoDataFrame:
         """
-        Read a shapefile containing relevant polygons in a catchment and
-        return a GeoDataFrame
+        Read a polygon shapefile from a catchment sub-folder.
+
+        Parameters:
+        - catchment: Name of the catchment.
+        - folder: Sub-folder name within the catchment directory.
+        - poly_file_name: Shapefile filename.
+        - auto_id_col_name: Column name to assign from the row index
+          if not already present in the shapefile.
+
+        Returns:
+        - GeoDataFrame with all shapefile columns, plus the auto-id
+          column if it was absent.
         ----------------------------------------------------------------
         Notes:
-        - First check if headwaters have been created.
-        - Return the GeoDataFrame wiht all the inherent columns
+        - The auto-id column is only added when not already present.
+          extract_headwaters() writes hw_ID as 1-based integers;
+          blindly overwriting it with gdf.index (0-based) would cause
+          a mismatch when merging against any CSV built from the
+          shapefile's own IDs.
         ----------------------------------------------------------------
         """
-        # Get the path to the shapefile:
         shapefile_path = self.catchment_path(
-            catchment,
-            folder,
-            poly_file_name
+            catchment, folder, poly_file_name
             )
-        # Check that it exists and if so, return it:
         if os.path.exists(shapefile_path):
             gdf = gpd.read_file(shapefile_path)
-            # Only create the ID column if the shapefile doesn't already
-            # have one. extract_headwaters() writes hw_ID as 1-based
-            # integers; blindly overwriting it with gdf.index (0-based)
-            # would cause a one-position mismatch when merging against
-            # any CSV that was built from the shapefile's own IDs.
             if auto_id_col_name not in gdf.columns:
                 gdf[auto_id_col_name] = gdf.index
             return gdf
@@ -724,56 +737,55 @@ class FireImpactsProject(object):
             'topography.extract_headwaters() first.'
             )
 
+    # --- Catchment properties -----------------------------------------------
+
     ###########################################################################
-    def catchment_bounds(self,catchment:str, buffer_distance_km:float=10):
+    def catchment_bounds(
+        self, catchment: str, buffer_distance_km: float = 10
+        ):
         """
-        Get the bounding box for a catchment in WGS84 with an 
-        (optional) buffer distance in approximate kilometres.
+        Get the WGS84 bounding box for a catchment with an optional
+        buffer.
 
         Parameters:
-        - catchment: name of the catchment to get the bounding box of
-        - buffer_distance_km: number of kilometres beyond the 
-        catchment's boundary to buffer before getting the bounding box
+        - catchment: Name of the catchment.
+        - buffer_distance_km: Kilometres beyond the catchment
+          boundary to buffer before computing the bounding box.
 
         Returns:
-        - List of min/max longitude/latitude of the buffered catchment 
-        boundary
+        - List of [min_lon, min_lat, max_lon, max_lat] for the
+          buffered boundary.
         ----------------------------------------------------------------
         Notes:
-        - Buffer is important to allow for differences in projections 
-        etc.
-        - Primarily used for getting satellite data through dea-tools
+        - Buffer accommodates projection differences and is primarily
+          used when requesting satellite data through dea-tools.
         ----------------------------------------------------------------
         """
-        # Get the catchmetn boundary and transform to WGS84:
         gdf = self.catchment_boundary(catchment)
         gdf_wgs84 = gdf.to_crs(epsg=4326)
-        # Get the extent from the transformed geodataframe:
         bbox = gdf_wgs84.total_bounds
 
-        # Convert 10 km to degrees (approximate conversion, 1 degree = 
-        #111 km)
+        # Convert km to approximate degrees (1 degree ≈ 111 km):
         buffer_degrees = buffer_distance_km / APPROX_KM_PER_DEGREE
 
-        # Apply buffer to the bounding box
         bbox_with_buffer = [
             bbox[0] - buffer_degrees,  # minx with buffer
             bbox[1] - buffer_degrees,  # miny with buffer
             bbox[2] + buffer_degrees,  # maxx with buffer
-            bbox[3] + buffer_degrees   # maxy with buffer
-        ]
+            bbox[3] + buffer_degrees,  # maxy with buffer
+            ]
         return bbox_with_buffer
 
     ###########################################################################
-    def catchment_crs(self,catchment:str):
+    def catchment_crs(self, catchment: str):
         """
-        Get the CRS for a catchment from the catchment boundary
+        Get the CRS for a catchment from its boundary shapefile.
 
         Parameters:
-        - catchment: name of the catchment
+        - catchment: Name of the catchment.
 
         Returns:
-        - GeoPandas crs object
+        - GeoPandas CRS object.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
@@ -781,70 +793,72 @@ class FireImpactsProject(object):
         return gdf.crs
 
     ###########################################################################
-    def cell_area(self,catchment:str=None):
+    def cell_area(self, catchment: str = None):
         """
-        Get the cell area of the DEM for a catchment
+        Get the cell area of the DEM for a catchment.
 
         Parameters:
-        - catchment: name of the catchment
-        
+        - catchment: Name of the catchment. If not provided,
+          returns results for all catchments.
+
         Returns:
-        - Planar area of one cell in the catchment DEM, in the units of 
-        that DEM
+        - Planar area of one DEM cell in the DEM's native units, or
+          a dict of values keyed by catchment name.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # If no catchment sspecified, process for all catchments:
         if catchment is None:
             return self.for_each_catchment(
-                lambda c:self.cell_area(catchment=c)
+                lambda c: self.cell_area(catchment=c)
                 )
-
-        # Get the path for the DEM for the current cathment:
-        fn = self.catchment_path(catchment,'Topography','DEM.tif')
-        
-        # Open the DEM in rasterio:
+        fn = self.catchment_path(catchment, 'Topography', 'DEM.tif')
         with rio.open(fn) as src:
-            # Get the transform, which has the cell sizes
             transform = src.transform
-            # Compute width *  height and return the positive value:
+            # transform.a is x pixel size; transform.e is y pixel
+            # size (negative for north-up rasters):
             return abs(transform.a * transform.e)
 
+    # --- Iteration ----------------------------------------------------------
+
     ###########################################################################
-    def for_each_catchment(self,fn:callable):
+    def for_each_catchment(self, fn: callable):
         """
         Run a function for each catchment in the project.
 
         Parameters:
-        - fn (callable): Function to run for each catchment. The
-        function should take a single argument (the catchment name)
-        and optionally return a value.
+        - fn: Function that takes a catchment name and optionally
+          returns a value.
 
         Returns:
-        - dict: Dictionary containing the results of the function for
-        each catchment.
+        - Dict mapping catchment name to the function's return value.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        logger.info('Processing %d catchments',len(self.catchments))
-        return {catchment:fn(catchment) for catchment in self.catchments}
+        logger.info(f'Processing {len(self.catchments)} catchments')
+        return {
+            catchment: fn(catchment)
+            for catchment in self.catchments
+            }
+
+    # --- Visualisation configuration ----------------------------------------
 
     ###########################################################################
     def load_vis_defaults(self):
         """
-        Helper function to load certain values for default
-        visualisations
+        Load default visualisation parameter dicts.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
         from matplotlib.colors import LogNorm
+
+        # Topographic layers:
         self.vis_DEM = {
             'cmap': 'viridis',
             'measure': 'Elevation',
             'units': 'm',
             'norm': None,
             'cbar_extend': 'neither',
-            'title_varname': 'DEM'
+            'title_varname': 'DEM',
             }
 
         self.vis_slope = {
@@ -853,7 +867,7 @@ class FireImpactsProject(object):
             'units': '°',
             'norm': None,
             'cbar_extend': 'neither',
-            'title_varname': 'Slope'
+            'title_varname': 'Slope',
             }
 
         self.vis_flow_accum = {
@@ -863,11 +877,12 @@ class FireImpactsProject(object):
             'norm': 'log',
             'vmin': 10,
             'cbar_extend': 'min',
-            'title_varname': 'Flow Accumulation'
+            'title_varname': 'Flow Accumulation',
             }
 
-        # Raw dNBR (raster): 0–1 scale, extend min to show negatives
-        # as the lowest colour without clipping the upper end.
+        # Fire severity (dNBR) - two scales for raw vs. standardised:
+        # Raw raster files use a 0-1 scale; extend min to show
+        # negatives without clipping the upper end.
         self.vis_dNBR_raw = {
             'cmap': 'inferno',
             'measure': 'ΔNBR',
@@ -878,8 +893,9 @@ class FireImpactsProject(object):
             'vmax': 1.0,
             'cbar_extend': 'min',
             }
-        # Standardised dNBR (zonal stats columns): 0–1000 scale, fixed
-        # range so the colour is consistent across catchments.
+
+        # Standardised dNBR (zonal stats columns): 0-1000 scale,
+        # fixed range so the colour is consistent across catchments.
         self.vis_dNBR_std = {
             'cmap': 'inferno',
             'measure': 'ΔNBR',
@@ -891,6 +907,7 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither',
             }
 
+        # Debris flow inputs and outputs:
         self.vis_i12_crit = {
             'cmap': 'plasma_r',
             'measure': '12-minute intensity threshold',
@@ -899,7 +916,7 @@ class FireImpactsProject(object):
             'norm': 'linear',
             'vmin': 0.0,
             'vmax': 800.0,
-            'cbar_extend': 'max'
+            'cbar_extend': 'max',
             }
 
         self.vis_num_debris_flow_events = {
@@ -911,15 +928,18 @@ class FireImpactsProject(object):
             'cbar_extend': 'neither',
             }
 
+        # Soil and climate factors:
         self.vis_aridity = {
             'cmap': 'cividis',
             'measure': 'Aridity Factor',
             'units': 'wet → dry',
             'title_varname': 'Aridity',
             'norm': 'linear',
-            'cbar_extend': 'neither'
+            'cbar_extend': 'neither',
             }
 
+        # Erosion and sediment delivery rasters (stored in t/cell;
+        # converted to t/ha at plot time via scale_to_per_ha):
         self.vis_erosion = {
             'cmap': 'cividis',
             'measure': 'Erosion',
@@ -944,6 +964,7 @@ class FireImpactsProject(object):
             'scale_to_per_ha': True,
             }
 
+        # Debris mass (log scale; units are kg per cell):
         self.vis_debris_mass = {
             'cmap': 'cividis',
             'measure': 'Available Debris Mass',
@@ -951,43 +972,59 @@ class FireImpactsProject(object):
             'title_varname': 'Debris Flow Mass',
             'norm': 'log',
             'vmin': 0,
-            'cbar_extend': 'neither'
+            'cbar_extend': 'neither',
             }
 
     ###########################################################################
-    def get_vis_params(self, file_or_col_name:str):
+    def get_vis_params(self, file_or_col_name: str):
         """
-        Get the appropriate visualisation parameters based on the name 
-        of a raster file OR the name of a column in a table
-        ----------------------------------------------------------------
-        ----------------------------------------------------------------
-        """
-        input_string = file_or_col_name.lower().strip().replace(' ', '_')
-        clay_mass_fmt = const.DEBRIS_MASS_FIELD.lower().strip().replace(' ', '_')
+        Get appropriate visualisation parameters for a raster or
+        column name.
 
-        # Fallback values:
+        Parameters:
+        - file_or_col_name: Name of the raster file or data column
+          to look up.
+
+        Returns:
+        - Dict of visualisation parameters, falling back to defaults
+          if no match is found.
+        ----------------------------------------------------------------
+        Notes:
+        - dNBR is routed specially: raw raster files (dNBR.tif,
+          masked_dNBR.tif) use the 0-1 raw scale; zonal-stat columns
+          (dNBR_mean, dNBR_max, ...) use the 0-1000 standardised
+          scale.
+        ----------------------------------------------------------------
+        """
+        # Normalise the input string for case-insensitive lookup:
+        input_string = (
+            file_or_col_name.lower().strip().replace(' ', '_')
+            )
+        clay_mass_fmt = (
+            const.DEBRIS_MASS_FIELD.lower().strip().replace(' ', '_')
+            )
+
         default_params = {
             'cmap': 'viridis',
             'measure': 'Undefined',
             'units': 'n/a',
             'norm': None,
             'cbar_extend': 'neither',
-            'title_varname': ''
+            'title_varname': '',
             }
 
-        # dNBR needs special routing: raw raster files (dNBR.tif,
-        # masked_dNBR.tif) use the 0–1 raw scale; zonal-stat columns
-        # (dNBR_mean, dNBR_max, …) use the 0–1000 standardised scale.
+        # Special case: dNBR routes to raw or standardised vis params
+        # depending on whether the input looks like a stats column:
         _stat_suffixes = ('_mean', '_max', '_min', '_median', '_std')
         if 'dnbr' in input_string:
             is_stats_col = any(
                 input_string.endswith(s) for s in _stat_suffixes
-            )
+                )
             return (
                 self.vis_dNBR_std if is_stats_col else self.vis_dNBR_raw
-            )
+                )
 
-        # Dictionary linking keyword substrings to vis_params dicts:
+        # Map keyword substrings to vis_params dicts:
         param_dict = {
             'slope': self.vis_slope,
             'flow_acc': self.vis_flow_accum,
@@ -998,34 +1035,32 @@ class FireImpactsProject(object):
             'delivered': self.vis_delivered,
             'dem': self.vis_DEM,
             clay_mass_fmt: self.vis_debris_mass,
-            'plain': default_params
+            'plain': default_params,
             }
 
-        # Return the vis_params attribute if the input string matches:
         for key, value in param_dict.items():
             if key in input_string:
                 return value
-        
+
         logger.info(
-            'Visualisation parameters not found for '
+            f'Visualisation parameters not found for '
             f'{file_or_col_name}. Falling back to defaults.'
             )
         return default_params
-        
-
 
     ###########################################################################
     def load_name_defaults(self):
         """
-        Load useful default field names to be accessed later
+        Load default field names from const.
         ----------------------------------------------------------------
         Notes:
-        - This may no longer be needed with the const.py module
+        - This may no longer be needed with the const.py module.
         ----------------------------------------------------------------
         """
-        # ID fields:
         self.headwater_id = const.HW_ID
         self.subcatchment_id = const.SC_ID
+
+    # --- Plotting -----------------------------------------------------------
 
     ###########################################################################
     def plot_catchment_raster(
@@ -1034,97 +1069,86 @@ class FireImpactsProject(object):
         catchment=None,
         existing_figure=None,
         axes_index=None,
-        new_subplot:bool=True
+        new_subplot: bool = True,
         ):
         """
-        Plot the requested raster for catchment(s)
+        Plot the requested raster for one or all catchments.
 
         Parameters:
-        - *args:
-        - catchment (str): name of the catchment to
-        plot. If none, each catchment in the current project will be
-        plotted.
-        - figure (mpl.figure): matplotlib figure object within
-        which all the plots will be created. This function will create
-        one if not provided.
-        - axes_index (int): Of the axes objects that belong to this
-        figure (if provided), the index of the one to draw on.
-        - new_subplot (bool): whether a new subplot needs to be created
-        as part of this call
+        - args: Path components identifying the raster within the
+          catchment folder.
+        - catchment: Name of the catchment to plot. If None, one
+          subplot per catchment is created.
+        - existing_figure: matplotlib figure to plot onto. A new one
+          is created if not provided.
+        - axes_index: Index of the axes within the figure to draw on.
+        - new_subplot: Whether to add a new subplot as part of this
+          call.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # If a figure object is not provided, create an empty one:
+        # Set up the figure, creating one if not provided. Track which
+        # axes index to draw onto:
         if existing_figure is None:
             from matplotlib import pyplot as plt
             figure = plt.figure()
-            # Case where neither figure nor subplot are provided:
             if axes_index is None:
-                # If no figure was provided, we also need a subplot index
-                #to provide later:
                 axes_index = 0
         else:
-            # Use the existing figure if it's been provided:
             figure = existing_figure
             if axes_index is None:
-                # If an axes index isn't provided, use the end one:
                 axes_index = len(figure.axes) - 1
-            # If they have provided an axes index but have also
-            #requested a new subplot, display a warning:
             else:
                 if new_subplot:
                     logger.warning(
-                        'project.plot_catchment_raster() received axes '
-                        f'{axes_index} but a new subplot was also '
-                        'requested via new_subplot=True. This is '
-                        'contradictory and will most likely produce '
-                        'an undseired result, like plots partially '
-                        'overlapping each other.'
+                        f'project.plot_catchment_raster() received '
+                        f'axes {axes_index} but a new subplot was '
+                        f'also requested via new_subplot=True. This '
+                        f'is contradictory and will most likely '
+                        f'produce an undesired result, like plots '
+                        f'partially overlapping.'
                         )
 
-
-        # If a catchment has not been specified, create a subplot for
-        #each catchment in the current project:
+        # If no catchment is specified, create one subplot per
+        # catchment in the project:
         if catchment is None:
             figure.subplots(
-                nrows=len(self.catchments), #One subplot per catchment
-                ncols=1 #Stack vertically
+                nrows=len(self.catchments),
+                ncols=1,
                 )
-            # Get a -something- for each catchment in the project
             self.for_each_catchment(
-                lambda c:self.plot_catchment_raster(
+                lambda c: self.plot_catchment_raster(
                     *args,
                     catchment=c,
                     existing_figure=figure,
                     axes_index=self.catchments.index(c),
-                    new_subplot=False
+                    new_subplot=False,
                     )
                 )
             return
-        # If catchment is not none we need to add a subplot:
         else:
             if new_subplot:
-                # Get the number of subplots already:
                 num_subs_already = len(figure.axes)
                 figure.add_subplot(
-                    num_subs_already + 1, #Num rows, add one to existing
-                    1, #Num cols
-                    num_subs_already + 1 #index, last row
+                    num_subs_already + 1,
+                    1,
+                    num_subs_already + 1,
                     )
+
         import rasterio as rio
         import os
         import numpy as np
 
-        raster_path = self.catchment_path(catchment,*args)
+        # Resolve the raster path and look up visualisation params:
+        raster_path = self.catchment_path(catchment, *args)
         if not raster_path.endswith('.tif'):
             raster_path += '.tif'
 
         gdf = self.catchment_boundary(catchment)
-
         file_name = args[-1]
-
         vis_params = self.get_vis_params(file_name)
 
+        # Determine the chart title from the filename:
         useful_filename_part = file_name.split('.')[0].lower()
         if 'erosion' in file_name:
             title = toputil.get_erosion_title(
@@ -1140,7 +1164,7 @@ class FireImpactsProject(object):
         # Fix the colour scale for erosion/delivery rasters so that
         # year 1 and year 2 are always comparable. Peak (30-min) and
         # total use different bounds; delivered tends to be lower than
-        # erosion so has its own set of limits.
+        # erosion so has its own set of limits:
         if 'erosion' in file_name:
             is_peak = 'peak' in file_name
             vis_params['vmin'] = 0.01 if is_peak else 10
@@ -1152,6 +1176,7 @@ class FireImpactsProject(object):
             vis_params['vmax'] = 50 if is_peak else 500
             vis_params['cbar_extend'] = 'both'
 
+        # Render the raster onto the axes and add boundary overlay:
         catch_name = toputil.clean_chart_title(catchment)
         chart_title = catch_name + ': ' + vis_params['title_varname']
 
@@ -1162,86 +1187,57 @@ class FireImpactsProject(object):
             vis_params,
             title=chart_title,
             colourbar=True,
-            clip_geometry=gdf
+            clip_geometry=gdf,
             )
 
-        # Get the coordinate reference of the raster so we can
-        #extract relevant info
+        # Get the coordinate reference of the raster to extract
+        # unit info for axis labels:
         if this_crs.is_projected:
             these_units = this_crs.linear_units + 's'
         elif this_crs.is_geographic:
             # Assumes degrees are the only relevant angular unit:
             these_units = 'degrees'
 
-        # Aesthetics:
         toputil.mapify_axes(ax, this_crs, these_units)
-
-        # Add the catchment boundary:
         plot_catchment_boundary(self, catchment, ax)
-
-        return
-
-    ###########################################################################
-    def get_saved_data(
-        self,
-        catchment:str,
-        type:str|None,
-        name:str,
-        format:str='csv'
-        ) -> pd.DataFrame:
-        """
-        Get a file saved within the catchment's folder structure
-        ----------------------------------------------------------------
-        ----------------------------------------------------------------
-        """
-        # Get the subfolder for the requested catchment:
-        if type is None:
-            data_table_loc = self.catchment_path(catchment)
-        # If a data type has been requested e.g. DebrisFlow, go to that
-        #subfolder:
-        else:
-            data_table_loc = self.catchment_path(catchment, type)
-        # Get the actual path the the file: 
-        data_table_path = os.path.join(
-            data_table_loc,
-            name
-            ) + '.' + format
-        
-        # Try reading in the csv:
-        df = pd.read_csv(data_table_path)
-
-        return df
-        
 
     ###########################################################################
     def plot_catchment_polygons(
         self,
-        catchment:str,
-        polygons:gpd.GeoDataFrame,
-        colour_col:str,
-        vis_params:dict,
-        title:str,
-        non_geo_data:pd.DataFrame | None=None,
-        id_col:str | None=None,
+        catchment: str,
+        polygons: gpd.GeoDataFrame,
+        colour_col: str,
+        vis_params: dict,
+        title: str,
+        non_geo_data: pd.DataFrame | None = None,
+        id_col: str | None = None,
         existing_figure=None,
-        existing_axes=None
+        existing_axes=None,
         ):
         """
-        Plot catchment polygons, 
-        optionally coloured by a specific column.
+        Plot catchment polygons optionally coloured by a data column.
+
+        Parameters:
+        - catchment: Name of the catchment (used to overlay the
+          boundary line).
+        - polygons: GeoDataFrame of polygons to plot.
+        - colour_col: Column name to use for polygon colouring.
+        - vis_params: Dict of visualisation parameters.
+        - title: Axes title.
+        - non_geo_data: Optional DataFrame with non-spatial data to
+          join to the polygons for colouring.
+        - id_col: Column name linking non_geo_data to polygons.
+        - existing_figure: matplotlib figure to plot onto.
+        - existing_axes: matplotlib axes to plot onto.
         ----------------------------------------------------------------
         Notes:
-        - individual methods (headwaters, subcatchments) should get the 
-        relevant geodataframe and non-spatial data, and join them 
-        together
-        - Then they should call this method to do the actual plotting.
+        - Specific callers (plot_headwaters, plot_subcatchments)
+          should get the relevant GeoDataFrame and non-spatial data,
+          then call this method to do the actual plotting.
         ----------------------------------------------------------------
         """
-
-        # Work out which figure/axes to use:
         fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
 
-        # Call the vector plotting function:
         this_crs, cbar, ax = toputil.plot_spatial_vector(
             ax,
             polygons,
@@ -1249,54 +1245,42 @@ class FireImpactsProject(object):
             title,
             symbol_data=non_geo_data,
             id_col_name=id_col,
-            data_col_name=colour_col
+            data_col_name=colour_col,
             )
 
-        
-
-        # Set a grey background for plots to aid readbility:
+        # Set a grey background to aid readability:
         ax.set_facecolor('#D3D3D3')
 
-        # Add scalebar or ticks as appropriate:
         these_units = this_crs.axis_info[0].unit_name
         toputil.mapify_axes(ax, this_crs, these_units)
-        # Add the catchment boundary:
         plot_catchment_boundary(self, catchment, ax)
 
     ###########################################################################
     def plot_headwaters(
         self,
-        catchment:str,
-        colour_col:str|None=None,
-        table:pd.DataFrame | None=None,
-        data_type:str='',
+        catchment: str,
+        colour_col: str | None = None,
+        table: pd.DataFrame | None = None,
+        data_type: str = '',
         existing_figure=None,
-        existing_axes=None
+        existing_axes=None,
         ):
         """
-        Plot the headwaters coloured by a specified data value
+        Plot headwaters coloured by a specified data value.
 
         Parameters:
-        - catchment (str): name of the catchment within the current
-        project
-        - colour_col (str): name of the column in the .csv file which
-        is to be used to colour the headwaters
-        - table (pd.DataFrame): OPTIONAL: DataFrame containing the
-        data to plot. If not provided, the function will attempt to
-        load a data table from file.
-        - data_type (str): name of the output type, which will generally
-        be DebrisFlow but could be RUSLE or similar later
-        - data_format (str): three-letter extension relevant to the file
-        type being read for the non-spatial data.
-        - existing figure (mpl.figure): matplotlib figure object to
-        include the new chart on, if desired. One will be created if
-        not.
-        - existing axes (mpl.axes): matplotlib axes object to plot the
-        new data onto, if desired. One will be created if not.
+        - catchment: Name of the catchment.
+        - colour_col: Column name to use for colouring. If None
+          (with no table provided), plots plain shapes.
+        - table: Optional pre-loaded DataFrame. Skips file loading
+          if provided.
+        - data_type: Output type subfolder name, typically
+          'DebrisFlow' (or '' for soil/slope summary).
+        - existing_figure: matplotlib figure to plot onto.
+        - existing_axes: matplotlib axes to plot onto.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # Get the headwater polygons:
         headwaters_gdf = self.get_headwaters(catchment)
 
         if data_type == 'DebrisFlow':
@@ -1305,9 +1289,9 @@ class FireImpactsProject(object):
         else:
             data_folder = None
             data_file_name = 'Soil_Slope_Aridity_dNBR_headwaters'
-        
+
         # If no colour column or data table is provided, skip data
-        # loading entirely and render plain shapes.
+        # loading entirely and render plain shapes:
         if colour_col is None and table is None:
             non_geo_data = None
         else:
@@ -1317,11 +1301,11 @@ class FireImpactsProject(object):
                 data_file=data_file_name,
                 catchment=catchment,
                 allow_basic=False,
-                table=table
+                table=table,
                 )
 
-        if non_geo_data is not None and colour_col in non_geo_data.columns:
-            # Get a subset of just the ID coloumn and the colour column:
+        if (non_geo_data is not None
+                and colour_col in non_geo_data.columns):
             id_col = self.headwater_id
             ng_for_join = non_geo_data[[id_col, colour_col]]
             actual_colour_col = colour_col
@@ -1331,6 +1315,7 @@ class FireImpactsProject(object):
             ng_for_join = None
             actual_colour_col = None
             column_for_title = '(plain)'
+
         if colour_col is not None:
             vis_params = self.get_vis_params(colour_col)
         else:
@@ -1340,9 +1325,9 @@ class FireImpactsProject(object):
             catchment,
             'Headwaters',
             vis_params['title_varname'],
-            column_for_title
+            column_for_title,
             )
-        
+
         self.plot_catchment_polygons(
             catchment=catchment,
             polygons=headwaters_gdf,
@@ -1352,7 +1337,7 @@ class FireImpactsProject(object):
             non_geo_data=ng_for_join,
             id_col=id_col,
             existing_figure=existing_figure,
-            existing_axes=existing_axes
+            existing_axes=existing_axes,
             )
 
     ###########################################################################
@@ -1364,102 +1349,95 @@ class FireImpactsProject(object):
         data_file: str | None = None,
         table: pd.DataFrame | None = None,
         existing_figure=None,
-        existing_axes=None
+        existing_axes=None,
         ):
         """
-        Plot subcatchment polygons coloured by a specified data column.
+        Plot subcatchment polygons coloured by a specified data
+        column.
 
         Parameters:
-        - catchment (str): name of the catchment in the current project
-        - colour_col (str): column name to use for polygon colouring
-        - data_type (str): OPTIONAL subfolder name under the catchment
+        - catchment: Name of the catchment.
+        - colour_col: Column name to use for polygon colouring.
+        - data_type: Optional subfolder name under the catchment
           directory where the data CSV lives (e.g. 'Results',
           'DebrisFlow'). Auto-detected from colour_col if not given.
-        - data_file (str): OPTIONAL CSV file name (without extension).
+        - data_file: Optional CSV file name (without extension).
           Auto-detected from colour_col if not given.
-        - table (pd.DataFrame): OPTIONAL pre-loaded data table. Skips
-          file loading if provided.
-        - existing_figure: matplotlib figure to plot onto
-        - existing_axes: matplotlib axes to plot onto
+        - table: Optional pre-loaded data table. Skips file loading
+          if provided.
+        - existing_figure: matplotlib figure to plot onto.
+        - existing_axes: matplotlib axes to plot onto.
         ----------------------------------------------------------------
         Notes:
-        - Auto-detection rules (applied when data_file is not supplied):
+        - Auto-detection rules (when data_file is not supplied):
             - colour_col contains 'erosion' or 'delivered':
               reads rusle_subcatchment_summary.csv from Results/
             - colour_col contains 'events', 'debris', 'mass', or
               'i12': reads DebrisFlowData_subcatchments.csv from
               DebrisFlow/
             - otherwise: reads Soil_Slope_Aridity_dNBR_subcatchments
-              from the catchment root (original behaviour)
+              from the catchment root
         - Shorthand column names are accepted:
             - 'erosion_y1' resolves to 'erosion_y1_sum'
             - 'peak_erosion_y1' resolves to 'peak_erosion_y1_mean'
-            - 'mass' resolves to the debris mass column
-              (const.DEBRIS_MASS_FIELD)
-        - Calling convention: (catchment, data_folder, colour_col)
-          is also accepted as a positional form for backwards
-          compatibility, e.g.
-          plot_subcatchments(name, 'DebrisFlow', 'Year1_num_events')
+            - 'mass' resolves to const.DEBRIS_MASS_FIELD
+        - Positional calling convention (catchment, data_folder,
+          colour_col) is also accepted for backwards compatibility,
+          e.g. plot_subcatchments(name, 'DebrisFlow', 'Year1_num_events')
         ----------------------------------------------------------------
         """
-        # Support positional calling convention
+        # Support legacy positional calling convention
         # (catchment, folder_name, colour_col). If colour_col looks
-        # like a data folder rather than a column name and data_type
-        # has been provided, the user probably passed them in the old
-        # order — swap them:
+        # like a folder name and data_type has been provided, swap:
         _known_folders = {
             'DebrisFlow', 'Results', 'Topography', 'Soils',
-            'Erodibility', 'Delivery', 'Subcatchments'
+            'Erodibility', 'Delivery', 'Subcatchments',
             }
         if colour_col in _known_folders and data_type is not None:
             colour_col, data_type = data_type, colour_col
 
-        # Auto-detect data_file from colour_col when not supplied.
-        # data_type is also set here if not already provided:
+        # Auto-detect data_file from colour_col when not supplied;
+        # also set data_type if not already provided:
         if data_file is None and table is None:
             col_lower = colour_col.lower()
             if any(k in col_lower for k in ('erosion', 'delivered')):
-                # RUSLE and sediment delivery outputs — produced by
-                # aggregate_rusle_to_subcatchments(), in Results/:
                 if data_type is None:
                     data_type = const.RESULTS_FOLDER_NAME
                 data_file = const.RUSLE_SC_SUMMARY_NAME
-            elif any(k in col_lower
-                     for k in ('events', 'debris', 'mass', 'i12')):
-                # Debris flow outputs — produced by
-                # aggregate_debris_flow_summary_to_subcatchments(),
-                # in DebrisFlow/:
+            elif any(
+                k in col_lower
+                for k in ('events', 'debris', 'mass', 'i12')
+                ):
                 if data_type is None:
                     data_type = 'DebrisFlow'
                 data_file = const.DEBRIS_SC_SUMMARY_NAME
             else:
-                # Fall back to soil/slope/aridity summary:
                 if data_type is None:
                     data_type = ''
                 data_file = 'Soil_Slope_Aridity_dNBR_subcatchments'
 
         subcatch_gdf = self.get_subcatchments(catchment)
 
-        # Get the non-spatial data
         non_geo_data = self.get_table_safely(
             colour_col=colour_col,
             data_type=data_type,
             data_file=data_file,
             catchment=catchment,
             allow_basic=True,
-            table=table
+            table=table,
             )
 
         # Resolve shorthand column names before looking up the data:
         if non_geo_data is not None:
-            # 'mass' → the actual debris mass delivery column:
+            # 'mass' -> the actual debris mass delivery column:
             if colour_col.lower().strip() == 'mass':
                 colour_col = const.DEBRIS_MASS_FIELD
-            # Bare column names → append the default aggregation
+
+            # Bare column names -> append the default aggregation
             # suffix. Rules:
-            #   i12 columns   → _min (most vulnerable headwater)
-            #   peak rasters  → _mean
-            #   total rasters → _sum
+            #   i12 columns  -> _min (most vulnerable headwater)
+            #   peak rasters -> _mean
+            #   total rasters -> _sum
             if colour_col not in non_geo_data.columns:
                 _cl = colour_col.lower()
                 if 'i12' in _cl:
@@ -1471,8 +1449,8 @@ class FireImpactsProject(object):
                 candidate = colour_col + suffix
                 if candidate in non_geo_data.columns:
                     logger.info(
-                        'Column %s not found; resolving to %s.',
-                        colour_col, candidate
+                        f'Column {colour_col} not found; '
+                        f'resolving to {candidate}.'
                         )
                     colour_col = candidate
 
@@ -1484,7 +1462,7 @@ class FireImpactsProject(object):
 
         vis_params = self.get_vis_params(colour_col)
 
-        # Copy before modifying — vis_params dicts are shared instance
+        # Copy before modifying - vis_params dicts are shared instance
         # attributes and must not be mutated in-place:
         vis_params = vis_params.copy()
 
@@ -1495,27 +1473,27 @@ class FireImpactsProject(object):
         if 'erosion' in col_lower or 'delivered' in col_lower:
             var_type = (
                 'Erosion' if 'erosion' in col_lower else 'Delivered'
-            )
+                )
             year = (
                 'Year 1' if 'y1' in col_lower
                 else 'Year 2' if 'y2' in col_lower
                 else ''
-            )
+                )
             if colour_col.endswith('_mean'):
                 # Peak rasters: each cell stores the max 30-min value.
-                # Zonal stat is mean across cells — 'mean tonnes per
+                # Zonal stat is mean across cells - 'mean tonnes per
                 # cell' distinguishes it from a catchment total:
                 agg = 'Peak 30-min'
                 vis_params['units'] = 'mean peak tonnes per cell'
             else:
                 # Total rasters: each cell stores cumulative tonnes.
-                # Zonal stat is a sum — i.e. total tonnes eroded
-                # within the subcatchment:
+                # Zonal stat is a sum - total tonnes eroded within
+                # the subcatchment:
                 agg = 'Total'
                 vis_params['units'] = 'total tonnes'
             vis_params['title_varname'] = (
                 f'{agg} {var_type} {year}'.strip()
-            )
+                )
 
         elif 'i12' in col_lower:
             # I12 threshold columns: suffix tells us min or mean.
@@ -1524,17 +1502,17 @@ class FireImpactsProject(object):
                 'Year 1' if 'year_1' in col_lower
                 else 'Year 2' if 'year_2' in col_lower
                 else ''
-            )
+                )
             stat_desc = (
                 'Min' if col_lower.endswith('_min') else 'Mean'
-            )
+                )
             vis_params['title_varname'] = (
                 f'{stat_desc} I12 Threshold {year}'.strip()
-            )
-            # Units are already 'mm/hr' from vis_i12_crit — correct.
+                )
+            # Units are already 'mm/hr' from vis_i12_crit - correct.
 
         # Build the axes title. When title_varname is fully specified,
-        # use it directly — make_axes_title sniffs year/agg from the
+        # use it directly - make_axes_title sniffs year/agg from the
         # column name and would duplicate them for suffixed columns
         # like 'peak_erosion_y1_mean'. Fall back to make_axes_title
         # only for columns with no recognised title_varname:
@@ -1543,13 +1521,13 @@ class FireImpactsProject(object):
             ax_title = (
                 f'{catch_label} Subcatchments: '
                 f'{vis_params["title_varname"]}'
-            )
+                )
         else:
             ax_title = toputil.make_axes_title(
                 catchment,
                 'Subcatchments',
                 vis_params['title_varname'],
-                colour_col
+                colour_col,
                 )
 
         self.plot_catchment_polygons(
@@ -1561,272 +1539,331 @@ class FireImpactsProject(object):
             non_geo_data=ng_for_join,
             id_col=id_col,
             existing_figure=existing_figure,
-            existing_axes=existing_axes
+            existing_axes=existing_axes,
             )
-            
+
+    # --- Data access --------------------------------------------------------
+
+    ###########################################################################
+    def get_saved_data(
+        self,
+        catchment: str,
+        type: str | None,
+        name: str,
+        format: str = 'csv',
+        ) -> pd.DataFrame:
+        """
+        Read a file saved within a catchment's folder structure.
+
+        Parameters:
+        - catchment: Name of the catchment.
+        - type: Subfolder name (e.g. 'DebrisFlow'), or None to read
+          from the catchment root.
+        - name: File name without extension.
+        - format: File extension (default 'csv').
+
+        Returns:
+        - DataFrame read from the specified file.
+        ----------------------------------------------------------------
+        ----------------------------------------------------------------
+        """
+        if type is None:
+            data_table_loc = self.catchment_path(catchment)
+        else:
+            data_table_loc = self.catchment_path(catchment, type)
+        data_table_path = (
+            os.path.join(data_table_loc, name) + '.' + format
+            )
+        df = pd.read_csv(data_table_path)
+        return df
+
     ###########################################################################
     def get_table_safely(
         self,
-        colour_col:str,
-        data_type:str,
-        data_file:str,
-        catchment:str,
-        allow_basic:bool,
-        table:pd.DataFrame | None=None
+        colour_col: str,
+        data_type: str,
+        data_file: str,
+        catchment: str,
+        allow_basic: bool,
+        table: pd.DataFrame | None = None,
         ):
         """
-        Perform basic sanity checks and retrieve a non-spatial table 
-        for use when plotting polygons like headwaters or subcatchments.
+        Load a non-spatial table with basic sanity checks for polygon
+        plotting.
+
+        Parameters:
+        - colour_col: Column name to be used for colouring polygons.
+        - data_type: Subfolder name within the catchment directory.
+        - data_file: CSV file name without extension.
+        - catchment: Name of the catchment.
+        - allow_basic: If True, return None (rather than raising)
+          when the file is not found, so polygons are still plotted
+          in a uniform colour.
+        - table: Optional pre-loaded DataFrame. Skips file loading
+          if provided.
+
+        Returns:
+        - DataFrame if loaded or provided, or None if the file was
+          not found and allow_basic is True.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
         if table is None:
-            # Try to get the data using the specified data type/file:
             try:
                 non_geo_data = self.get_saved_data(
                     catchment=catchment,
                     type=data_type,
-                    name=data_file
+                    name=data_file,
                     )
-            # If nothing is found we'll still plot the subcatchments 
-            #but all the same colour:
             except FileNotFoundError:
                 if allow_basic:
                     logger.info(
                         'Plotting polygons was requested with no '
                         'data to colour the shapes with. Proceeding '
-                        'to plot boundaries with uniform '
-                        'colours.'
+                        'with uniform colours.'
                         )
                     non_geo_data = None
                 else:
                     raise
         else:
             non_geo_data = table
-        # Raise an error if there is data available but the required 
-        #column is not there:
+
+        # Warn if the required column is missing from the loaded data:
         if non_geo_data is not None:
             if colour_col not in non_geo_data.columns:
                 logger.warning(
-                    'project.plot_subcatchments() was asked to colour '
-                    f'the map based on {colour_col}, but data table '
-                    f'only had the following:\n {non_geo_data.columns}. '
-                    'plotting will proceed but with all symbols the ' \
-                    'same.'
+                    f'project.plot_subcatchments() was asked to '
+                    f'colour the map based on {colour_col}, but the '
+                    f'data table only had: '
+                    f'{list(non_geo_data.columns)}. Plotting will '
+                    f'proceed with uniform colours.'
                     )
         return non_geo_data
 
     ###########################################################################
     def thresh_sev_scatter(
         self,
-        catchment:str,
-        existing_figure = None,
-        existing_axes = None,
+        catchment: str,
+        existing_figure=None,
+        existing_axes=None,
         width=12,
         height=8,
-        dpi=600
+        dpi=600,
         ):
         """
-        Produce a scatter plot of year 1 and year 2 critical rainfall
-        intensity thresholds (x-axis) vs. mean dNBR (y-axis) for each
-        headwater.
+        Scatter plot of year 1 and year 2 critical rainfall intensity
+        thresholds vs. mean dNBR for each headwater.
 
         Parameters:
-        - catchment (str): name of the catchment within the current
-        project
-        - existing figure (mpl.figure): matplotlib figure object to
-        include the new chart on, if desired. One will be created if
-        not.
-        - existing axes (mpl.axes): matplotlib axes object to plot the
-        new data onto, if desired. One will be created if not.
-        - width (numeric): desired width of the figure in inches
-        - height (numeric): desired height of the figure in inches
-        - dpi (int): desired resolution of the figure in dots per inch
+        - catchment: Name of the catchment.
+        - existing_figure: matplotlib figure to plot onto.
+        - existing_axes: matplotlib axes to plot onto.
+        - width: Figure width in inches.
+        - height: Figure height in inches.
+        - dpi: Figure resolution in dots per inch.
+
+        Returns:
+        - matplotlib figure object.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        # Get the location of the debris flow data for the current
-        #catchment:
+        # Load the DebrisFlow data for this catchment:
         folder = self.catchment_path(catchment, 'DebrisFlow')
         file = 'DebrisFlowData.csv'
         path = os.path.join(folder, file)
 
-        # Make sure it actually existsa and if not, throw an error:
         if not os.path.isfile(path):
             raise FileNotFoundError(
-                'project.thresh_sev_scatter() requires debris flow data '
-                'to be loaded. Run debris.debris_flow() which will save '
-                f'the required data in a csv here:\n{path}'
-            )
+                'project.thresh_sev_scatter() requires debris flow '
+                'data to be loaded. Run debris.debris_flow() which '
+                f'will save the required data here:\n{path}'
+                )
         non_geo_data = pd.read_csv(path)
-        # Prepare the data for plotting:
+
+        # Extract the threshold and dNBR columns, dropping any rows
+        # with missing values:
         x1_col = 'I12_crit_mean_Year_1'
         x2_col = 'I12_crit_mean_Year_2'
         y_col = 'dNBR_mean'
-        data_for_scatter = non_geo_data[[x1_col, x2_col, y_col]].dropna()
+        data_for_scatter = (
+            non_geo_data[[x1_col, x2_col, y_col]].dropna()
+            )
 
-        # Get median values for axes lines:
+        # Compute median values to use as reference lines on the plot:
         median_x1_col = data_for_scatter[x1_col].median()
         median_x2_col = data_for_scatter[x2_col].median()
         median_y_col = data_for_scatter[y_col].median()
 
-        # Colours for each years' data:
-        col_year_1 = '#800080' #purple
-        col_year_2 = '#696969' #grey
+        col_year_1 = '#800080'  # purple
+        col_year_2 = '#696969'  # grey
 
+        # Set up figure size and resolution:
         sfig, sax = toputil.fig_ax_admin(existing_figure, existing_axes)
-
-        # Set size and resolution parameters for figure:
         sfig.set_size_inches(width, height)
         sfig.set_dpi(dpi)
 
-        # Plot year 1 and then year 2 values:
-        splot1 = sax.scatter(
+        # Plot year 1 and year 2 threshold values as separate scatter
+        # series so they can be distinguished by marker and colour:
+        sax.scatter(
             x=data_for_scatter[x1_col],
             y=data_for_scatter[y_col],
             marker='x',
             color=col_year_1,
-            label='Year 1'
+            label='Year 1',
             )
-        splot2 = sax.scatter(
+        sax.scatter(
             x=data_for_scatter[x2_col],
             y=data_for_scatter[y_col],
             marker='o',
             color=col_year_2,
-            label='Year 2'
-        )
+            label='Year 2',
+            )
         sax.set_ylim(0, 1000)
 
-        # Vertical lines for critical rainfall threshold medians for
-        #each year:
-        x1_col_med = sax.axvline(
+        # Vertical median lines for each year's critical threshold:
+        sax.axvline(
             x=median_x1_col,
             label='I12 crit. rain threshold: y1 median',
             ls='--',
-            c=col_year_1
+            c=col_year_1,
             )
-        x2_col_med = sax.axvline(
+        sax.axvline(
             x=median_x2_col,
             label='I12 crit. rain threshold: y2 median',
             ls='--',
-            c=col_year_2
+            c=col_year_2,
             )
-        # Horizontal line for dNBR median (will be 0 inles)
-        y_col_med = sax.axhline(
-            y=median_y_col, label=f'dNBR median', ls=':', c='grey'
+        # Horizontal line for the dNBR median:
+        sax.axhline(
+            y=median_y_col, label='dNBR median', ls=':', c='grey'
             )
 
-        # Aesthetics:
+        # Add title, axis labels, and legend:
+        catch_title = toputil.clean_chart_title(catchment)
         sax.set_title(
             'Scatter plot of mean dNBR vs year 1 critical rainfall '
-            f'for {toputil.clean_chart_title(catchment)} headwaters'
+            f'for {catch_title} headwaters'
             )
-        sax.set_xlabel(
-            'I12 critical threshold for debris flow'
-            )
+        sax.set_xlabel('I12 critical threshold for debris flow')
         sax.set_ylabel('Mean dNBR')
+        sax.legend(loc='upper left', bbox_to_anchor=(1.0, 1.0))
 
-        # Add legend:
-        this_leg = sax.legend(
-            loc='upper left',
-            bbox_to_anchor=(1.0, 1.0)
-            )
         return sfig
-    
+
+    # --- Fire metadata ------------------------------------------------------
+
     ###########################################################################
     def get_fire_end_date(self, catchment):
         """
-        Get the end date of the fire for a oarticular catchment as a 
-        pandas datetime
+        Get the fire end date for a catchment as a pandas Timestamp.
+
+        Parameters:
+        - catchment: Name of the catchment.
+
+        Returns:
+        - pandas Timestamp of the fire end date.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
         fire_meta_path = self.catchment_path(
             catchment,
             const.FIRE_SEVERITY_FOLDER_NAME,
-            'FireMeta.csv'
+            'FireMeta.csv',
             )
         fire_meta = pd.read_csv(fire_meta_path, index_col=0)
-        end_date_iso = fire_meta.loc['end_date','Value']
+        end_date_iso = fire_meta.loc['end_date', 'Value']
         return pd.to_datetime(end_date_iso)
 
 
-###########################################################################
+###############################################################################
 def plot_catchment_boundary(
-    project:FireImpactsProject,
-    catchment:str,
+    project: FireImpactsProject,
+    catchment: str,
     axes,
-    new_legend=True
+    new_legend=True,
     ):
     """
-    Plot the the catchment boundary on an axes object and add a
-    a legend
+    Plot the catchment boundary on an axes object.
+
+    Parameters:
+    - project: FireImpactsProject instance.
+    - catchment: Name of the catchment to plot.
+    - axes: matplotlib Axes to plot onto.
+    - new_legend: If True, add a legend entry for the boundary line.
     --------------------------------------------------------------------
-    TODO: Move this to top util and use plot_spatial_vector() for most
-    steps.
-    For now, We'll keep this separate as the way it plots and the way
-    it gets the data are both somewhat different.
     --------------------------------------------------------------------
     """
-    # Set the colour for the line:
     catch_bound_colour = 'red'
-    # Get the actual boundary:
     gdf = project.catchment_boundary(catchment)
-    # Plot on the provided axes:
     gdf.plot(ax=axes, facecolor='none', edgecolor=catch_bound_colour)
-    # Dummy line for legend:
+
+    # Dummy line object used only to create a legend entry:
     dummy_line = [
-        mlines.Line2D(
-            [], #Empty x-data
-            [], #Empty y-data
-            color=catch_bound_colour
-            )
+        mlines.Line2D([], [], color=catch_bound_colour)
         ]
     if new_legend:
-        this_leg = axes.legend(
+        axes.legend(
             dummy_line,
-            ['Catchment Boundary'], #Legend label
-            fontsize='xx-small'
+            ['Catchment Boundary'],
+            fontsize='xx-small',
             )
+
 
 ###############################################################################
 def get_vis_dx(ax, crs):
     """
-    Return an appropriate visualisation dx value (map units per pixel)
-    to help in making a scalebar
+    Return visualisation dx (map units per pixel) for scalebar use.
+
+    Parameters:
+    - ax: matplotlib Axes object.
+    - crs: Coordinate reference system object.
+
+    Returns:
+    - Map units per pixel, or None if the CRS is not projected.
     --------------------------------------------------------------------
     Notes:
-    - Probably only required if for some reason extent property hasn't
-    already been set either by matplotlib or geopandas.
+    - Probably only required when the extent property has not already
+      been set by matplotlib or geopandas.
     --------------------------------------------------------------------
     """
     if not crs.is_projected:
         logger.warning(
-            'get_vis_dx only accepts projected crs objects currently. '
+            'get_vis_dx only accepts projected CRS objects. '
             'dx not returned.'
             )
         return None
-    # Get the width of the current axes in the map's units:
+    # Calculate map units per pixel from axis limits and pixel width:
     x_range = ax.get_xlim()
-    x_min = x_range[0]
-    x_max = x_range[1]
-    ax_width_map_units = x_max - x_min
+    ax_width_map_units = x_range[1] - x_range[0]
 
-    # Get the width of the current axes in pixels:
     ax_bbox_pixels = ax.get_window_extent()
     ax_width_px = ax_bbox_pixels.width
 
-    # Calculate map units per pixel:
     map_units_per_pixel = ax_width_map_units / ax_width_px
     return map_units_per_pixel
 
+
+###############################################################################
 def find_all_shapefiles(base_directory):
-    '''
-    Find all shapefiles in a directory and its subdirectories.
-    '''
-    assert os.path.isdir(base_directory), f"Directory not found: {base_directory}"
-    shapefiles = glob(os.path.join(base_directory, '**','*.shp'),recursive=True)
+    """
+    Find all shapefiles in a directory tree.
+
+    Parameters:
+    - base_directory: Root directory to search recursively.
+
+    Returns:
+    - List of absolute paths to all .shp files found.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
+    """
+    assert os.path.isdir(base_directory), (
+        f'Directory not found: {base_directory}'
+        )
+    shapefiles = glob(
+        os.path.join(base_directory, '**', '*.shp'), recursive=True
+        )
     return shapefiles
+
 
 ###############################################################################
 def _filter_zones_by_masked_dnbr(
@@ -1835,38 +1872,39 @@ def _filter_zones_by_masked_dnbr(
     zones_gdf: gpd.GeoDataFrame,
     id_col: str,
     masked_nan_threshold: float,
-) -> gpd.GeoDataFrame:
-    """Drop zones where NaN fraction in masked_dNBR exceeds threshold.
+    ) -> gpd.GeoDataFrame:
+    """
+    Drop zones where the NaN fraction in masked_dNBR exceeds a
+    threshold.
 
-    Parameters
-    ----------
-    project : FireImpactsProject
-    catchment_name : str
-    zones_gdf : GeoDataFrame
-        Zone polygons (headwaters or subcatchments) with an *id_col*.
-    id_col : str
-        Column identifying each zone.
-    masked_nan_threshold : float
-        Maximum NaN fraction (0–1) before a zone is excluded.
+    Parameters:
+    - project: FireImpactsProject instance.
+    - catchment_name: Name of the catchment.
+    - zones_gdf: GeoDataFrame of zone polygons (headwaters or
+      subcatchments) with an id_col column.
+    - id_col: Column identifying each zone.
+    - masked_nan_threshold: Maximum NaN fraction (0-1) before a
+      zone is excluded.
 
-    Returns
-    -------
-    GeoDataFrame
-        Filtered copy of *zones_gdf*.
+    Returns:
+    - Filtered copy of zones_gdf.
+    --------------------------------------------------------------------
+    --------------------------------------------------------------------
     """
     import rasterio
     from rasterio.features import rasterize
 
     masked_dnbr_path = project.catchment_path(
         catchment_name, 'FireSeverity', 'masked_dNBR.tif'
-    )
+        )
     if not os.path.exists(masked_dnbr_path):
         logger.warning(
-            'masked_dNBR.tif not found for %s — skipping NaN '
-            'threshold filtering.', catchment_name
-        )
+            f'masked_dNBR.tif not found for {catchment_name} '
+            f'- skipping NaN threshold filtering.'
+            )
         return zones_gdf
 
+    # Read the masked dNBR raster and reproject zones to match:
     with rasterio.open(masked_dnbr_path) as src:
         dnbr_data = src.read(1)
         dnbr_transform = src.transform
@@ -1874,6 +1912,7 @@ def _filter_zones_by_masked_dnbr(
 
     zones_reproj = zones_gdf.to_crs(dnbr_crs)
 
+    # For each zone, rasterize its geometry and count NaN pixels:
     exclude_ids = []
     for idx, zone in zones_reproj.iterrows():
         zone_mask = rasterize(
@@ -1883,7 +1922,7 @@ def _filter_zones_by_masked_dnbr(
             fill=0,
             default_value=1,
             dtype=np.uint8,
-        )
+            )
         inside = zone_mask == 1
         n_pixels = int(inside.sum())
         if n_pixels == 0:
@@ -1894,34 +1933,33 @@ def _filter_zones_by_masked_dnbr(
             zone_id = zone[id_col]
             exclude_ids.append(zone_id)
             logger.info(
-                'Excluding %s %s from summary stats: %.1f%% of pixels '
-                'are NaN in masked dNBR (threshold %.1f%%)',
-                id_col, zone_id, nan_frac * 100,
-                masked_nan_threshold * 100,
-            )
+                f'Excluding {id_col} {zone_id} from summary stats: '
+                f'{nan_frac * 100:.1f}% of pixels are NaN in masked '
+                f'dNBR (threshold {masked_nan_threshold * 100:.1f}%)'
+                )
 
+    # Remove the flagged zones and report how many were dropped:
     if exclude_ids:
         n_before = len(zones_gdf)
         zones_gdf = zones_gdf[
             ~zones_gdf[id_col].isin(exclude_ids)
-        ].copy()
+            ].copy()
         logger.info(
-            'Excluded %d of %d zones exceeding %.0f%% NaN threshold '
-            'in masked dNBR for %s.',
-            len(exclude_ids), n_before,
-            masked_nan_threshold * 100, catchment_name,
-        )
+            f'Excluded {len(exclude_ids)} of {n_before} zones '
+            f'exceeding {masked_nan_threshold * 100:.0f}% NaN '
+            f'threshold in masked dNBR for {catchment_name}.'
+            )
 
     return zones_gdf
 
 
 ###############################################################################
 def summary_stats(
-    project:FireImpactsProject,
+    project: FireImpactsProject,
     catchment_name=None,
     zone_type='headwaters',
-    masked_nan_threshold:float=0.05,
-    layer_nan_threshold:float=0.05,
+    masked_nan_threshold: float = 0.05,
+    layer_nan_threshold: float = 0.05,
     save_shp=False,
     ):
     """
@@ -1929,60 +1967,56 @@ def summary_stats(
     raster data.
 
     Parameters:
-    - project (FireImpactsProject): Project object containing the
-    catchment data.
-    - catchment_name (str): Name of the catchment to process. If not
-    provided, process all catchments in the project.
-    - zone_type (str): 'headwaters' or 'subcatchments'.
-    - masked_nan_threshold (float): For headwaters only — maximum
-    fraction of a headwater's area that may be NaN in masked_dNBR.tif
-    before the headwater is excluded from summary statistics.
-    Default 0.05 (5%).  Headwaters exceeding this threshold (e.g.
-    containing a lake or other non-vegetation) are dropped.
-    - layer_nan_threshold (float): Per-layer, per-zone threshold for
-    missing data.  When a zone has more than this fraction of its
-    overlapping pixels as nodata in a particular raster layer, all
-    statistics for that zone/layer combination are set to NaN.  When
-    below the threshold, statistics are computed from the valid pixels
-    only.  Note: for coarse rasters, ``all_touched=True`` is used
-    automatically, so "overlapping" means any pixel touching the zone.
-    Default 0.05 (5%).
-    - save_shp (bool): If True, also save results as a shapefile
-    alongside the CSV. The shapefile includes all stat columns plus
-    zone geometry, suitable for loading into GIS software.
+    - project: FireImpactsProject instance, or a path string from
+      which to load one.
+    - catchment_name: Name of the catchment to process. If not
+      provided, processes all catchments in the project.
+    - zone_type: 'headwaters' or 'subcatchments'.
+    - masked_nan_threshold: For headwaters only - maximum fraction
+      of a headwater's area that may be NaN in masked_dNBR.tif
+      before the headwater is excluded. Default 0.05 (5%).
+      Headwaters exceeding this (e.g. containing a lake) are
+      dropped.
+    - layer_nan_threshold: Per-layer, per-zone threshold for
+      missing data. When a zone has more than this fraction of its
+      overlapping pixels as nodata in a particular raster layer,
+      all statistics for that zone/layer combination are set to
+      NaN. For coarse rasters, all_touched=True is used
+      automatically. Default 0.05 (5%).
+    - save_shp: If True, also save results as a shapefile alongside
+      the CSV.
 
     Returns:
-    - pd.DataFrame: DataFrame containing the summary statistics for the
-    catchment (if catchment_name is provided), OR
-    - dict: Dictionary of DataFrames containing the summary statistics
-    for each catchment.
+    - pd.DataFrame of summary statistics for the catchment, or a
+      dict of DataFrames if catchment_name was not provided.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    # Check that we've been asked for something we can do:
     acceptable_zones = ['headwaters', 'subcatchments']
     requested_zone = zone_type.strip().lower()
     if requested_zone not in acceptable_zones:
         raise ValueError(
-            'project.summary_stats() was asked to compute stats for '
-            f'{zone_type}. This is not currently coded for, please use '
-            f'one of: {acceptable_zones}'
+            'project.summary_stats() was asked to compute stats '
+            f'for {zone_type}. Please use one of: {acceptable_zones}'
             )
-    # If we've been given a string instead of an actual project object,
-    # try initialising/loading a project with the given name:
+
+    # If given a path string, load a project from that path:
     if isinstance(project, str):
         project = FireImpactsProject(project)
+
     # Process for all catchments if none was specified:
     if catchment_name is None:
         return project.for_each_catchment(
             lambda c: summary_stats(
-                project, c, zone_type=zone_type,
+                project, c,
+                zone_type=zone_type,
                 masked_nan_threshold=masked_nan_threshold,
                 layer_nan_threshold=layer_nan_threshold,
                 save_shp=save_shp,
+                )
             )
-        )
 
+    # Load the appropriate zone polygons and optionally filter them:
     if requested_zone == 'subcatchments':
         id_col_name = project.subcatchment_id
         zones_gdf = project.get_subcatchments(catchment_name)
@@ -1991,21 +2025,24 @@ def summary_stats(
         zones_gdf = project.get_headwaters(catchment_name)
 
         # Filter out headwaters where too much area is NaN in the
-        # masked dNBR grid (e.g. water bodies, non-vegetation).
+        # masked dNBR grid (e.g. water bodies, non-vegetation):
         logger.info(
-            'Filtering %s in %s based on NaN fraction in masked dNBR...',
-            zone_type, catchment_name)
+            f'Filtering {zone_type} in {catchment_name} based on '
+            f'NaN fraction in masked dNBR...'
+            )
         zones_gdf = _filter_zones_by_masked_dnbr(
-            project, catchment_name, zones_gdf, id_col_name,
-            masked_nan_threshold
-        )
+            project, catchment_name, zones_gdf,
+            id_col_name, masked_nan_threshold,
+            )
 
+    # Build the list of raster layers to extract stats from.
+    # Fixed layers first; then discover all .tif files under Soils/:
     sources = [
         ('Slope', ('Topography', 'Slope.tif')),
         ('dNBR',  ('FireSeverity', 'dNBR.tif')),
         ('Aridity', ('Soils', 'Aridity.tif')),
-        # ('Rain','Rain','Rainfall.tif')
-    ]
+        # ('Rain', 'Rain', 'Rainfall.tif')
+        ]
 
     soil_path = project.catchment_path(catchment_name, 'Soils')
     for fn in os.listdir(soil_path):
@@ -2015,40 +2052,44 @@ def summary_stats(
         for child_fn in os.listdir(abs_fn):
             if child_fn.endswith('.tif'):
                 sources.append(
-                    (child_fn.replace('.tif', ''), ('Soils', fn, child_fn))
-                )
+                    (
+                        child_fn.replace('.tif', ''),
+                        ('Soils', fn, child_fn),
+                        )
+                    )
 
     # Reset index after filtering so that list-based columns from
-    # rasterstats align correctly with the id column in the DataFrame.
+    # rasterstats align correctly with the id column:
     zones_gdf = zones_gdf.reset_index(drop=True)
 
-    # Process each polygon in the shapefile
-    result = {
-        id_col_name: zones_gdf[id_col_name].tolist()
-    }
+    result = {id_col_name: zones_gdf[id_col_name].tolist()}
 
     # Determine the reference resolution from the DEM so we can
-    # detect coarser layers and use all_touched for them.
-    dem_path = project.catchment_path(catchment_name, 'Topography', 'DEM.tif')
+    # detect coarser layers and use all_touched for them:
+    dem_path = project.catchment_path(
+        catchment_name, 'Topography', 'DEM.tif'
+        )
     with rio.open(dem_path) as dem_src:
-        ref_res = dem_src.res[0]  # pixel size in map units
+        ref_res = dem_src.res[0]
 
-    logger.info('Processing %d polygons for %d layers in %s',len(zones_gdf),len(sources),catchment_name)
+    logger.info(
+        f'Processing {len(zones_gdf)} polygons for '
+        f'{len(sources)} layers in {catchment_name}'
+        )
     for label, path in sources:
-        logging.info('Processing %s from %s',label,path[-1])
-        raster_path = project.catchment_path(catchment_name,*path)
+        logger.info(f'Processing {label} from {path[-1]}')
+        raster_path = project.catchment_path(catchment_name, *path)
 
         # Use all_touched for rasters coarser than 2x the DEM
-        # resolution, so small zones still capture pixels.
+        # resolution, so small zones still capture pixels:
         with rio.open(raster_path) as layer_src:
             layer_res = layer_src.res[0]
         use_all_touched = layer_res > ref_res * 2
         if use_all_touched:
             logger.info(
-                '%s: resolution %.0fm is coarser than DEM (%.0fm) '
-                '— using all_touched=True',
-                label, layer_res, ref_res,
-            )
+                f'{label}: resolution {layer_res:.0f}m is coarser '
+                f'than DEM ({ref_res:.0f}m) - using all_touched=True'
+                )
 
         stats = toputil.get_zonal_stats(
             zones_gdf,
@@ -2064,7 +2105,7 @@ def summary_stats(
         # rasters (nan == nan is False, so the count is always 0).
         # Instead, check the output stats directly: if rasterstats
         # returned None for any core stat, the zone had no usable
-        # pixels — either zero overlap or all pixels were nodata/NaN.
+        # pixels - either zero overlap or all pixels were nodata/NaN.
         #
         # For zones that DO have valid stats, apply the
         # layer_nan_threshold using the count vs total pixel estimate.
@@ -2074,12 +2115,11 @@ def summary_stats(
         assert len(stats) == len(zones_gdf), (
             'Length of stats does not match number of zones. '
             'Expected %d, got %d.' % (len(zones_gdf), len(stats))
-        )
+            )
 
         for s in stats:
-            # Check if rasterstats could compute any valid statistic.
             # When all pixels are nodata/NaN or there is zero overlap,
-            # rasterstats returns None for stats like 'mean'.
+            # rasterstats returns None for stats like 'mean':
             sample_stat = s.get('mean')
             if sample_stat is None:
                 for k in STATS:
@@ -2103,18 +2143,17 @@ def summary_stats(
 
         if zones_no_data > 0:
             logger.warning(
-                '%s: %d of %d zones returned no valid statistics '
-                '(no pixel overlap or all pixels are nodata/NaN, '
-                'possibly due to coarse raster resolution).',
-                label, zones_no_data, len(stats),
-            )
+                f'{label}: {zones_no_data} of {len(stats)} zones '
+                f'returned no valid statistics (no pixel overlap '
+                f'or all pixels are nodata/NaN, possibly due to '
+                f'coarse raster resolution).'
+                )
         if zones_nulled > 0:
             logger.warning(
-                '%s: %d of %d zones exceed %.0f%% nodata threshold '
-                '— stats set to NaN for those zones.',
-                label, zones_nulled, len(stats),
-                layer_nan_threshold * 100,
-            )
+                f'{label}: {zones_nulled} of {len(stats)} zones '
+                f'exceed {layer_nan_threshold * 100:.0f}% nodata '
+                f'threshold - stats set to NaN for those zones.'
+                )
 
         for k in STATS:
             # rasterstats returns Python None (not np.nan) for zones
@@ -2125,23 +2164,24 @@ def summary_stats(
             result[f'{label}_{k}'] = [
                 float('nan') if s[k] is None else s[k]
                 for s in stats
-            ]
+                ]
 
     extracted_data = pd.DataFrame(result)
-    extracted_data = extracted_data.apply(pd.to_numeric, errors='coerce')
+    extracted_data = extracted_data.apply(
+        pd.to_numeric, errors='coerce'
+        )
 
-    # Preserve the raw (pre-clip) dNBR stat columns so that the
-    # original pixel-level distribution is visible for diagnostics.
-    # These sit alongside the standardised columns in the output.
+    # Preserve raw (pre-clip) dNBR stat columns for diagnostics.
+    # These sit alongside the standardised columns in the output:
     for stat in STATS:
         raw_col = f'dNBR_{stat}'
         extracted_data[f'dNBR_raw_{stat}'] = extracted_data[raw_col]
 
     # Convert dNBR stats to standardised values [0, 1000]: clip
-    # negatives to 0 then scale. Note that this clips the already-
+    # negatives to 0 then scale. Note this clips the already-
     # aggregated stats (e.g. a negative mean clips to 0), which can
-    # make mean=0 while max>0. The raw columns above let you verify
-    # the pre-clip values if the result looks unexpected.
+    # make mean=0 while max>0. The raw columns let you verify the
+    # pre-clip values if the result looks unexpected.
     for stat in STATS:
         col = f'dNBR_{stat}'
         extracted_data[col] = format_dNBR(extracted_data[col])
@@ -2150,66 +2190,82 @@ def summary_stats(
     # Save outputs
     # -----------------------------------------------------------------
     base_name = f'Soil_Slope_Aridity_dNBR_{zone_type}'
-    csv_path = project.catchment_path(catchment_name, f'{base_name}.csv')
+    csv_path = project.catchment_path(
+        catchment_name, f'{base_name}.csv'
+        )
     extracted_data.to_csv(csv_path, index=False)
-    logger.info('[write] %s', csv_path)
+    logger.info(f'[write] {csv_path}')
 
     if save_shp:
-        # Join the computed stats back onto the zone geometries so
-        # the shapefile carries both attributes and geometry.
+        # Join computed stats back onto zone geometries:
         shp_gdf = zones_gdf[[id_col_name, 'geometry']].merge(
             extracted_data, on=id_col_name, how='left'
-        )
+            )
         shp_path = project.catchment_path(
             catchment_name, f'{base_name}.shp'
-        )
+            )
         shp_gdf.to_file(shp_path)
-        logger.info('[write] %s', shp_path)
+        logger.info(f'[write] {shp_path}')
 
     return extracted_data
 
+
 ###############################################################################
-def format_dNBR(series:pd.Series):
+def format_dNBR(series: pd.Series):
     """
-    Convert dNBR values between -1 and 1, to standardised values
-    between 0 and 1000. Values below 0 are set to 0.
+    Convert dNBR values to a standardised [0, 1000] range.
+
+    Parameters:
+    - series: pandas Series of dNBR values in the range -1 to 1.
+
+    Returns:
+    - Series with values clipped to 0 at the lower end and scaled
+      to the 0-1000 range.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
     return series.clip(lower=0).mul(1000).astype(np.float64)
 
+
 ###############################################################################
 def save_catchment_raster(
-    project:FireImpactsProject,
-    catchment_name:str,
-    file_name:str,
-    section:str,
+    project: FireImpactsProject,
+    catchment_name: str,
+    file_name: str,
+    section: str,
     data,
-    meta
+    meta,
     ):
     """
-    
+    Write a raster array to a catchment's folder structure.
+
+    Parameters:
+    - project: FireImpactsProject instance.
+    - catchment_name: Name of the catchment.
+    - file_name: Output file name without extension.
+    - section: Sub-folder within the catchment directory
+      (e.g. 'Erodibility').
+    - data: Numpy array to write.
+    - meta: Rasterio metadata dict for the output raster.
+
+    Returns:
+    - Tuple of (success: bool, message: str).
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    # Build the path:
     out_path = project.catchment_path(
-        catchment_name,
-        section,
-        f'{file_name}.tif'
+        catchment_name, section, f'{file_name}.tif'
         )
-    
-    # Set standard data type parameters for all our rasters:
+
+    # Standardise the output dtype based on the input array kind:
     final_meta = meta.copy()
     in_dtype = final_meta['dtype']
     in_dtype_kind = np.dtype(in_dtype).kind
-    out_dtype = default_dtypes_raster[numpy_kind_to_desc[in_dtype_kind]]
-
-    # Update the metadata with the final dtype
+    out_dtype = default_dtypes_raster[
+        numpy_kind_to_desc[in_dtype_kind]
+        ]
     final_meta.update(dtype=out_dtype, count=1)
 
-    # Try writing the file. Return True with location if successful, 
-    #or false with the error message if not.
     try:
         with rio.open(out_path, 'w', **final_meta) as dst:
             dst.write(data.astype(out_dtype), 1)
@@ -2218,12 +2274,5 @@ def save_catchment_raster(
     except Exception as e:
         result = False
         result_string = f'Could not save raster: {e}'
-    
+
     return result, result_string
-    
-
-
-
-
-
-
