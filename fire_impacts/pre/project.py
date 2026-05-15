@@ -13,6 +13,7 @@ import geopandas as gpd
 import pandas as pd
 import json
 import logging
+from typing import Optional
 import matplotlib as mpl
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.lines as mlines
@@ -142,12 +143,12 @@ class FireImpactsProject(object):
     # --- Path helpers -------------------------------------------------------
 
     ###########################################################################
-    def catchment_path(self, catchment_name=None, *args):
+    def catchment_path(self, catchment=None, *args):
         """
         Build a path relative to a particular catchment's folder.
 
         Parameters:
-        - catchment_name: Name of the catchment. If not provided,
+        - catchment: Name of the catchment. If not provided,
           returns the top-level Catchments folder path.
         - args: Additional sub-path components below the catchment
           folder (e.g. 'Erodibility', 'KLSCP.tif').
@@ -163,47 +164,107 @@ class FireImpactsProject(object):
         """
         # Every project will have a Catchments folder:
         base = os.path.join(self.project_path, 'Catchments')
-        if catchment_name is None:
+        if catchment is None:
             assert len(args) == 0, (
                 'Cannot specify additional arguments without a '
                 'catchment name.'
                 )
             return base
-        return os.path.join(base, catchment_name, *args)
+        return os.path.join(base, catchment, *args)
+
+    ###########################################################################
+    def event_path(
+        self,
+        catchment: str,
+        *args,
+        event: str,
+        ):
+        """
+        Resolve a path under a catchment's event folder.
+
+        Parameters:
+        - catchment: Name of the catchment.
+        - args: Path components appended below the event folder.
+        - event: Event name (required).
+
+        Returns:
+        - Catchments/<catchment>/Events/<event>/<args>.
+        ----------------------------------------------------------------
+        Notes:
+        - Use for fire-event-specific artefacts that do not vary across
+          ensembles (e.g. dNBR, FireMeta, fire-adjusted K/C, SDR).
+        - For climate-realisation artefacts (rainfall), use
+          ensemble_path(). For simulation outputs that combine both,
+          use run_path().
+        ----------------------------------------------------------------
+        """
+        return os.path.join(
+            self.catchment_path(catchment),
+            'Events', event,
+            *args,
+            )
 
     ###########################################################################
     def ensemble_path(
         self,
-        catchment_name: str,
+        catchment: str,
         *args,
-        event: str = 'default',
-        ensemble: str = 'default',
+        ensemble: str,
         ):
         """
-        Resolve a path under a catchment's event + ensemble folder.
+        Resolve a path under a catchment's ensemble folder.
 
         Parameters:
-        - catchment_name: Name of the catchment.
+        - catchment: Name of the catchment.
         - args: Path components appended below the ensemble folder.
-        - event: Event name. Defaults to 'default' so single-event
-          projects can ignore this parameter entirely.
-        - ensemble: Ensemble name within the event. Defaults to
-          'default'.
+        - ensemble: Ensemble name (required).
 
         Returns:
-        - Full path under Catchments/<catchment>/Events/<event>/
-          Ensemble/<ensemble>/<args>.
+        - Catchments/<catchment>/Ensembles/<ensemble>/<args>.
         ----------------------------------------------------------------
         Notes:
-        - Multiple ensembles per event support comparing the same
-          fire under current vs. future climate.
-        - The Events/ layer is the forward-compatible seam for
-          planned multi-event support.
+        - Use for climate-realisation artefacts that do not depend on
+          a fire event (rainfall.nc, climate metadata). Ensembles are
+          siblings of events so the same rainfall can drive multiple
+          fires without duplication.
         ----------------------------------------------------------------
         """
         return os.path.join(
-            self.catchment_path(catchment_name),
-            'Events', event, 'Ensemble', ensemble,
+            self.catchment_path(catchment),
+            'Ensembles', ensemble,
+            *args,
+            )
+
+    ###########################################################################
+    def run_path(
+        self,
+        catchment: str,
+        *args,
+        event: str,
+        ensemble: str,
+        ):
+        """
+        Resolve a path under a catchment's (event, ensemble) run folder.
+
+        Parameters:
+        - catchment: Name of the catchment.
+        - args: Path components appended below the run folder.
+        - event: Event name (required).
+        - ensemble: Ensemble name (required).
+
+        Returns:
+        - Catchments/<catchment>/Runs/<event>/<ensemble>/<args>.
+        ----------------------------------------------------------------
+        Notes:
+        - A run is the cartesian product of one event and one ensemble.
+          Simulation outputs (RUSLE grids, debris flow summaries,
+          combined timeseries) live here. Input fire-side data is read
+          from event_path; input rainfall is read from ensemble_path.
+        ----------------------------------------------------------------
+        """
+        return os.path.join(
+            self.catchment_path(catchment),
+            'Runs', event, ensemble,
             *args,
             )
 
@@ -361,7 +422,7 @@ class FireImpactsProject(object):
     ###########################################################################
     def add_subcatchments(
         self,
-        catchment_name: str,
+        catchment: str,
         subcatch_shapefile_path: str,
         id_cols: list = [],
         label_field=_UNSET,
@@ -370,7 +431,7 @@ class FireImpactsProject(object):
         Load subcatchments for a catchment from a shapefile.
 
         Parameters:
-        - catchment_name: Name of the catchment to attach
+        - catchment: Name of the catchment to attach
           subcatchments to.
         - subcatch_shapefile_path: Path to the subcatchment shapefile.
         - id_cols: Attribute columns from the source shapefile to
@@ -402,7 +463,7 @@ class FireImpactsProject(object):
         # Check and compare CRS of subcatchment and existing
         # catchment; reproject if needed:
         subcatch_crs = in_gdf.crs
-        catch_crs = self.catchment_crs(catchment_name)
+        catch_crs = self.catchment_crs(catchment)
         if subcatch_crs != catch_crs:
             catch_epsg = catch_crs.to_epsg()
             subcatch_epsg = subcatch_crs.to_epsg()
@@ -415,7 +476,7 @@ class FireImpactsProject(object):
             int_gdf = in_gdf
 
         # Clip the subcatchments to the catchment boundary:
-        catch_gdf = self.catchment_boundary(catchment_name)
+        catch_gdf = self.catchment_boundary(catchment)
         logger.info(
             'Clipping subcatchments to the catchment polygon...'
             )
@@ -430,16 +491,16 @@ class FireImpactsProject(object):
                 )
 
         # Register the source shapefile path in boundary_files:
-        key_name = catchment_name + '_' + 'subcatchments'
+        key_name = catchment + '_' + 'subcatchments'
         previous_source = self.boundary_files.get(key_name)
         previous_label = self.subcatchment_label_fields.get(
-            catchment_name
+            catchment
             )
         if (previous_source is not None
                 and previous_source != subcatch_shapefile_path):
             logger.warning(
                 f"Replacing registered subcatchments for catchment "
-                f"'{catchment_name}': source was {previous_source}, "
+                f"'{catchment}': source was {previous_source}, "
                 f"now {subcatch_shapefile_path}. The saved clipped "
                 f"shapefile will be overwritten."
                 )
@@ -453,7 +514,7 @@ class FireImpactsProject(object):
                 if previous_label in in_gdf.columns:
                     logger.warning(
                         f"add_subcatchments() called for catchment "
-                        f"'{catchment_name}' without label_field=, "
+                        f"'{catchment}' without label_field=, "
                         f"but '{previous_label}' is already "
                         f"registered and present in "
                         f"{subcatch_shapefile_path} - keeping it. "
@@ -463,7 +524,7 @@ class FireImpactsProject(object):
                 else:
                     logger.warning(
                         f"add_subcatchments() called for catchment "
-                        f"'{catchment_name}' without label_field=, "
+                        f"'{catchment}' without label_field=, "
                         f"and the previously registered field "
                         f"'{previous_label}' is not present in "
                         f"{subcatch_shapefile_path}. Subcatchment "
@@ -487,16 +548,16 @@ class FireImpactsProject(object):
                     and resolved_label != previous_label):
                 logger.warning(
                     f"Changing subcatchment label field for "
-                    f"catchment '{catchment_name}' from "
+                    f"catchment '{catchment}' from "
                     f"'{previous_label}' to '{resolved_label}'."
                     )
 
         if resolved_label is not None:
-            self.subcatchment_label_fields[catchment_name] = (
+            self.subcatchment_label_fields[catchment] = (
                 resolved_label
                 )
         else:
-            self.subcatchment_label_fields.pop(catchment_name, None)
+            self.subcatchment_label_fields.pop(catchment, None)
 
         self._write()
 
@@ -519,7 +580,7 @@ class FireImpactsProject(object):
 
         # Save the clipped subcatchments to the Subcatchments folder:
         save_path = self.catchment_path(
-            catchment_name, 'Subcatchments'
+            catchment, 'Subcatchments'
             )
         key_file_name = key_name + '.shp'
         key_file_path = os.path.join(save_path, key_file_name)
@@ -549,12 +610,12 @@ class FireImpactsProject(object):
     # --- Subcatchment label field -------------------------------------------
 
     ###########################################################################
-    def subcatchment_label_field(self, catchment_name: str):
+    def subcatchment_label_field(self, catchment: str):
         """
         Return the preferred subcatchment label field, or None.
 
         Parameters:
-        - catchment_name: Name of the catchment to look up.
+        - catchment: Name of the catchment to look up.
 
         Returns:
         - The registered label field name, or None if not set.
@@ -567,17 +628,17 @@ class FireImpactsProject(object):
           columns carry meaningful names without per-call config.
         ----------------------------------------------------------------
         """
-        return self.subcatchment_label_fields.get(catchment_name)
+        return self.subcatchment_label_fields.get(catchment)
 
     ###########################################################################
     def set_subcatchment_label_field(
-        self, catchment_name: str, field: str | None,
+        self, catchment: str, field: str | None,
         ):
         """
         Set or clear the preferred subcatchment label field.
 
         Parameters:
-        - catchment_name: Name of the catchment to update.
+        - catchment: Name of the catchment to update.
         - field: Field name to register, or None to clear.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
@@ -585,37 +646,37 @@ class FireImpactsProject(object):
         # None clears the registration; a string is validated against
         # the subcatchment columns before being set:
         if field is None:
-            self.subcatchment_label_fields.pop(catchment_name, None)
+            self.subcatchment_label_fields.pop(catchment, None)
         else:
-            subs = self.get_subcatchments(catchment_name)
+            subs = self.get_subcatchments(catchment)
             if field not in subs.columns:
                 raise ValueError(
                     f"Field '{field}' not found on "
-                    f"{catchment_name} subcatchments. Available: "
+                    f"{catchment} subcatchments. Available: "
                     f"{list(subs.columns)}"
                     )
-            self.subcatchment_label_fields[catchment_name] = field
+            self.subcatchment_label_fields[catchment] = field
         self._write()
 
     # --- Directory management -----------------------------------------------
 
     ###########################################################################
-    def ensure_catchment_folders(self, catchment_name: str = None):
+    def ensure_catchment_folders(self, catchment: str = None):
         """
         Create required catchment sub-folders if they don't exist.
 
         Parameters:
-        - catchment_name: Name of the catchment to check. If not
+        - catchment: Name of the catchment to check. If not
           provided, runs for all registered catchments.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
         # If no name given, recurse for every registered catchment:
-        if catchment_name is None:
+        if catchment is None:
             for catchment in self.catchments:
                 self.ensure_catchment_folders(catchment)
             return
-        catchment_path = self.catchment_path(catchment_name)
+        catchment_path = self.catchment_path(catchment)
         # Create each standard subfolder if it doesn't already exist:
         for folder in PER_CATCHMENT_FOLDERS:
             os.makedirs(
@@ -664,6 +725,26 @@ class FireImpactsProject(object):
             shape_name,
             new_id_col_name,
             )
+
+        # Surface stale-shapefile situations: the label field is
+        # persisted in settings.json but may be missing from the saved
+        # clipped copy if the project was ingested before the column-
+        # retention fix in add_subcatchments. Warn once per call so
+        # downstream consumers (recorders, plotters) don't silently
+        # fall back to integer indices.
+        configured = self.subcatchment_label_field(catchment)
+        if configured and configured not in gdf.columns:
+            logger.warning(
+                "Subcatchment label field '%s' is configured for "
+                "catchment '%s' but is not present in %s "
+                "(columns: %s). Re-run "
+                "FireImpactsProject.add_subcatchments(..., "
+                "label_field='%s') to rewrite the shapefile with the "
+                "label column retained.",
+                configured, catchment, shape_name,
+                list(gdf.columns), configured,
+            )
+
         return gdf
 
     ###########################################################################
@@ -1867,8 +1948,7 @@ def find_all_shapefiles(base_directory):
 
 ###############################################################################
 def _filter_zones_by_masked_dnbr(
-    project: FireImpactsProject,
-    catchment_name: str,
+    ctx,
     zones_gdf: gpd.GeoDataFrame,
     id_col: str,
     masked_nan_threshold: float,
@@ -1878,8 +1958,7 @@ def _filter_zones_by_masked_dnbr(
     threshold.
 
     Parameters:
-    - project: FireImpactsProject instance.
-    - catchment_name: Name of the catchment.
+    - ctx: event-level RunContext.
     - zones_gdf: GeoDataFrame of zone polygons (headwaters or
       subcatchments) with an id_col column.
     - id_col: Column identifying each zone.
@@ -1894,12 +1973,10 @@ def _filter_zones_by_masked_dnbr(
     import rasterio
     from rasterio.features import rasterize
 
-    masked_dnbr_path = project.catchment_path(
-        catchment_name, 'FireSeverity', 'masked_dNBR.tif'
-        )
+    masked_dnbr_path = ctx.event_path('FireSeverity', 'masked_dNBR.tif')
     if not os.path.exists(masked_dnbr_path):
         logger.warning(
-            f'masked_dNBR.tif not found for {catchment_name} '
+            f'masked_dNBR.tif not found for {ctx.catchment} '
             f'- skipping NaN threshold filtering.'
             )
         return zones_gdf
@@ -1947,7 +2024,7 @@ def _filter_zones_by_masked_dnbr(
         logger.info(
             f'Excluded {len(exclude_ids)} of {n_before} zones '
             f'exceeding {masked_nan_threshold * 100:.0f}% NaN '
-            f'threshold in masked dNBR for {catchment_name}.'
+            f'threshold in masked dNBR for {catchment}.'
             )
 
     return zones_gdf
@@ -1955,8 +2032,7 @@ def _filter_zones_by_masked_dnbr(
 
 ###############################################################################
 def summary_stats(
-    project: FireImpactsProject,
-    catchment_name=None,
+    ctx,
     zone_type='headwaters',
     masked_nan_threshold: float = 0.05,
     layer_nan_threshold: float = 0.05,
@@ -1967,10 +2043,9 @@ def summary_stats(
     raster data.
 
     Parameters:
-    - project: FireImpactsProject instance, or a path string from
-      which to load one.
-    - catchment_name: Name of the catchment to process. If not
-      provided, processes all catchments in the project.
+    - ctx: event-level RunContext identifying the catchment + event.
+      Reads masked_dNBR / dNBR from Events/<event>/FireSeverity/ and
+      writes the summary CSV under Events/<event>/.
     - zone_type: 'headwaters' or 'subcatchments'.
     - masked_nan_threshold: For headwaters only - maximum fraction
       of a headwater's area that may be NaN in masked_dNBR.tif
@@ -1987,8 +2062,7 @@ def summary_stats(
       the CSV.
 
     Returns:
-    - pd.DataFrame of summary statistics for the catchment, or a
-      dict of DataFrames if catchment_name was not provided.
+    - pd.DataFrame of summary statistics for the catchment.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
@@ -2000,51 +2074,39 @@ def summary_stats(
             f'for {zone_type}. Please use one of: {acceptable_zones}'
             )
 
-    # If given a path string, load a project from that path:
-    if isinstance(project, str):
-        project = FireImpactsProject(project)
-
-    # Process for all catchments if none was specified:
-    if catchment_name is None:
-        return project.for_each_catchment(
-            lambda c: summary_stats(
-                project, c,
-                zone_type=zone_type,
-                masked_nan_threshold=masked_nan_threshold,
-                layer_nan_threshold=layer_nan_threshold,
-                save_shp=save_shp,
-                )
-            )
+    ctx.validate()
+    project = ctx.project
+    catchment = ctx.catchment
 
     # Load the appropriate zone polygons and optionally filter them:
     if requested_zone == 'subcatchments':
         id_col_name = project.subcatchment_id
-        zones_gdf = project.get_subcatchments(catchment_name)
+        zones_gdf = project.get_subcatchments(catchment)
     else:
         id_col_name = project.headwater_id
-        zones_gdf = project.get_headwaters(catchment_name)
+        zones_gdf = project.get_headwaters(catchment)
 
         # Filter out headwaters where too much area is NaN in the
         # masked dNBR grid (e.g. water bodies, non-vegetation):
         logger.info(
-            f'Filtering {zone_type} in {catchment_name} based on '
+            f'Filtering {zone_type} in {catchment} based on '
             f'NaN fraction in masked dNBR...'
             )
         zones_gdf = _filter_zones_by_masked_dnbr(
-            project, catchment_name, zones_gdf,
-            id_col_name, masked_nan_threshold,
+            ctx, zones_gdf, id_col_name, masked_nan_threshold,
             )
 
     # Build the list of raster layers to extract stats from.
     # Fixed layers first; then discover all .tif files under Soils/:
+    # 'dNBR' is per-event; the others are static catchment-level rasters.
     sources = [
-        ('Slope', ('Topography', 'Slope.tif')),
-        ('dNBR',  ('FireSeverity', 'dNBR.tif')),
-        ('Aridity', ('Soils', 'Aridity.tif')),
+        ('Slope', ('Topography', 'Slope.tif'), False),
+        ('dNBR',  ('FireSeverity', 'dNBR.tif'), True),
+        ('Aridity', ('Soils', 'Aridity.tif'), False),
         # ('Rain', 'Rain', 'Rainfall.tif')
         ]
 
-    soil_path = project.catchment_path(catchment_name, 'Soils')
+    soil_path = ctx.catchment_path('Soils')
     for fn in os.listdir(soil_path):
         abs_fn = os.path.join(soil_path, fn)
         if not os.path.isdir(abs_fn):
@@ -2055,6 +2117,7 @@ def summary_stats(
                     (
                         child_fn.replace('.tif', ''),
                         ('Soils', fn, child_fn),
+                        False,
                         )
                     )
 
@@ -2066,19 +2129,20 @@ def summary_stats(
 
     # Determine the reference resolution from the DEM so we can
     # detect coarser layers and use all_touched for them:
-    dem_path = project.catchment_path(
-        catchment_name, 'Topography', 'DEM.tif'
-        )
+    dem_path = ctx.catchment_path('Topography', 'DEM.tif')
     with rio.open(dem_path) as dem_src:
         ref_res = dem_src.res[0]
 
     logger.info(
         f'Processing {len(zones_gdf)} polygons for '
-        f'{len(sources)} layers in {catchment_name}'
+        f'{len(sources)} layers in {catchment}'
         )
-    for label, path in sources:
+    for label, path, per_event in sources:
         logger.info(f'Processing {label} from {path[-1]}')
-        raster_path = project.catchment_path(catchment_name, *path)
+        if per_event:
+            raster_path = ctx.event_path(*path)
+        else:
+            raster_path = ctx.catchment_path(*path)
 
         # Use all_touched for rasters coarser than 2x the DEM
         # resolution, so small zones still capture pixels:
@@ -2190,9 +2254,9 @@ def summary_stats(
     # Save outputs
     # -----------------------------------------------------------------
     base_name = f'Soil_Slope_Aridity_dNBR_{zone_type}'
-    csv_path = project.catchment_path(
-        catchment_name, f'{base_name}.csv'
-        )
+    # Per-event because the dNBR-derived stats depend on the fire.
+    csv_path = ctx.event_path(f'{base_name}.csv')
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
     extracted_data.to_csv(csv_path, index=False)
     logger.info(f'[write] {csv_path}')
 
@@ -2201,9 +2265,7 @@ def summary_stats(
         shp_gdf = zones_gdf[[id_col_name, 'geometry']].merge(
             extracted_data, on=id_col_name, how='left'
             )
-        shp_path = project.catchment_path(
-            catchment_name, f'{base_name}.shp'
-            )
+        shp_path = ctx.event_path(f'{base_name}.shp')
         shp_gdf.to_file(shp_path)
         logger.info(f'[write] {shp_path}')
 
@@ -2230,32 +2292,37 @@ def format_dNBR(series: pd.Series):
 ###############################################################################
 def save_catchment_raster(
     project: FireImpactsProject,
-    catchment_name: str,
+    catchment: str,
     file_name: str,
     section: str,
     data,
     meta,
+    out_path: Optional[str] = None,
     ):
     """
     Write a raster array to a catchment's folder structure.
 
     Parameters:
     - project: FireImpactsProject instance.
-    - catchment_name: Name of the catchment.
+    - catchment: Name of the catchment.
     - file_name: Output file name without extension.
     - section: Sub-folder within the catchment directory
-      (e.g. 'Erodibility').
+      (e.g. 'Erodibility'). Ignored when out_path is provided.
     - data: Numpy array to write.
     - meta: Rasterio metadata dict for the output raster.
+    - out_path: Explicit output path. When supplied, bypasses the
+      catchment_path(section, file_name) resolution — use this for
+      event_path / ensemble_path / run_path targets.
 
     Returns:
     - Tuple of (success: bool, message: str).
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    out_path = project.catchment_path(
-        catchment_name, section, f'{file_name}.tif'
-        )
+    if out_path is None:
+        out_path = project.catchment_path(
+            catchment, section, f'{file_name}.tif'
+            )
 
     # Standardise the output dtype based on the input array kind:
     final_meta = meta.copy()

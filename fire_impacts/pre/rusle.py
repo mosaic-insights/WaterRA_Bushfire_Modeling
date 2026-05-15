@@ -13,6 +13,7 @@ from fire_impacts.pre.util import (
 )
 import rasterio as rio
 from .project import FireImpactsProject
+from ..context import RunContext
 from .topography import D8_FLOW_DIRECTIONS
 from .data_sources import CSIRO_C_FACTOR_GRID, CSIRO_K_FACTOR_GRID
 from pysheds.grid import Grid
@@ -28,8 +29,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def compute_adjusted_k_c(
-    proj: FireImpactsProject,
-    catchment: str,
+    ctx: RunContext,
     c_factor_fn: str = None,
     k_factor_fn: str = None,
     compute_lsi_factor: bool = True,
@@ -39,61 +39,59 @@ def compute_adjusted_k_c(
     Compute fire-adjusted C and K factors and prepare RUSLE inputs.
 
     Parameters:
-    - proj: FireImpactsProject instance.
-    - catchment: Name of catchment to process. If None, run for
-      all catchments.
-    - c_factor_fn: Path to C-factor raster. Defaults to CSIRO
-      grid.
-    - k_factor_fn: Path to K-factor raster. Defaults to CSIRO
-      grid.
-    - compute_lsi_factor: If True, also compute the LSI factor.
-    - compute_sdr: If True, also compute the SDR.
+    - ctx: event-level RunContext identifying the catchment + event.
+    - c_factor_fn: Path to C-factor raster. Defaults to CSIRO grid.
+    - k_factor_fn: Path to K-factor raster. Defaults to CSIRO grid.
+    - compute_lsi_factor: If True, also compute the LSI factor
+      (static — written at catchment level).
+    - compute_sdr: If True, also compute the SDR (per-event).
 
     Returns:
     - None. Outputs are written to project raster files.
     """
-    if catchment is None:
-        proj.for_each_catchment(lambda c: compute_adjusted_k_c(
-            proj, c, c_factor_fn, k_factor_fn,
-            compute_lsi_factor, compute_sdr))
-        return
+    ctx.validate()
+    project = ctx.project
+    catchment = ctx.catchment
 
-    shp = proj.boundary_files[catchment]
+    shp = project.boundary_files[catchment]
 
+    # Base C and K factors are static (do not depend on the fire) and
+    # live at the catchment level.
     if c_factor_fn is None:
         c_factor_fn = CSIRO_C_FACTOR_GRID
+    os.makedirs(ctx.catchment_path('Erodibility'), exist_ok=True)
     clip_and_reproject_raster(
         c_factor_fn, shp,
-        proj.catchment_path(catchment, 'Erodibility', 'C_factor.tif')
+        ctx.catchment_path('Erodibility', 'C_factor.tif'),
     )
 
     if k_factor_fn is None:
         k_factor_fn = CSIRO_K_FACTOR_GRID
     clip_and_reproject_raster(
         k_factor_fn, shp,
-        proj.catchment_path(catchment, 'Erodibility', 'K_factor.tif')
+        ctx.catchment_path('Erodibility', 'K_factor.tif'),
     )
 
-    dem_fn = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
+    dem_fn = ctx.catchment_path('Topography', 'DEM.tif')
     dem, dem_meta = read_raster(dem_fn)
     dem_transform = dem_meta['transform']
     dem_crs = dem_meta['crs']
+    # dNBR is fire-event-specific.
     dNBR = read_aligned(
-        proj.catchment_path(
-            catchment, 'FireSeverity', 'masked_dNBR.tif'),
-        dem_transform, dem_crs, dem.shape
+        ctx.event_path('FireSeverity', 'masked_dNBR.tif'),
+        dem_transform, dem_crs, dem.shape,
     )
     Cbase = read_aligned(
-        proj.catchment_path(catchment, 'Erodibility', 'C_factor.tif'),
-        dem_transform, dem_crs, dem.shape
+        ctx.catchment_path('Erodibility', 'C_factor.tif'),
+        dem_transform, dem_crs, dem.shape,
     )
     Kbase = read_aligned(
-        proj.catchment_path(catchment, 'Erodibility', 'K_factor.tif'),
-        dem_transform, dem_crs, dem.shape
+        ctx.catchment_path('Erodibility', 'K_factor.tif'),
+        dem_transform, dem_crs, dem.shape,
     )
     AI = read_aligned(
-        proj.catchment_path(catchment, 'Soils', 'Aridity.tif'),
-        dem_transform, dem_crs, dem.shape
+        ctx.catchment_path('Soils', 'Aridity.tif'),
+        dem_transform, dem_crs, dem.shape,
     )
 
     # Model parameters
@@ -126,50 +124,39 @@ def compute_adjusted_k_c(
         'compress': 'lzw',
         'nodata': np.nan
     }
-    c_out = proj.catchment_path(
-        catchment, 'Erodibility', 'C_factor_adjusted.tif')
+    event_erod_dir = ctx.event_path('Erodibility')
+    os.makedirs(event_erod_dir, exist_ok=True)
+
+    c_out = os.path.join(event_erod_dir, 'C_factor_adjusted.tif')
     with rio.open(c_out, 'w', **out_meta) as dest:
         dest.write(C, 1)
 
-    k_out = proj.catchment_path(
-        catchment, 'Erodibility', 'K_factor_adjusted.tif')
+    k_out = os.path.join(event_erod_dir, 'K_factor_adjusted.tif')
     with rio.open(k_out, 'w', **out_meta) as dest:
         dest.write(K, 1)
 
-    # Compute remaining RUSLE input rasters. Both LS_factor.tif and
-    # SDR.tif are required before running simulations. They are
-    # computed here so that a single call to compute_adjusted_k_c
-    # leaves the project fully prepared for RUSLE simulation. Each
-    # can be suppressed via its keyword argument if the caller wants
-    # to run them separately with custom parameters.
+    # LS factor is static — written once at the catchment level.
+    # SDR depends on the fire-adjusted C factor, so it is per-event.
     if compute_lsi_factor:
-        compute_lsi(proj, catchment)
+        compute_lsi(ctx)
     if compute_sdr:
-        compute_sediment_delivery_ratio(proj, catchment)
+        compute_sediment_delivery_ratio(ctx)
 
 
 # ---------------------------------------------------------------------------
 # Topographic index helper
 # ---------------------------------------------------------------------------
 
-def _topographic_indices(
-    project: FireImpactsProject,
-    catchment: str,
-):
+def _topographic_indices(ctx: RunContext):
     """
-    Compute D8 flow direction and accumulation for a catchment DEM.
-
-    Parameters:
-    - project: FireImpactsProject instance.
-    - catchment: Name of the catchment to process.
+    Compute D8 flow direction and accumulation for the context's catchment.
 
     Returns:
     - grid: Pysheds Grid initialised from the DEM.
     - fdir: Flow direction raster.
     - acc: Flow accumulation raster.
     """
-    dem_path = project.catchment_path(
-        catchment, 'Topography', 'DEM.tif')
+    dem_path = ctx.catchment_path('Topography', 'DEM.tif')
     grid = Grid.from_raster(dem_path)
     dem_grid = grid.read_raster(dem_path)
     dem_filled = grid.fill_pits(dem_grid)
@@ -185,14 +172,12 @@ def _topographic_indices(
 # LSI factor computation
 # ---------------------------------------------------------------------------
 
-def compute_lsi(project: FireImpactsProject, catchment=None):
+def compute_lsi(ctx: RunContext):
     """
     Calculate the LSi (slope length-gradient) factor from a DEM.
 
-    Parameters:
-    - project: FireImpactsProject instance.
-    - catchment: Name of catchment to process. If None, process
-      all catchments.
+    LS factor is static (does not depend on the fire), so only
+    ctx.catchment is used; the event/ensemble fields are ignored.
 
     Returns:
     - slope_degrees: Slope in degrees for each pixel.
@@ -203,13 +188,9 @@ def compute_lsi(project: FireImpactsProject, catchment=None):
       for each pixel.
     - LSi: Slope length-gradient factor for each pixel.
     """
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c: compute_lsi(project, c))
-
+    catchment = ctx.catchment
     logger.info('Computing LSI factor for catchment: %s', catchment)
-    dem_path = project.catchment_path(
-        catchment, 'Topography', 'DEM.tif')
+    dem_path = ctx.catchment_path('Topography', 'DEM.tif')
 
     # Open the DEM raster and extract the elevation data
     with rio.open(dem_path) as src:
@@ -244,7 +225,7 @@ def compute_lsi(project: FireImpactsProject, catchment=None):
     )
 
     # Compute flow accumulation via pysheds
-    _, _, acc = _topographic_indices(project, catchment)
+    _, _, acc = _topographic_indices(ctx)
     acc_data = np.array(acc, dtype=np.float32)
 
     # Estimate specific catchment area (Ai_in) in metres
@@ -303,8 +284,7 @@ def compute_lsi(project: FireImpactsProject, catchment=None):
     dem_meta.update({'dtype': rio.float32, 'nodata': nodata_value})
     LSi = np.where(np.isnan(LSi), nodata_value, LSi)
 
-    lsi_path = project.catchment_path(
-        catchment, 'Erodibility', 'LS_factor.tif')
+    lsi_path = ctx.catchment_path('Erodibility', 'LS_factor.tif')
     with rio.open(lsi_path, 'w', **dem_meta) as out_dst:
         out_dst.write(LSi.astype(np.float32), 1)
 
@@ -323,19 +303,18 @@ DEFAULT_K = 1
 
 
 def compute_sediment_delivery_ratio(
-    project: FireImpactsProject,
-    catchment=None,
+    ctx: RunContext,
     max_sdr=DEFAULT_MAX_SDR,
     ic0=DEFAULT_IC0,
     k=DEFAULT_K,
 ):
     """
-    Calculate the Sediment Delivery Ratio (SDR) for a catchment.
+    Calculate the Sediment Delivery Ratio (SDR) for the context's event.
 
     Parameters:
-    - project: FireImpactsProject instance.
-    - catchment: Name of catchment to process. If None, process
-      all catchments.
+    - ctx: event-level RunContext. SDR depends on the fire-adjusted C
+      factor, so all Delivery/ outputs are written under
+      Events/<event>/Delivery/.
     - max_sdr: Maximum SDR value. Default is 0.8.
     - ic0: Calibration parameter for the IC-SDR relationship.
       Default is 0.5.
@@ -353,20 +332,22 @@ def compute_sediment_delivery_ratio(
     - Ddn: Downslope component of the connectivity index.
     - SDR: Sediment Delivery Ratio for each cell.
     """
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c: compute_sediment_delivery_ratio(
-                project, c, max_sdr, ic0, k))
+    ctx.validate()
+    catchment = ctx.catchment
 
     logger.info(
-        'Computing Sediment Delivery Ratio for catchment: %s',
-        catchment)
+        'Computing Sediment Delivery Ratio for catchment: %s (event %s)',
+        catchment, ctx.event)
+
+    # All Delivery/ outputs are per-event because they depend on the
+    # fire-adjusted C factor.
+    event_delivery_dir = ctx.event_path('Delivery')
+    os.makedirs(event_delivery_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Step 1: Read DEM and compute flow direction, accumulation, slope
     # ------------------------------------------------------------------
-    dem_path = project.catchment_path(
-        catchment, 'Topography', 'DEM.tif')
+    dem_path = ctx.catchment_path('Topography', 'DEM.tif')
     with rio.open(dem_path) as src:
         dem_data = src.read(1)
         dem_meta = src.meta
@@ -383,7 +364,7 @@ def compute_sediment_delivery_ratio(
     dem_data = np.where(null_mask, np.nan, dem_data)
 
     # Compute flow direction and accumulation via pysheds
-    grid, fdir, acc = _topographic_indices(project, catchment)
+    grid, fdir, acc = _topographic_indices(ctx)
     logger.info('Flow direction and accumulation computed')
 
     acc_data = np.array(acc, dtype=np.float32)
@@ -402,8 +383,7 @@ def compute_sediment_delivery_ratio(
     Sth[nan_mask] = np.nan
 
     # Accumulate thresholded slope over upslope contributing area
-    Sth_path = project.catchment_path(
-        catchment, 'Delivery', 'Sth.tif')
+    Sth_path = os.path.join(event_delivery_dir, 'Sth.tif')
     with rio.open(Sth_path, 'w', **dem_meta) as dest:
         dest.write(Sth.astype('float32'), 1)
     Sth_raster = grid.read_raster(Sth_path)
@@ -418,15 +398,13 @@ def compute_sediment_delivery_ratio(
     # ------------------------------------------------------------------
     # Step 2: C-factor — compute thresholded upslope averages
     # ------------------------------------------------------------------
-    c_factor_path = project.catchment_path(
-        catchment, 'Erodibility', 'C_factor_adjusted.tif')
+    c_factor_path = ctx.event_path('Erodibility', 'C_factor_adjusted.tif')
     with rio.open(c_factor_path) as c_factor_src:
         c_factor = c_factor_src.read(1)
 
     # Threshold C factor to a minimum of 0.001
     Cth = np.where(c_factor < 0.001, 0.001, c_factor)
-    Cth_path = project.catchment_path(
-        catchment, 'Delivery', 'Cth.tif')
+    Cth_path = os.path.join(event_delivery_dir, 'Cth.tif')
     dem_meta.update(dtype='float32')
     with rio.open(Cth_path, 'w', **dem_meta) as dest:
         dest.write(Cth.astype('float32'), 1)
@@ -444,8 +422,7 @@ def compute_sediment_delivery_ratio(
     # Define stream network based on contributing area threshold
     streams = area > 1.3e4
     stream_cells = np.where(streams)
-    streams_path = project.catchment_path(
-        catchment, 'Delivery', 'Streams.tif')
+    streams_path = os.path.join(event_delivery_dir, 'Streams.tif')
     with rio.open(streams_path, 'w', **dem_meta) as dest:
         dest.write(streams.astype(np.uint8), 1)
 
@@ -508,14 +485,12 @@ def compute_sediment_delivery_ratio(
     # Mask nodata cells and write Ddn and distance outputs
     distance_to_stream[null_mask] = np.nan
     dem_profile.update(dtype=rio.float32, nodata=np.nan)
-    dist_path = project.catchment_path(
-        catchment, 'Delivery', 'Distance_to_stream.tif')
+    dist_path = os.path.join(event_delivery_dir, 'Distance_to_stream.tif')
     with rio.open(dist_path, 'w', **dem_profile) as dst:
         dst.write(distance_to_stream.astype(rio.float32), 1)
 
     Ddn[null_mask] = np.nan
-    Ddn_path = project.catchment_path(
-        catchment, 'Delivery', 'Ddn.tif')
+    Ddn_path = os.path.join(event_delivery_dir, 'Ddn.tif')
     with rio.open(Ddn_path, 'w', **dem_profile) as dst:
         dst.write(Ddn.astype(rio.float32), 1)
 
@@ -526,8 +501,7 @@ def compute_sediment_delivery_ratio(
     # Calculate the upslope component Dup
     Dup = Av_Cth * Av_Sth * np.sqrt(area)
     Dup[null_mask] = np.nan
-    Dup_path = project.catchment_path(
-        catchment, 'Delivery', 'Dup.tif')
+    Dup_path = os.path.join(event_delivery_dir, 'Dup.tif')
     with rio.open(Dup_path, 'w', **dem_profile) as dst:
         dst.write(Dup.astype(rio.float32), 1)
 
@@ -538,8 +512,7 @@ def compute_sediment_delivery_ratio(
     # Calculate Connectivity Index (IC)
     IC = np.log10(Dup / Ddn)
     IC[null_mask] = np.nan
-    IC_path = project.catchment_path(
-        catchment, 'Delivery', 'IC.tif')
+    IC_path = os.path.join(event_delivery_dir, 'IC.tif')
     with rio.open(IC_path, 'w', **dem_profile) as dst:
         dst.write(IC.astype(rio.float32), 1)
 
@@ -547,8 +520,7 @@ def compute_sediment_delivery_ratio(
 
     # Calculate and save Sediment Delivery Ratio
     SDR = max_sdr / (1 + np.exp((ic0 - IC) / k))
-    output_sdr_path = project.catchment_path(
-        catchment, 'Delivery', 'SDR.tif')
+    output_sdr_path = os.path.join(event_delivery_dir, 'SDR.tif')
     dem_profile.update(dtype=rio.float32)
     with rio.open(output_sdr_path, 'w', **dem_profile) as dst:
         dst.write(SDR.astype(np.float32), 1)

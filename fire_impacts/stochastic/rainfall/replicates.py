@@ -11,6 +11,7 @@ import requests
 import pandas as pd
 import numpy as np
 from fire_impacts.pre.project import FireImpactsProject
+from fire_impacts.context import RunContext
 from fire_impacts.pre.util import read_raster
 import xarray as xr
 from ...pre.data_sources import STOCHASTIC_RAINFALL_API
@@ -205,8 +206,7 @@ def get_replicates(
 
 
 def get_rainfall_replicates(
-    proj: FireImpactsProject,
-    catchment,
+    ctx: RunContext,
     start=None,
     end=None,
     num_replicates=10,
@@ -215,7 +215,7 @@ def get_rainfall_replicates(
     num_years=None,
 ):
     """
-    Get stochastic rainfall replicates for one or more project catchments.
+    Get stochastic rainfall replicates for the context's catchment.
 
     Derives the catchment centroid and mean elevation from project
     data, calls get_replicates(), then shifts the time axis by a whole
@@ -223,9 +223,8 @@ def get_rainfall_replicates(
     calendar window.
 
     Parameters:
-    - proj: FireImpactsProject instance.
-    - catchment: Catchment name to process.  Pass None to run over all
-      catchments in the project.
+    - ctx: catchment-only RunContext (or any context — only
+      ctx.catchment is used; event/ensemble are ignored).
     - start: Start of the requested calendar window (str or
       pd.Timestamp).  When supplied with end, num_years is inferred.
     - end: End of the requested calendar window.  The result is sliced
@@ -257,14 +256,7 @@ def get_rainfall_replicates(
       after the shift-and-slice step.
     ------------------------------------------------------------------------
     """
-    # When no specific catchment is given, recurse over all catchments
-    if catchment is None:
-        return proj.for_each_catchment(
-            lambda c: get_rainfall_replicates(
-                proj, c, start, end, num_replicates,
-                mean_annual_rainfall, average_temperature, num_years,
-            )
-        )
+    catchment = ctx.catchment
 
     if num_replicates is None:
         raise ValueError("num_replicates must be specified.")
@@ -295,13 +287,11 @@ def get_rainfall_replicates(
         )
 
     # Extract catchment centroid coordinates and mean DEM elevation
-    boundary = proj.catchment_boundary(catchment).to_crs(epsg=4326)
+    boundary = ctx.project.catchment_boundary(catchment).to_crs(epsg=4326)
     centroid = boundary.geometry.centroid
     lat = centroid.y.values[0]
     lon = centroid.x.values[0]
-    dem, _ = read_raster(
-        proj.catchment_path(catchment, 'Topography', 'DEM.tif')
-    )
+    dem, _ = read_raster(ctx.catchment_path('Topography', 'DEM.tif'))
     elev = np.nanmean(dem)
 
     rep = get_replicates(

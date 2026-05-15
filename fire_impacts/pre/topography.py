@@ -19,6 +19,7 @@ from rasterio.features import shapes
 from pysheds.view import Raster as PyshedsRaster
 from pysheds.grid import Grid
 from .project import FireImpactsProject, save_catchment_raster
+from ..context import RunContext
 from .util import *
 import copy
 import logging
@@ -42,50 +43,45 @@ def ftoi(x, dp=5):
 # ---------------------------------------------------------------------------
 
 def extract_catchment_dems(
-    project: FireImpactsProject,
+    ctx: RunContext,
     dem_path=None,
     target_resolution=None,
 ):
     """
-    Extract DEMs for all catchments in the project from a regional DEM.
+    Extract a DEM for the context's catchment from a regional DEM.
 
     Parameters:
-    - project: FireImpactsProject instance defining catchment paths.
+    - ctx: catchment-only RunContext (event/ensemble are unused).
     - dem_path: path to the regional DEM file; if None, downloads the
       DEMH mosaic from AWS.
     - target_resolution: desired output pixel resolution; defaults to
       automatic selection.
 
     Returns:
-    - None.  Writes DEM.tif to each catchment's Topography folder.
+    - None.  Writes DEM.tif to the catchment's Topography folder.
     """
-    catchments = project.catchments
-    logger.info("Extracting %d catchment DEMs", len(catchments))
-    for catchment in catchments:
-        shapefile = project.boundary_files[catchment]
-        logger.info("Extracting DEM for catchment: %s", catchment)
+    catchment = ctx.catchment
+    shapefile = ctx.project.boundary_files[catchment]
+    logger.info("Extracting DEM for catchment: %s", catchment)
 
-        # Construct the output file path
-        output_path = os.path.join(
-            project.catchment_path(catchment), "Topography", "DEM.tif"
+    output_path = ctx.catchment_path("Topography", "DEM.tif")
+
+    if dem_path is None:
+        logger.info(
+            "No DEM path provided — downloading DEMH from AWS "
+            "for catchment: %s",
+            catchment,
         )
+        from .data_sources import DEMH
+        fn = DEMH
+    else:
+        fn = dem_path
 
-        if dem_path is None:
-            logger.info(
-                "No DEM path provided — downloading DEMH from AWS "
-                "for catchment: %s",
-                catchment,
-            )
-            from .data_sources import DEMH
-            fn = DEMH
-        else:
-            fn = dem_path
-
-        # Clip and reproject the raster with the shapefile
-        clip_and_reproject_raster(
-            fn, shapefile, output_path,
-            target_resolution=target_resolution,
-        )
+    # Clip and reproject the raster with the shapefile
+    clip_and_reproject_raster(
+        fn, shapefile, output_path,
+        target_resolution=target_resolution,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -224,9 +220,8 @@ def find_closest_to_threshold(acc, row, col, threshold_cells):
 # ---------------------------------------------------------------------------
 
 def dem_to_slope(
-    project: FireImpactsProject,
+    ctx: RunContext,
     dem: str | tuple,
-    catchment_name: str,
     gradient: bool = False,
     hydro: bool = False,
     save: bool = True,
@@ -236,10 +231,9 @@ def dem_to_slope(
     Convert a DEM to a slope raster (degrees or gradient).
 
     Parameters:
-    - project: FireImpactsProject instance defining catchment paths.
+    - ctx: catchment-only RunContext.
     - dem: path string to the DEM file, or a (data, meta) tuple of
       rasterio objects for an in-memory raster.
-    - catchment_name: name of the catchment this DEM belongs to.
     - gradient: if True, return the raw terrain gradient instead of
       degrees.
     - hydro: if True, use the hydrologically-enforced output filename.
@@ -314,8 +308,8 @@ def dem_to_slope(
         else:
             file_name = SLOPE_FN
         success, message = save_catchment_raster(
-            project=project,
-            catchment_name=catchment_name,
+            project=ctx.project,
+            catchment=ctx.catchment,
             file_name=file_name,
             section="Topography",
             data=final_data,
@@ -412,8 +406,7 @@ def compute_flow_dir(
     hydro_meta: dict,
     grid: Grid,
     dirmap: tuple,
-    project: FireImpactsProject,
-    catchment_name: str,
+    ctx: RunContext,
     save: bool = True,
     routing: str = FLOW_ROUTING_TYPE,
 ) -> tuple[PyshedsRaster, dict, Grid]:
@@ -425,8 +418,7 @@ def compute_flow_dir(
     - hydro_meta: rasterio metadata dict for the DEM.
     - grid: pysheds Grid object from hydro_force_dem.
     - dirmap: D8 flow direction mapping tuple.
-    - project: FireImpactsProject instance defining catchment paths.
-    - catchment_name: name of the catchment being processed.
+    - ctx: catchment-only RunContext.
     - save: if True, write the flow direction raster to disk.
     - routing: routing method string (e.g. 'd8').
 
@@ -467,8 +459,8 @@ def compute_flow_dir(
 
     if save:
         success, message = save_catchment_raster(
-            project=project,
-            catchment_name=catchment_name,
+            project=ctx.project,
+            catchment=ctx.catchment,
             file_name=FLOW_DIRECTION_FN,
             section="Topography",
             data=flow_dir_data,
@@ -484,8 +476,7 @@ def compute_flow_accum(
     flow_dir_meta: dict,
     grid: Grid,
     dirmap: tuple,
-    project: FireImpactsProject,
-    catchment_name: str,
+    ctx: RunContext,
     save: bool = True,
     routing: str = FLOW_ROUTING_TYPE,
 ) -> tuple[PyshedsRaster, dict, Grid]:
@@ -497,8 +488,7 @@ def compute_flow_accum(
     - flow_dir_meta: rasterio metadata dict for the flow direction raster.
     - grid: pysheds Grid object from compute_flow_dir.
     - dirmap: D8 flow direction mapping tuple.
-    - project: FireImpactsProject instance defining catchment paths.
-    - catchment_name: name of the catchment being processed.
+    - ctx: catchment-only RunContext.
     - save: if True, write the flow accumulation raster to disk.
     - routing: routing method string (e.g. 'd8').
 
@@ -523,8 +513,8 @@ def compute_flow_accum(
 
     if save:
         success, message = save_catchment_raster(
-            project=project,
-            catchment_name=catchment_name,
+            project=ctx.project,
+            catchment=ctx.catchment,
             file_name=FLOW_ACCUMULATION_FN,
             section="Topography",
             data=flow_acc_data,
@@ -540,8 +530,7 @@ def compute_flow_accum(
 # ---------------------------------------------------------------------------
 
 def extract_headwaters(
-    project: FireImpactsProject,
-    name: str | None = None,
+    ctx: RunContext,
     threshold_m2: float = DEFAULT_HW_THRESHOLD,
 ):
     """
@@ -549,9 +538,7 @@ def extract_headwaters(
     threshold.
 
     Parameters:
-    - project: FireImpactsProject instance defining catchment paths.
-    - name: catchment name to process; if None, processes all
-      catchments in the project.
+    - ctx: catchment-only RunContext.
     - threshold_m2: contributing area threshold in square metres for
       headwater delineation (default DEFAULT_HW_THRESHOLD).
 
@@ -566,22 +553,14 @@ def extract_headwaters(
       Topography folder.
     ------------------------------------------------------------------------
     """
-    new_hw_id_field = project.headwater_id
+    catchment = ctx.catchment
+    new_hw_id_field = ctx.project.headwater_id
 
-    if name is None:
-        return project.for_each_catchment(
-            lambda c: extract_headwaters(project, c, threshold_m2)
-        )
-
-    logger.info("Extracting headwaters for catchment: %s", name)
-    dem_fn = project.catchment_path(name, "Topography", "DEM.tif")
+    logger.info("Extracting headwaters for catchment: %s", catchment)
+    dem_fn = ctx.catchment_path("Topography", "DEM.tif")
 
     # Compute and save slope as a side-effect (kept for workflow compatibility)
-    slope_ras, meta = dem_to_slope(
-        project=project,
-        dem=dem_fn,
-        catchment_name=name,
-    )
+    slope_ras, meta = dem_to_slope(ctx, dem=dem_fn)
 
     crs = meta["crs"]
     transform = meta["transform"]
@@ -598,16 +577,14 @@ def extract_headwaters(
         hydro_meta=meta,
         grid=grid,
         dirmap=D8_FLOW_DIRECTIONS,
-        project=project,
-        catchment_name=name,
+        ctx=ctx,
     )
     flow_acc_data, flow_acc_meta, grid = compute_flow_accum(
         flow_dir_data=flow_dir_data,
         flow_dir_meta=flow_dir_meta,
         grid=grid,
         dirmap=D8_FLOW_DIRECTIONS,
-        project=project,
-        catchment_name=name,
+        ctx=ctx,
     )
 
     threshold_cells = int(threshold_m2 / res_sq)
@@ -628,8 +605,8 @@ def extract_headwaters(
     )
 
     # Save the stream network raster
-    stream_network_file = project.catchment_path(
-        name, "Topography", "Stream_Network.tif"
+    stream_network_file = ctx.catchment_path(
+        "Topography", "Stream_Network.tif",
     )
     stream_meta = meta.copy()
     stream_meta.update({
@@ -762,14 +739,12 @@ def extract_headwaters(
         idx += 1
 
     logger.info(
-        "Headwaters extraction completed for catchment: %s", name
+        "Headwaters extraction completed for catchment: %s", catchment
     )
 
     # Save as a GeoDataFrame / shapefile
     gdf = gpd.GeoDataFrame(records, geometry=geometries, crs=crs)
-    shp_output_path = project.catchment_path(
-        name, "Topography", "Headwaters.shp"
-    )
+    shp_output_path = ctx.catchment_path("Topography", "Headwaters.shp")
     logger.info(
         "Writing headwaters data to shapefile: %s", shp_output_path
     )
@@ -785,17 +760,13 @@ def extract_headwaters(
         "crs": crs,
         "nodata": -9999,
     })
-    output_raster_path = project.catchment_path(
-        name, "Topography", "Headwaters.tif"
-    )
+    output_raster_path = ctx.catchment_path("Topography", "Headwaters.tif")
     with rio.open(output_raster_path, "w", **meta) as dst:
         dst.write(subcatchment_raster, 1)
 
     # Save the headwater summary CSV
     hw_data = pd.DataFrame.from_records(records)
-    csv_path = project.catchment_path(
-        name, "Topography", "Headwaters.csv"
-    )
+    csv_path = ctx.catchment_path("Topography", "Headwaters.csv")
     logger.info("Writing summary data to CSV file: %s", csv_path)
     hw_data.to_csv(csv_path, index=False)
 

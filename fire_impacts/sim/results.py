@@ -9,24 +9,26 @@ ad-hoc file paths.
 
 Layout (per catchment)::
 
-    Catchments/<catchment>/Events/<event>/Ensemble/<ensemble>/
-        manifest.json
-        rainfall.nc                         # all replicates
-        replicates/
-            00/
-                rusle/
-                    grids/<key>.tif         # opt-in
-                    subcatchment_timeseries.parquet
-                debris_flow/
-                    summary.parquet
-                    mass_ts.parquet
-                combined/
-                    subcatchment_<freq>.parquet
-            01/ ...
+    Catchments/<catchment>/
+        Ensembles/<ensemble>/
+            rainfall.nc                     # climate-only, shared
+        Runs/<event>/<ensemble>/
+            manifest.json
+            replicates/
+                00/
+                    rusle/
+                        grids/<key>.tif     # opt-in
+                        subcatchment_timeseries.parquet
+                    debris_flow/
+                        summary.parquet
+                        mass_ts.parquet
+                    combined/
+                        subcatchment_<freq>.parquet
+                01/ ...
 
-``event`` and ``ensemble`` both default to ``'default'`` so single-run
-projects don't need to think about them.  Multiple ensembles per event
-support scenarios like "same fire, current vs. future climate".
+Events and ensembles are siblings of each other so the same rainfall
+realisation can drive multiple fires without duplication; the
+(event, ensemble) cartesian product is stored under Runs/.
 """
 
 from __future__ import annotations
@@ -52,11 +54,14 @@ REPLICATES_DIR = 'replicates'
 # Path helpers
 # ---------------------------------------------------------------------------
 
-def _ensemble_root(proj, catchment, event='default', ensemble='default'):
-    """Return the root Path for a named ensemble under a catchment."""
-    return Path(proj.ensemble_path(
-        catchment, event=event, ensemble=ensemble,
-    ))
+def _run_root(ctx):
+    """Return the root Path for the context's (event, ensemble) run."""
+    return Path(ctx.run_path())
+
+
+def _ensemble_root(ctx):
+    """Return the root Path for the context's ensemble folder."""
+    return Path(ctx.ensemble_path())
 
 
 def _replicate_dir(root: Path, replicate_idx: int) -> Path:
@@ -76,30 +81,28 @@ def _safe_key(key: str) -> str:
 # ---------------------------------------------------------------------------
 
 def save_ensemble_run(
-    proj,
-    catchment: str,
+    ctx,
     *,
     rainfall_ds: xr.Dataset | None = None,
     rusle_results: dict | None = None,
     debris_results: dict | None = None,
     combined_by_freq: dict | None = None,
-    event: str = 'default',
-    ensemble: str = 'default',
     include_rusle_grids: bool = False,
     include_raw_debris: bool = True,
     subcatchment_label_field: str | None = None,
     extra_manifest: dict | None = None,
 ) -> Path:
     """
-    Persist an ensemble simulation run to the library-managed directory.
+    Persist a simulation run to the library-managed directory.
 
     Everything is optional — pass whichever artefacts have been computed.
     The primary artefacts for driving a downstream catchment model are
     combined_by_freq and rainfall_ds.
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to save outputs for.
+    - ctx: run-level RunContext. Rainfall is written under the
+      catchment's Ensembles/<ensemble>/ folder (climate-only, shareable
+      across events); run outputs land under Runs/<event>/<ensemble>/.
     - rainfall_ds: Multi-replicate rainfall dataset (the input that
       drove the simulations). Saved as a single NetCDF at the ensemble
       root.
@@ -115,9 +118,6 @@ def save_ensemble_run(
       output of combine_rusle_and_debris_subcatchment() for each
       resolution to persist. freq is used as the filename suffix
       (e.g. 'h', 'D', 'YS', 'total').
-    - event: Event routing label (see FireImpactsProject.ensemble_path).
-    - ensemble: Ensemble routing label. Multiple ensembles per event
-      support scenarios like same fire with different climate inputs.
     - include_rusle_grids: If True, save per-replicate RUSLE grid
       recorders as GeoTIFFs. Off by default — these dominate disk usage
       and are reproducible from the rainfall input.
@@ -129,22 +129,27 @@ def save_ensemble_run(
       manifest (e.g. rainfall provenance, climate scenario, seed).
 
     Returns:
-    - pathlib.Path to the ensemble root directory.
+    - pathlib.Path to the run root directory.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    catchment = ctx.catchment
+    root = _run_root(ctx)
     root.mkdir(parents=True, exist_ok=True)
-    logger.info('Saving ensemble run to %s', root)
+    logger.info('Saving run to %s', root)
 
     if subcatchment_label_field is None:
         subcatchment_label_field = (
-            proj.subcatchment_label_field(catchment)
-            if hasattr(proj, 'subcatchment_label_field') else None
+            ctx.project.subcatchment_label_field(catchment)
+            if hasattr(ctx.project, 'subcatchment_label_field') else None
         )
 
     replicate_ids: set[int] = set()
 
     if rainfall_ds is not None:
-        _save_rainfall(rainfall_ds, root)
+        # Rainfall is climate-only — write under the ensemble root so a
+        # single rainfall realisation can be shared by multiple events.
+        ens_root = _ensemble_root(ctx)
+        ens_root.mkdir(parents=True, exist_ok=True)
+        _save_rainfall(rainfall_ds, ens_root)
         if 'replicate' in rainfall_ds.dims:
             replicate_ids.update(range(rainfall_ds.sizes['replicate']))
 
@@ -172,8 +177,8 @@ def save_ensemble_run(
 
     manifest = _build_manifest(
         catchment=catchment,
-        event=event,
-        ensemble=ensemble,
+        event=ctx.event,
+        ensemble=ctx.ensemble,
         replicate_ids=sorted(replicate_ids),
         rainfall_ds=rainfall_ds,
         combined_by_freq=combined_by_freq,
@@ -307,110 +312,113 @@ def _build_manifest(
 # Loading
 # ---------------------------------------------------------------------------
 
-def load_ensemble_manifest(
-    proj,
-    catchment,
-    *,
-    event='default',
-    ensemble='default',
-) -> dict:
+def load_ensemble_manifest(ctx) -> dict:
     """
-    Read and return the ensemble manifest JSON as a dict.
+    Read and return the run manifest JSON for the context.
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to read the manifest for.
-    - event: Event routing label. Default 'default'.
-    - ensemble: Ensemble routing label. Default 'default'.
+    - ctx: run-level RunContext.
 
     Returns:
     - Dict parsed from the manifest.json file.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _run_root(ctx)
     path = root / MANIFEST_NAME
     if not path.exists():
         raise FileNotFoundError(
-            f'No ensemble manifest at {path} — has save_ensemble_run '
+            f'No run manifest at {path} — has save_ensemble_run '
             f'been called for this catchment/event/ensemble?'
         )
     with open(path) as f:
         return json.load(f)
 
 
-def list_ensembles(
-    proj,
-    catchment,
-    *,
-    event='default',
-) -> list[str]:
+def list_ensembles(project, catchment) -> list[str]:
     """
-    Return the ensemble names available under a catchment event.
+    Return the ensemble names available under a catchment.
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
+    - project: FireImpactsProject managing the directory structure.
     - catchment: Name of the catchment to query.
-    - event: Event routing label. Default 'default'.
 
     Returns:
     - Sorted list of ensemble name strings found on disk.
     """
-    base = (
-        Path(proj.catchment_path(catchment))
-        / 'Events' / event / 'Ensemble'
-    )
+    base = Path(project.catchment_path(catchment)) / 'Ensembles'
     if not base.exists():
         return []
     return sorted(p.name for p in base.iterdir() if p.is_dir())
 
 
-def list_events(proj, catchment) -> list[str]:
+def list_events(project, catchment) -> list[str]:
     """
     Return the event names available under a catchment.
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
+    - project: FireImpactsProject managing the directory structure.
     - catchment: Name of the catchment to query.
 
     Returns:
     - Sorted list of event name strings found on disk.
     """
-    base = Path(proj.catchment_path(catchment)) / 'Events'
+    base = Path(project.catchment_path(catchment)) / 'Events'
     if not base.exists():
         return []
     return sorted(p.name for p in base.iterdir() if p.is_dir())
 
 
-def load_ensemble_rainfall(
-    proj,
-    catchment,
-    *,
-    event='default',
-    ensemble='default',
-) -> xr.Dataset:
+def list_runs(project, catchment, *, event: str | None = None) -> list[tuple[str, str]]:
     """
-    Reload the rainfall ensemble NetCDF for a saved ensemble run.
+    Return the (event, ensemble) runs available under a catchment.
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to load rainfall for.
-    - event: Event routing label. Default 'default'.
-    - ensemble: Ensemble routing label. Default 'default'.
+    - project: FireImpactsProject managing the directory structure.
+    - catchment: Name of the catchment to query.
+    - event: Optional event filter; if given, only runs under
+      Runs/<event>/ are returned.
+
+    Returns:
+    - Sorted list of (event_name, ensemble_name) tuples found on disk.
+    """
+    base = Path(project.catchment_path(catchment)) / 'Runs'
+    if not base.exists():
+        return []
+    out: list[tuple[str, str]] = []
+    event_dirs = (
+        [base / event] if event is not None
+        else [p for p in base.iterdir() if p.is_dir()]
+    )
+    for ev_dir in event_dirs:
+        if not ev_dir.exists():
+            continue
+        for ens_dir in ev_dir.iterdir():
+            if ens_dir.is_dir():
+                out.append((ev_dir.name, ens_dir.name))
+    return sorted(out)
+
+
+def load_ensemble_rainfall(ctx) -> xr.Dataset:
+    """
+    Reload the rainfall ensemble NetCDF for the context's ensemble.
+
+    Rainfall lives at the ensemble level (independent of fire event),
+    so this loader only uses ctx.ensemble (ctx.event is ignored).
+
+    Parameters:
+    - ctx: RunContext with a non-None ensemble.
 
     Returns:
     - xarray.Dataset of rainfall replicates loaded from disk.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _ensemble_root(ctx)
     path = root / RAINFALL_NAME
     return xr.open_dataset(path)
 
 
 def load_ensemble_combined(
-    proj,
-    catchment,
+    ctx,
     *,
     freq='D',
-    event='default',
-    ensemble='default',
 ) -> dict[int, pd.DataFrame]:
     """
     Reload combined RUSLE+debris subcatchment loads at a given frequency.
@@ -419,17 +427,14 @@ def load_ensemble_combined(
     see the manifest's subcatchment_label_field).
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to load.
+    - ctx: run-level RunContext.
     - freq: Temporal resolution key matching a freq used in
       save_ensemble_run (e.g. 'D', 'h', 'YS', 'total').
-    - event: Event routing label. Default 'default'.
-    - ensemble: Ensemble routing label. Default 'default'.
 
     Returns:
     - Dict mapping replicate index (int) to subcatchment load DataFrame.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _run_root(ctx)
     suffix = _safe_key(freq)
     replicates_dir = root / REPLICATES_DIR
     if not replicates_dir.exists():
@@ -454,29 +459,23 @@ def load_ensemble_combined(
 
 
 def load_ensemble_rusle_timeseries(
-    proj,
-    catchment,
+    ctx,
     *,
     key='erosion_daily_time_series',
-    event='default',
-    ensemble='default',
 ) -> dict[int, pd.DataFrame]:
     """
     Reload a per-replicate RUSLE recorder timeseries by key.
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to load.
+    - ctx: run-level RunContext.
     - key: Recorder key used when saving (e.g.
       'erosion_daily_time_series'). Default is the standard RUSLE
       timeseries key.
-    - event: Event routing label. Default 'default'.
-    - ensemble: Ensemble routing label. Default 'default'.
 
     Returns:
     - Dict mapping replicate index (int) to timeseries DataFrame.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _run_root(ctx)
     replicates_dir = root / REPLICATES_DIR
     out: dict[int, pd.DataFrame] = {}
     for rep_dir in sorted(replicates_dir.iterdir()):
@@ -489,26 +488,19 @@ def load_ensemble_rusle_timeseries(
 
 
 def load_ensemble_debris_raw(
-    proj,
-    catchment,
-    *,
-    event='default',
-    ensemble='default',
+    ctx,
 ) -> dict[int, tuple[pd.DataFrame, pd.DataFrame]]:
     """
     Reload per-replicate debris-flow raw outputs from disk.
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to load.
-    - event: Event routing label. Default 'default'.
-    - ensemble: Ensemble routing label. Default 'default'.
+    - ctx: run-level RunContext.
 
     Returns:
     - Dict mapping replicate index (int) to a (summary_df, mass_ts)
       tuple of DataFrames.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _run_root(ctx)
     replicates_dir = root / REPLICATES_DIR
     out = {}
     for rep_dir in sorted(replicates_dir.iterdir()):

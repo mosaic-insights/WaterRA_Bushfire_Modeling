@@ -17,6 +17,7 @@ import odc.stac
 from dea_tools.bandindices import calculate_indices
 import logging
 from .project import FireImpactsProject
+from ..context import RunContext
 from .util import metres_to_approx_degrees, clip_raster
 from fire_impacts import util as toputil
 from . import mask_dnbr as mdnbr
@@ -321,7 +322,7 @@ def write_raster_xarray(
 # ---------------------------------------------------------------------------
 
 def calculate_fire_severity(
-    project: FireImpactsProject,
+    ctx: RunContext,
     fire_start_date,
     fire_end_date,
     start_date_pre=None,
@@ -329,7 +330,6 @@ def calculate_fire_severity(
     max_cloud_cover=20,
     resolution_input=20,
     bbox=None,
-    catchment=None,
 ):
     """
     Calculate fire severity (NBR, dNBR) before and after the fire.
@@ -339,7 +339,7 @@ def calculate_fire_severity(
     dNBR, and writes a masked dNBR using the DEA Land Cover layer.
 
     Parameters:
-    - project: FireImpactsProject with catchments already loaded.
+    - ctx: event-level RunContext identifying the catchment + event.
     - fire_start_date: date string for the start of the fire.
     - fire_end_date: date string for the end of the fire.
     - start_date_pre: start date for pre-fire imagery; defaults to
@@ -350,28 +350,14 @@ def calculate_fire_severity(
     - resolution_input: pixel resolution in metres.
     - bbox: bounding box for the catchment area; calculated from the
       catchment boundary if not supplied.
-    - catchment: name of the catchment to process; if None, processes
-      all catchments in the project.
 
     Returns:
-    - None.  Saves NBR, dNBR, and metadata files to the catchment's
-      FireSeverity folder.
+    - None.  Saves NBR, dNBR, and metadata files to the event's
+      FireSeverity folder under Events/<event>/FireSeverity/.
     """
-    # If no catchment is specified, run for each catchment in the project
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c: calculate_fire_severity(
-                project,
-                fire_start_date,
-                fire_end_date,
-                start_date_pre,
-                end_date_post,
-                max_cloud_cover,
-                resolution_input,
-                bbox,
-                catchment=c,
-            )
-        )
+    ctx.validate(require_event_dir=False)
+    project = ctx.project
+    catchment = ctx.catchment
 
     # Initialise the STAC catalog if it hasn't been done already
     if CATALOG is None:
@@ -408,7 +394,7 @@ def calculate_fire_severity(
     filter_query = f"eo:cloud_cover < {max_cloud_cover}"
 
     # Load the catchment shapefile and prepare the output folder
-    catchment_folder = project.catchment_path(catchment, "FireSeverity")
+    catchment_folder = ctx.event_path("FireSeverity")
     os.makedirs(catchment_folder, exist_ok=True)
     shapefile_path = project.boundary_files[catchment]
     gdf = gpd.read_file(shapefile_path)
@@ -510,7 +496,7 @@ def calculate_fire_severity(
     )
 
     # Mask dNBR to retain only naturally-vegetated pixels
-    mdnbr.mask_dnbr(project=project, catchment=catchment)
+    mdnbr.mask_dnbr(ctx)
 
     logger.info("Processes are completed")
 
