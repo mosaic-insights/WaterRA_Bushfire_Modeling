@@ -483,7 +483,8 @@ def calculate_fire_severity(
     # Calculate dNBR = pre-fire NBR minus post-fire NBR
     logger.info("Calculating dNBR for %s", catchment)
     delta_NBR = prefire_NBR - postfire_NBR
-
+    # Set negative dNBR values to 0
+    delta_NBR = delta_NBR.where(delta_NBR >= 0, 0)
     # Save fire date metadata
     fire_meta = pd.DataFrame(
         data={
