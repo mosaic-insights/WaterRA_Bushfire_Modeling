@@ -314,7 +314,34 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 
 # %%
 # Compute adjusted K- and C-factors ready for erosion simulation:
-rusle.compute_adjusted_k_c(proj, catchment=example_catchment_name)
+# ------------------------------------------------------------------
+# Fire recovery settings
+# ------------------------------------------------------------------
+#
+# Recovery times are specified in years after the fire.
+#
+# Examples:
+#
+# [0, 0.5, 1, 1.5, 2, 2.5]
+#   -> six-month recovery intervals
+#
+# [0, 1, 2]
+#   -> yearly recovery intervals
+#
+# [0, 0.25, 0.5, 0.75, 1]
+#   -> quarterly recovery intervals
+#
+# If omitted, the package uses the defaults defined in const.py.
+#
+
+recovery_times = [0, 0.5, 1, 1.5, 2, 2.5]
+
+# Compute recovery-specific K-, C- and SDR layers.
+rusle.compute_adjusted_k_c(
+    proj,
+    catchment=example_catchment_name,
+    recovery_times=recovery_times,
+)
 
 # %% [markdown]
 # ## Summary information for Fire Severity

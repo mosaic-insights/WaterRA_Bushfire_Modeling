@@ -30,7 +30,7 @@ support scenarios like "same fire, current vs. future climate".
 """
 
 from __future__ import annotations
-
+from fire_impacts import const as c
 import json
 import logging
 import os
@@ -47,13 +47,22 @@ MANIFEST_NAME = 'manifest.json'
 RAINFALL_NAME = 'rainfall.nc'
 REPLICATES_DIR = 'replicates'
 
-
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
 
-def _ensemble_root(proj, catchment, event='default', ensemble='default'):
+def _ensemble_root(
+    proj,
+    catchment,
+    event='default',
+    ensemble='default',
+    recovery_time=None,
+):
     """Return the root Path for a named ensemble under a catchment."""
+
+    if recovery_time is not None:
+        ensemble = f"{ensemble}_{c.recovery_time_suffix(recovery_time)}"
+
     return Path(proj.ensemble_path(
         catchment, event=event, ensemble=ensemble,
     ))
@@ -85,10 +94,12 @@ def save_ensemble_run(
     combined_by_freq: dict | None = None,
     event: str = 'default',
     ensemble: str = 'default',
+    recovery_time: float | None = None,
     include_rusle_grids: bool = False,
     include_raw_debris: bool = True,
     subcatchment_label_field: str | None = None,
     extra_manifest: dict | None = None,
+    recovery_interval_years: float | None = None,
 ) -> Path:
     """
     Persist an ensemble simulation run to the library-managed directory.
@@ -131,7 +142,7 @@ def save_ensemble_run(
     Returns:
     - pathlib.Path to the ensemble root directory.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble, recovery_time=recovery_time,)
     root.mkdir(parents=True, exist_ok=True)
     logger.info('Saving ensemble run to %s', root)
 
@@ -183,6 +194,8 @@ def save_ensemble_run(
         has_debris=debris_results is not None,
         subcatchment_label_field=subcatchment_label_field,
         extra=extra_manifest,
+        recovery_time=recovery_time,
+        recovery_interval_years=recovery_interval_years,
     )
     with open(root / MANIFEST_NAME, 'w') as f:
         json.dump(manifest, f, indent=2, default=str)
@@ -264,7 +277,8 @@ def _save_combined_replicate(df: pd.DataFrame, rep_dir, *, freq: str):
 
 
 def _build_manifest(
-    *, catchment, event, ensemble, replicate_ids,
+    *, catchment, event, ensemble, replicate_ids, recovery_time,
+    recovery_interval_years,
     rainfall_ds, combined_by_freq, include_rusle_grids,
     include_raw_debris, has_rusle, has_debris,
     subcatchment_label_field, extra,
@@ -286,6 +300,12 @@ def _build_manifest(
         'replicates': list(replicate_ids),
         'n_replicates': len(replicate_ids),
         'rainfall': rainfall_meta,
+        'recovery_time': recovery_time,
+        'recovery_label': (
+            c.recovery_time_suffix(recovery_time)
+            if recovery_time is not None else None
+        ),
+        'recovery_interval_years': recovery_interval_years,
         'combined_frequencies': (
             sorted(combined_by_freq.keys()) if combined_by_freq else []
         ),
@@ -313,6 +333,7 @@ def load_ensemble_manifest(
     *,
     event='default',
     ensemble='default',
+    recovery_time=None,
 ) -> dict:
     """
     Read and return the ensemble manifest JSON as a dict.
@@ -326,7 +347,7 @@ def load_ensemble_manifest(
     Returns:
     - Dict parsed from the manifest.json file.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _ensemble_root(proj,catchment,event=event,ensemble=ensemble,recovery_time=recovery_time,)
     path = root / MANIFEST_NAME
     if not path.exists():
         raise FileNotFoundError(
@@ -386,6 +407,7 @@ def load_ensemble_rainfall(
     *,
     event='default',
     ensemble='default',
+    recovery_time=None,
 ) -> xr.Dataset:
     """
     Reload the rainfall ensemble NetCDF for a saved ensemble run.
@@ -399,7 +421,7 @@ def load_ensemble_rainfall(
     Returns:
     - xarray.Dataset of rainfall replicates loaded from disk.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _ensemble_root(proj,catchment,event=event,ensemble=ensemble,recovery_time=recovery_time,)
     path = root / RAINFALL_NAME
     return xr.open_dataset(path)
 
@@ -411,6 +433,7 @@ def load_ensemble_combined(
     freq='D',
     event='default',
     ensemble='default',
+    recovery_time=None,
 ) -> dict[int, pd.DataFrame]:
     """
     Reload combined RUSLE+debris subcatchment loads at a given frequency.
@@ -429,7 +452,7 @@ def load_ensemble_combined(
     Returns:
     - Dict mapping replicate index (int) to subcatchment load DataFrame.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _ensemble_root(proj,catchment,event=event,ensemble=ensemble,recovery_time=recovery_time,)
     suffix = _safe_key(freq)
     replicates_dir = root / REPLICATES_DIR
     if not replicates_dir.exists():
@@ -460,6 +483,7 @@ def load_ensemble_rusle_timeseries(
     key='erosion_daily_time_series',
     event='default',
     ensemble='default',
+    recovery_time=None,
 ) -> dict[int, pd.DataFrame]:
     """
     Reload a per-replicate RUSLE recorder timeseries by key.
@@ -476,7 +500,7 @@ def load_ensemble_rusle_timeseries(
     Returns:
     - Dict mapping replicate index (int) to timeseries DataFrame.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _ensemble_root(proj,catchment,event=event,ensemble=ensemble,recovery_time=recovery_time,)
     replicates_dir = root / REPLICATES_DIR
     out: dict[int, pd.DataFrame] = {}
     for rep_dir in sorted(replicates_dir.iterdir()):
@@ -494,6 +518,7 @@ def load_ensemble_debris_raw(
     *,
     event='default',
     ensemble='default',
+    recovery_time=None,
 ) -> dict[int, tuple[pd.DataFrame, pd.DataFrame]]:
     """
     Reload per-replicate debris-flow raw outputs from disk.
@@ -508,7 +533,7 @@ def load_ensemble_debris_raw(
     - Dict mapping replicate index (int) to a (summary_df, mass_ts)
       tuple of DataFrames.
     """
-    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble)
+    root = _ensemble_root(proj, catchment, event=event, ensemble=ensemble, recovery_time=recovery_time,)
     replicates_dir = root / REPLICATES_DIR
     out = {}
     for rep_dir in sorted(replicates_dir.iterdir()):
