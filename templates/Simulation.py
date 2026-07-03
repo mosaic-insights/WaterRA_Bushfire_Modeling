@@ -240,12 +240,12 @@ catchment_results['erosion_daily_time_series']
 # %% [markdown]
 # You can also visualise the various outputs.
 # - To view the results for the whole catchment as a raster, use `plot_catchment_raster()`
-#     - Specify the *'Results'* folder so the plotting function knows where to look
+#     - Specify the recovery-specific results folder (e.g. *'Results_t0'*) so the plotting function knows where to look
 # - To view results aggregated by subcatchment, use `plot_subcatchments()`
-#     - Specify the catchment name, and the data type you want to see
+#     - Specify the catchment name, the recovery-specific results folder (`data_type`), and the data type you want to see
 #     - The data will be aggregated for each subcatchment using the most appropriate aggregation:
-#         - Sum for totals (e.g. 'erosion_y1', 'delivered_y2')
-#         - Mean for peaks (e.g. 'peak_erosion_y1', 'peak_delivered_y2')
+#         - Sum for totals (e.g. 'erosion_total', 'delivered_total')
+#         - Mean for peaks (e.g. 'peak_erosion', 'peak_delivered')
 #
 # Examples of the different visualisations for our example catchment are shown in the following cells
 # > **Note**: The code will show warnings if no aggregation is specified, so it is absolutely clear how values are being aggregated from rasters to subcatchments
@@ -256,7 +256,10 @@ proj.plot_catchment_raster('Results_t0','erosion_total')
 
 # %%
 # To see the total sediment eroded across each subcatchment:
-proj.plot_subcatchments(catchment=catchment_name,colour_col='erosion_total')
+# The recovery-specific results folder must be given explicitly (e.g.
+# 'Results_t0'); otherwise the summary CSV defaults to the old 'Results'
+# folder, which no longer exists.
+proj.plot_subcatchments(catchment=catchment_name, data_type='Results_t0', colour_col='erosion_total')
 
 # %%
 # To see the maximum erosion for any 30-minute period for each cell:
@@ -264,7 +267,7 @@ proj.plot_catchment_raster('Results_t0', 'peak_erosion')
 
 # %%
 # To see the average maximum erosion in any 30-minute period across subcatchments:
-proj.plot_subcatchments(catchment=catchment_name, colour_col='peak_erosion')
+proj.plot_subcatchments(catchment=catchment_name, data_type='Results_t0', colour_col='peak_erosion')
 
 # %% [markdown]
 # Once we've predicted how much sediment has *eroded* from each cell, the final RUSLE step is to work out how much of that eroded sediment actually makes its way downhill and is *delivered* to the stream network.
@@ -275,15 +278,15 @@ proj.plot_catchment_raster('Results_t0',  'delivered_total')
 
 # %%
 # Totals delivered from each subcatchment:
-proj.plot_subcatchments(catchment=catchment_name, colour_col='delivered_total')
+proj.plot_subcatchments(catchment=catchment_name, data_type='Results_t0', colour_col='delivered_total')
 
 # %%
 # Largest mass of sediment delivered during any 30-minute period for each cell:
-proj.plot_catchment_raster('Results_t0', 'peak_delivered_y1')
+proj.plot_catchment_raster('Results_t0', 'peak_delivered')
 
 # %%
 # Average maximum sediment delivered during any 30-minute period across each subcatchment:
-proj.plot_subcatchments(catchment=catchment_name, colour_col='peak_delivered')
+proj.plot_subcatchments(catchment=catchment_name, data_type='Results_t0', colour_col='peak_delivered')
 
 # %% [markdown]
 # ## Debris Flow Simulation
