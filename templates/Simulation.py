@@ -63,15 +63,10 @@ subcatch_path = '..\\test_data\\Subcatchments_EgSmall_7899.shp'
 # %%
 # The fire dates and recovery windows are properties of the project — they
 # were set during PrepareData (fire severity + compute_adjusted_k_c) and
-# stored in the catchment's run-context. Read them back here rather than
-# re-specifying them.
-ctx = proj.get_run_context(catchment_name)
-
-# Drive the stochastic rainfall from the fire end date through the end of
-# the last recovery window.
-rain_data_start = ctx.fire_end_date.strftime('%Y-%m-%d')
-last_recovery_time = ctx.recovery_times()[-1]
-rain_data_end = ctx.absolute_window(last_recovery_time)[1].strftime('%Y-%m-%d')
+# stored in the catchment's run-context. The simulation period is therefore
+# computed (fire end date -> end of the last recovery window) rather than
+# hard-coded here.
+rain_data_start, rain_data_end = proj.get_simulation_period(catchment_name)
 
 # `num_years` is inferred from start/end (one API year per calendar
 # year spanned).  `mean_annual_rainfall` and `average_temperature` are

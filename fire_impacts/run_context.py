@@ -88,6 +88,23 @@ class EventRunContext:
         end = base + pd.DateOffset(days=int(end_years * 365.25))
         return (start, end)
 
+    def simulation_period(self):
+        """Return the (start, end) pandas Timestamps spanning every
+        recovery window, measured from fire_end_date. The start is the
+        first breakpoint (usually the fire end date itself) and the end is
+        the last breakpoint — i.e. the rainfall span the recovery series
+        needs. Raises ValueError if fire_end_date is unset."""
+        if self.fire_end_date is None:
+            raise ValueError(
+                "run-context has no fire_end_date; cannot resolve a "
+                "simulation period."
+            )
+        base = pd.Timestamp(self.fire_end_date)
+        breakpoints = self.recovery_breakpoints
+        start = base + pd.DateOffset(days=int(breakpoints[0] * 365.25))
+        end = base + pd.DateOffset(days=int(breakpoints[-1] * 365.25))
+        return (start, end)
+
     # -- Serialisation --------------------------------------------------
 
     def to_dict(self):

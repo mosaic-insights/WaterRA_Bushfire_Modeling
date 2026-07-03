@@ -1860,6 +1860,34 @@ class FireImpactsProject(object):
         updated = replace(ctx, **fields)
         return self.set_run_context(catchment, updated, event=event)
 
+    def get_simulation_period(
+        self, catchment, *, fire_end_date=None, event=None
+    ):
+        """
+        Return the (start, end) pandas Timestamps of the recovery
+        simulation period for a catchment.
+
+        The period spans the recovery windows recorded in the run-context —
+        from the fire end date through the end of the last window — so the
+        simulation-period end never has to be hard-coded. Pass fire_end_date
+        to override the stored value (e.g. when the notebook drives the fire
+        date explicitly).
+
+        Parameters:
+        - catchment: Name of the catchment.
+        - fire_end_date: Optional fire end date override.
+        - event: Reserved for multi-event scoping (currently ignored).
+
+        Returns:
+        - (start, end) tuple of pandas Timestamps, suitable for
+          get_rainfall_replicates and aggregate_rainfall_data.
+        """
+        ctx = self.get_run_context(catchment, event=event)
+        if fire_end_date is not None:
+            from dataclasses import replace
+            ctx = replace(ctx, fire_end_date=pd.Timestamp(fire_end_date))
+        return ctx.simulation_period()
+
 
 ###############################################################################
 def plot_catchment_boundary(
