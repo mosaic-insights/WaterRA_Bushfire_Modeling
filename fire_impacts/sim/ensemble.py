@@ -6,7 +6,6 @@ replicate runs and producing publication-quality maps.
 """
 
 import warnings
-from fire_impacts import const as c
 import numpy as np
 import xarray as xr
 import pandas as pd
