@@ -41,6 +41,7 @@ from rasterio.warp import reproject, Resampling
 import os
 import logging
 import time
+import warnings
 from fire_impacts import const as c
 from fire_impacts.const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS
 from fire_impacts.pre.util import read_aligned, read_raster
@@ -599,50 +600,6 @@ def aggregate_rusle_to_subcatchments(
 # ---------------------------------------------------------------------------
 # Simulation runners
 # ---------------------------------------------------------------------------
-def _split_rainfall_by_recovery_time(
-    rainfall,
-    fire_end_date,
-    recovery_times,
-    recovery_interval_years,
-):
-    if fire_end_date is None:
-        raise ValueError(
-            "fire_end_date must be provided when running multiple "
-            "recovery intervals."
-        )
-
-    fire_end_date = pd.Timestamp(fire_end_date)
-    rainfall_index = rainfall.index
-
-    chunks = {}
-
-    for recovery_time in recovery_times:
-        start = fire_end_date + pd.DateOffset(
-            days=int(recovery_time * 365.25)
-        )
-        end = fire_end_date + pd.DateOffset(
-            days=int(
-                (recovery_time + recovery_interval_years) * 365.25
-            )
-        )
-
-        chunk = rainfall[
-            (rainfall_index >= start)
-            & (rainfall_index < end)
-        ]
-
-        if chunk.empty:
-            logger.warning(
-                "No rainfall data found for recovery time T=%s "
-                "between %s and %s",
-                recovery_time, start, end,
-            )
-            continue
-
-        chunks[recovery_time] = chunk
-
-    return chunks
-    
 def run_usle_simulation(
     project: FireImpactsProject,
     rainfall,
@@ -689,12 +646,6 @@ def run_usle_simulation(
       'RUSLE', 'delivered', and related per-cell arrays.
     ------------------------------------------------------------------------
     """
-    if recovery_times is None:
-        recovery_times = c.DEFAULT_RECOVERY_TIMES
-
-    if recovery_interval_years is None:
-        recovery_interval_years = c.DEFAULT_RECOVERY_INTERVAL_YEARS
-
     if catchment is None:
         return project.for_each_catchment(
             lambda ctmt: run_usle_simulation(
@@ -709,53 +660,30 @@ def run_usle_simulation(
             )
         )
 
-    # Resolve the output folder. Baseline runs use a sibling folder so
-    # they don't overwrite fire-impacted results.
+    # Deprecated multi-interval entry: splitting the rainfall across
+    # recovery windows now lives in run_usle_recovery_series, which reads
+    # the recovery config from the project run-context. Delegate for
+    # backward compatibility.
     if recovery_time is None and fire_end_date is not None:
-        rainfall_chunks = _split_rainfall_by_recovery_time(
-            rainfall=rainfall,
-            fire_end_date=fire_end_date,
-            recovery_times=recovery_times,
-            recovery_interval_years=recovery_interval_years,
+        warnings.warn(
+            "Passing fire_end_date/recovery_times to run_usle_simulation is "
+            "deprecated; use run_usle_recovery_series (recovery config is read "
+            "from the project run-context).",
+            DeprecationWarning,
+            stacklevel=2,
         )
-
-        all_results = {}
-
-        for recovery_time, rainfall_chunk in rainfall_chunks.items():
-            suffix = c.recovery_time_suffix(recovery_time)
-
-            if use_fire_adjusted:
-                interval_results_section = f"{c.RESULTS_FOLDER_NAME}_{suffix}"
-            else:
-                interval_results_section = (
-                    f"{c.RESULTS_BASELINE_FOLDER_NAME}_{suffix}"
-                )
-
-            logger.info(
-                "Running RUSLE for T=%s years using rainfall interval %s to %s",
-                recovery_time,
-                rainfall_chunk.index.min(),
-                rainfall_chunk.index.max(),
-            )
-
-            result = run_usle_simulation(
-                project,
-                rainfall_chunk,
-                catchment=catchment,
-                recorders=recorders,
-                save_rasters=save_rasters,
-                save_timeseries=save_timeseries,
-                use_fire_adjusted=use_fire_adjusted,
-                results_section=interval_results_section,
-                recovery_time=recovery_time,
-                fire_end_date=fire_end_date,
-                recovery_times=recovery_times,
-                recovery_interval_years=recovery_interval_years,
-            )
-
-            all_results[recovery_time] = result
-
-        return all_results
+        if recovery_times is None:
+            recovery_times = c.DEFAULT_RECOVERY_TIMES
+        if recovery_interval_years is None:
+            recovery_interval_years = c.DEFAULT_RECOVERY_INTERVAL_YEARS
+        breakpoints = c.breakpoints_from_times_and_interval(
+            recovery_times, recovery_interval_years)
+        return run_usle_recovery_series(
+            project, rainfall, catchment=catchment, recorders=recorders,
+            save_rasters=save_rasters, save_timeseries=save_timeseries,
+            use_fire_adjusted=use_fire_adjusted,
+            recovery_breakpoints=breakpoints, fire_end_date=fire_end_date,
+        )
 
     if results_section is None:
         if use_fire_adjusted:
@@ -874,6 +802,115 @@ def run_usle_simulation(
     results['params'] = params
 
     return results
+
+
+def run_usle_recovery_series(
+    project: FireImpactsProject,
+    rainfall,
+    catchment=None,
+    recorders=None,
+    save_rasters: bool = True,
+    save_timeseries: bool = True,
+    use_fire_adjusted: bool = True,
+    recovery_breakpoints=None,
+    fire_end_date=None,
+):
+    """
+    Run RUSLE across a fire event's recovery windows.
+
+    Reads the catchment's run-context for the fire end date and recovery
+    breakpoints (unless overridden), splits the rainfall into each recovery
+    window, and runs run_usle_simulation once per window. The per-window
+    C/K/SDR layers are selected by recovery time (the window start). This is
+    the recommended entry point for fire-adjusted, recovery-resolved runs —
+    it replaces passing fire_end_date/recovery_times to run_usle_simulation.
+
+    Parameters:
+    - project: FireImpactsProject instance.
+    - rainfall: rainfall Series spanning the recovery windows.
+    - catchment: Catchment name, or None to run every catchment.
+    - recorders: dict of recorders (reset per window internally).
+    - save_rasters / save_timeseries: passed to run_usle_simulation.
+    - use_fire_adjusted: If True, use the recovery-specific fire-adjusted
+      layers; if False, use the baseline layers.
+    - recovery_breakpoints: Override the run-context breakpoints.
+    - fire_end_date: Override the run-context fire end date.
+
+    Returns:
+    - For a single catchment: dict {recovery_time: recorder-results dict}.
+    - For catchment=None: dict {catchment: {recovery_time: ...}}.
+    """
+    if catchment is None:
+        return project.for_each_catchment(
+            lambda ctmt: run_usle_recovery_series(
+                project, rainfall, ctmt, recorders,
+                save_rasters, save_timeseries,
+                use_fire_adjusted=use_fire_adjusted,
+                recovery_breakpoints=recovery_breakpoints,
+                fire_end_date=fire_end_date,
+            )
+        )
+
+    ctx = project.get_run_context(catchment)
+    if fire_end_date is None:
+        fire_end_date = ctx.fire_end_date
+    if fire_end_date is None:
+        raise ValueError(
+            f"No fire end date available for catchment {catchment}. Run "
+            "calculate_fire_severity first, or pass fire_end_date."
+        )
+    if recovery_breakpoints is None:
+        recovery_breakpoints = ctx.recovery_breakpoints
+
+    fire_end_date = pd.Timestamp(fire_end_date)
+    rainfall_index = rainfall.index
+
+    all_results = {}
+    for start_years, end_years in c.recovery_windows(recovery_breakpoints):
+        # Fail clearly if the fire-adjusted layers for this window are
+        # missing, rather than deep inside a raster read.
+        if use_fire_adjusted:
+            suffix = c.recovery_time_suffix(start_years)
+            layer = project.catchment_path(
+                catchment, 'Erodibility', f'C_factor_adjusted_{suffix}.tif')
+            if not os.path.exists(layer):
+                raise FileNotFoundError(
+                    f"Missing fire-adjusted layer for recovery T={start_years} "
+                    f"({layer}). Run compute_adjusted_k_c with matching "
+                    "recovery breakpoints first."
+                )
+
+        window_start = fire_end_date + pd.DateOffset(
+            days=int(start_years * 365.25))
+        window_end = fire_end_date + pd.DateOffset(
+            days=int(end_years * 365.25))
+        chunk = rainfall[
+            (rainfall_index >= window_start) & (rainfall_index < window_end)
+        ]
+        if chunk.empty:
+            logger.warning(
+                "No rainfall for recovery window T=%s (%s to %s) in catchment "
+                "%s; skipping.",
+                start_years, window_start.date(), window_end.date(), catchment,
+            )
+            continue
+
+        logger.info(
+            "Running RUSLE for catchment %s, recovery T=%s years (%s to %s)",
+            catchment, start_years, window_start.date(), window_end.date(),
+        )
+        all_results[start_years] = run_usle_simulation(
+            project,
+            chunk,
+            catchment=catchment,
+            recorders=recorders,
+            save_rasters=save_rasters,
+            save_timeseries=save_timeseries,
+            use_fire_adjusted=use_fire_adjusted,
+            recovery_time=start_years,
+        )
+
+    return all_results
 
 
 # ---------------------------------------------------------------------------
