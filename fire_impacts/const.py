@@ -54,6 +54,10 @@ CHANNEL_PARAMETERS = dict(
     )
 NUM_SIM_YEARS = 2
 
+# Headwaters with a mean dNBR below this value are excluded from the
+# debris-flow analysis (they are considered insufficiently burnt).
+DEFAULT_DEBRIS_DNBR_THRESHOLD = 100
+
 # ------- Fire recovery time and intervals: ---------------------------------------------
 DEFAULT_RECOVERY_TIMES = [0, 0.5, 1, 1.5, 2, 2.5]
 DEFAULT_RECOVERY_INTERVAL_YEARS = 0.5

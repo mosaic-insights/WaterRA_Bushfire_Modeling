@@ -164,6 +164,7 @@ def get_clay_fraction(
 def prep_debris_flow_simulation(
     proj: FireImpactsProject,
     catchment: str,
+    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
 ):
     """
     Assemble all spatial inputs required to run the debris flow simulation.
@@ -175,6 +176,9 @@ def prep_debris_flow_simulation(
     Parameters:
     - proj: FireImpactsProject instance.
     - catchment: Catchment name.
+    - dnbr_threshold: Headwaters with a mean dNBR below this value are
+      excluded from the debris-flow analysis. Defaults to
+      const.DEFAULT_DEBRIS_DNBR_THRESHOLD.
 
     Returns:
     - DataFrame of per-headwater debris flow inputs and results, as
@@ -272,8 +276,6 @@ def prep_debris_flow_simulation(
         )
     condition_data = condition_data.fillna(0.0)
     # Remove headwaters where mean dNBR is below the debris-flow burn threshold.
-    dnbr_threshold = 100
-
     n_before = len(condition_data)
 
     condition_data = condition_data[
@@ -1386,6 +1388,7 @@ def debris_flow(
     save: bool = True,
     save_daily_catchment_timeseries: bool = True,
     prepared=None,
+    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run the debris flow simulation for a catchment or all catchments.
@@ -1406,6 +1409,9 @@ def debris_flow(
       {catchment: DataFrame} dict when running all catchments.  Reusing
       prepared data is required when running multiple rainfall replicates
       concurrently to avoid scratch-raster write races.
+    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
+      excluded from the analysis. Only used when prepared is None (i.e.
+      when this call runs prep_debris_flow_simulation itself).
 
     Returns:
     - Tuple of (Debris_Flow_Data, event_ts) where Debris_Flow_Data is
@@ -1425,6 +1431,7 @@ def debris_flow(
                 proj, rainfall, c, save,
                 save_daily_catchment_timeseries,
                 prepared=prepared_map.get(c),
+                dnbr_threshold=dnbr_threshold,
             )
         )
 
@@ -1448,7 +1455,7 @@ def debris_flow(
         working_deb_flow_data = prepared.copy(deep=True)
     else:
         working_deb_flow_data = prep_debris_flow_simulation(
-            proj, catchment
+            proj, catchment, dnbr_threshold=dnbr_threshold
         )
 
     # --- Note: this section may be superseded by recorders ----------
@@ -1596,7 +1603,10 @@ def event_ts_to_mass(
     return event_ts * mass
 
 
-def _prepare_debris_flow_per_catchment(proj, catchments=None):
+def _prepare_debris_flow_per_catchment(
+    proj, catchments=None,
+    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+):
     """
     Run prep_debris_flow_simulation() once per catchment.
 
@@ -1609,6 +1619,8 @@ def _prepare_debris_flow_per_catchment(proj, catchments=None):
     - proj: FireImpactsProject instance.
     - catchments: List of catchment names to prepare.  Defaults to all
       catchments in the project.
+    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
+      excluded from the analysis.
 
     Returns:
     - Dict keyed by catchment name, each value the DataFrame returned
@@ -1617,7 +1629,8 @@ def _prepare_debris_flow_per_catchment(proj, catchments=None):
     if catchments is None:
         catchments = proj.catchments
     return {
-        c: prep_debris_flow_simulation(proj, c) for c in catchments
+        c: prep_debris_flow_simulation(proj, c, dnbr_threshold=dnbr_threshold)
+        for c in catchments
     }
 
 
@@ -1678,6 +1691,7 @@ def run_debris_flow_all_replicates(
     save: bool = False,
     save_daily_catchment_timeseries: bool = False,
     prepared=None,
+    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
 ) -> dict:
     """
     Run the debris flow simulation across all replicates in parallel.
@@ -1700,6 +1714,8 @@ def run_debris_flow_all_replicates(
     - prepared: Optional pre-computed {catchment: DataFrame} mapping.
       When None, prep_debris_flow_simulation is invoked once per
       catchment before dispatching replicates.
+    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
+      excluded from the analysis. Only used when prepared is None.
 
     Returns:
     - Dict of {replicate_idx: {catchment: (summary_df, mass_ts)}}.
@@ -1718,7 +1734,9 @@ def run_debris_flow_all_replicates(
             'Preparing debris-flow inputs once per catchment '
             '(%d catchment(s)).', len(proj.catchments),
         )
-        prepared = _prepare_debris_flow_per_catchment(proj)
+        prepared = _prepare_debris_flow_per_catchment(
+            proj, dnbr_threshold=dnbr_threshold
+        )
 
     tasks = [
         dask.delayed(run_debris_flow_replicate)(
