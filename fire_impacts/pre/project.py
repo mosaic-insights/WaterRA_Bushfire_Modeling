@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 
 from .. import util as toputil
 from .. import const
+from ..run_context import EventRunContext
 
 logger = logging.getLogger(__name__)
 
@@ -1773,6 +1774,91 @@ class FireImpactsProject(object):
         fire_meta = pd.read_csv(fire_meta_path, index_col=0)
         end_date_iso = fire_meta.loc['end_date', 'Value']
         return pd.to_datetime(end_date_iso)
+
+    # --- Event run-context (fire dates + recovery breakpoints) --------------
+
+    def _run_context_path(self, catchment, *, event=None):
+        """
+        Return the path to a catchment's run-context file.
+
+        The ``event`` keyword is reserved for the multi-event model, where
+        the run-context is scoped per event rather than per catchment; it
+        is currently ignored.
+        """
+        return self.catchment_path(catchment, const.RUN_CONTEXT_NAME)
+
+    def get_run_context(self, catchment, *, event=None) -> EventRunContext:
+        """
+        Load a catchment's event run-context.
+
+        Falls back to a reconstructed context (fire dates from FireMeta.csv
+        if present, default recovery breakpoints) when no RunContext.json
+        exists yet, logging a warning that recommends re-running
+        compute_adjusted_k_c to persist a proper context.
+
+        Parameters:
+        - catchment: Name of the catchment.
+        - event: Reserved for multi-event scoping (currently ignored).
+
+        Returns:
+        - EventRunContext for the catchment.
+        """
+        path = self._run_context_path(catchment, event=event)
+        if os.path.exists(path):
+            with open(path) as f:
+                return EventRunContext.from_dict(json.load(f))
+
+        # Legacy fallback: no run-context persisted yet.
+        fire_start = fire_end = None
+        try:
+            fire_meta_path = self.catchment_path(
+                catchment, const.FIRE_SEVERITY_FOLDER_NAME, 'FireMeta.csv')
+            fire_meta = pd.read_csv(fire_meta_path, index_col=0)
+            fire_start = pd.to_datetime(fire_meta.loc['start_date', 'Value'])
+            fire_end = pd.to_datetime(fire_meta.loc['end_date', 'Value'])
+        except (FileNotFoundError, KeyError):
+            pass
+        logger.warning(
+            'No %s for catchment %s; using a fallback run-context (fire '
+            'dates from FireMeta.csv if present, default recovery '
+            'breakpoints). Re-run compute_adjusted_k_c to persist one.',
+            const.RUN_CONTEXT_NAME, catchment,
+        )
+        return EventRunContext(
+            fire_start_date=fire_start,
+            fire_end_date=fire_end,
+            recovery_breakpoints=list(const.DEFAULT_RECOVERY_BREAKPOINTS),
+        )
+
+    def set_run_context(self, catchment, ctx: EventRunContext, *, event=None):
+        """
+        Write a catchment's event run-context to RunContext.json.
+
+        Parameters:
+        - catchment: Name of the catchment.
+        - ctx: EventRunContext to persist.
+        - event: Reserved for multi-event scoping (currently ignored).
+        """
+        path = self._run_context_path(catchment, event=event)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(ctx.to_dict(), f, indent=2)
+        return ctx
+
+    def update_run_context(self, catchment, *, event=None, **fields):
+        """
+        Update selected fields of a catchment's run-context and persist it.
+
+        Reads the current (or fallback) context, replaces the given fields,
+        and writes the result. Accepts fire_start_date, fire_end_date, and
+        recovery_breakpoints.
+
+        Returns the updated EventRunContext.
+        """
+        from dataclasses import replace
+        ctx = self.get_run_context(catchment, event=event)
+        updated = replace(ctx, **fields)
+        return self.set_run_context(catchment, updated, event=event)
 
 
 ###############################################################################
