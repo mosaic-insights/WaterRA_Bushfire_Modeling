@@ -395,6 +395,15 @@ def compute_sediment_delivery_ratio(
       Default is 0.5.
     - k: Shape parameter for the IC-SDR relationship.
       Default is 1.
+    - c_factor_path: Path to the C-factor raster used in the
+      connectivity calculation. When None, falls back to the
+      catchment's base C_factor.tif and produces the baseline
+      (no-fire) SDR. compute_adjusted_k_c passes a recovery-specific
+      C_factor_adjusted_<suffix>.tif to build per-recovery SDRs.
+    - output_suffix: Suffix for the output SDR (and intermediate)
+      rasters, e.g. 't0' -> SDR_t0.tif. Defaults to 'baseline' when
+      no c_factor_path is supplied so the output matches the layer the
+      baseline simulation reads (SDR_baseline.tif).
 
     Returns:
     - slope_ratio: Slope as a dimensionless ratio.
@@ -411,6 +420,16 @@ def compute_sediment_delivery_ratio(
         return project.for_each_catchment(
             lambda c: compute_sediment_delivery_ratio(
                 project, c, max_sdr, ic0, k, c_factor_path, output_suffix))
+
+    # Without a C-factor raster there is no single "adjusted" C factor to
+    # fall back on (there is now one per recovery time), so default to the
+    # base C_factor.tif and write the baseline SDR — the layer the
+    # baseline (no-fire) simulation reads.
+    if c_factor_path is None:
+        c_factor_path = project.catchment_path(
+            catchment, 'Erodibility', 'C_factor.tif')
+        if output_suffix is None:
+            output_suffix = 'baseline'
 
     logger.info(
         'Computing Sediment Delivery Ratio for catchment: %s',
