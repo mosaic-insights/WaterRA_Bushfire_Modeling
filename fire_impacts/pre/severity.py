@@ -8,6 +8,7 @@ FireSeverity folder.
 """
 
 import os
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 import rioxarray as rxr
@@ -78,6 +79,121 @@ def init_catalog(url: str = DEA_STAC):
 # NBR computation
 # ---------------------------------------------------------------------------
 
+# NBR magnitudes for real surface reflectance are O(0.1-0.7). A composite
+# cell at (or within this tolerance of) zero means NIR == SWIR, which does
+# not happen for genuine vegetation/soil and signals a band-loading fault.
+NBR_ZERO_ATOL = 1e-6
+
+# DEA nbart reflectance bands use -999 as their integer nodata fill.
+# odc.stac.load leaves this value in place rather than converting it to
+# NaN, so it must be masked before computing NBR (otherwise nodata cells,
+# where nir == swir == -999, evaluate to NBR = 0 and corrupt the median).
+BAND_NODATA_FILL = -999
+
+
+def mask_band_nodata(band):
+    """
+    Mask a reflectance band's nodata fill to NaN.
+
+    Casts the band to float and replaces both the nodata value declared
+    in the band metadata (if any) and the DEA nbart -999 sentinel with
+    NaN, so downstream skipna reductions ignore nodata pixels.
+
+    Parameters:
+    - band: xarray DataArray for a single reflectance band.
+
+    Returns:
+    - The band as a float DataArray with nodata cells set to NaN.
+    """
+    nodata = band.attrs.get("nodata")
+    band = band.astype("float32")
+    if nodata is not None:
+        band = band.where(band != nodata)
+    return band.where(band != BAND_NODATA_FILL)
+
+
+def diagnose_nbr_composite(nir_med, swir_med, nbr_image, label):
+    """
+    Log band-level diagnostics for an NBR composite and guard against a
+    degenerate all-zero result.
+
+    An NBR of exactly zero requires NIR == SWIR, which does not occur for
+    real reflectance across a whole scene; it usually means the NIR and
+    SWIR bands did not load correctly (e.g. resolving to the same asset,
+    or a scaling/rename fault in odc.stac.load). This helper logs the
+    NIR/SWIR ranges and the fraction of cells where NIR == SWIR to help
+    locate the cause, then raises if every valid NBR cell is zero so the
+    bad composite never propagates into the dNBR calculation.
+
+    Parameters:
+    - nir_med: time-median NIR DataArray.
+    - swir_med: time-median SWIR DataArray.
+    - nbr_image: time-median NBR DataArray (the composite to validate).
+    - label: human-readable label (e.g. 'Prefire') for messages.
+
+    Returns:
+    - None. Logs diagnostics; raises ValueError on an all-zero composite.
+    """
+    nir_v = np.asarray(nir_med.values, dtype="float64")
+    swir_v = np.asarray(swir_med.values, dtype="float64")
+    nbr_v = np.asarray(nbr_image.values, dtype="float64")
+
+    both_finite = np.isfinite(nir_v) & np.isfinite(swir_v)
+    n_both = int(both_finite.sum())
+    n_equal = int((both_finite & (nir_v == swir_v)).sum())
+    equal_frac = (n_equal / n_both) if n_both else float("nan")
+
+    def _range(values, mask):
+        if not mask.any():
+            return float("nan"), float("nan"), float("nan")
+        sel = values[mask]
+        return float(sel.min()), float(sel.max()), float(sel.mean())
+
+    nir_min, nir_max, nir_mean = _range(nir_v, both_finite)
+    swir_min, swir_max, swir_mean = _range(swir_v, both_finite)
+
+    nbr_finite = np.isfinite(nbr_v)
+    n_valid = int(nbr_finite.sum())
+
+    logger.info(
+        "calc_nbr(): %s diagnostics — valid NBR cells=%d; "
+        "NIR[min=%.4f max=%.4f mean=%.4f]; "
+        "SWIR[min=%.4f max=%.4f mean=%.4f]; "
+        "NIR==SWIR in %.1f%% of overlapping cells.",
+        label, n_valid,
+        nir_min, nir_max, nir_mean,
+        swir_min, swir_max, swir_mean,
+        equal_frac * 100.0,
+    )
+
+    if n_valid == 0:
+        logger.warning(
+            "calc_nbr(): %s NBR composite has no valid cells.", label
+        )
+        return
+
+    nbr_valid = nbr_v[nbr_finite]
+    n_zero = int(np.sum(np.abs(nbr_valid) <= NBR_ZERO_ATOL))
+    zero_frac = n_zero / n_valid
+
+    if n_zero == n_valid:
+        raise ValueError(
+            f"calc_nbr(): {label} NBR composite is entirely zero over "
+            f"{n_valid} valid cells (NIR==SWIR in {equal_frac * 100:.1f}% "
+            f"of overlapping cells). The NIR and SWIR bands did not load "
+            f"correctly — check the STAC band names and odc.stac.load for "
+            f"this sensor and date range."
+        )
+
+    if zero_frac >= 0.5:
+        logger.warning(
+            "calc_nbr(): %s NBR composite is zero in %.1f%% of valid "
+            "cells (%d/%d) — unusually high; check for a partial "
+            "band-loading problem.",
+            label, zero_frac * 100.0, n_zero, n_valid,
+        )
+
+
 def calc_nbr(
     datetime,
     label,
@@ -86,6 +202,7 @@ def calc_nbr(
     desired_crs,
     desired_resolution,
     use_mask=True,
+    force_sensor=None,
 ):
     """
     Compute median NBR for an area over a date range from DEA imagery.
@@ -104,11 +221,18 @@ def calc_nbr(
     - desired_crs: output CRS for the loaded imagery.
     - desired_resolution: output pixel resolution.
     - use_mask: if True, load the s2cloudless cloud mask for Sentinel-2.
+    - force_sensor: 'landsat' or 'sentinel' to load a single sensor over
+      the whole window instead of auto-splitting at SPLIT_DATE. Use this
+      for events near the changeover to avoid an uncalibrated
+      cross-sensor composite. None (default) keeps the automatic split.
 
     Returns:
     - image_metadata: list of dicts describing each image used.
     - nbr_ds: xarray DataArray of median NBR values, or None if no
       imagery was found.
+    - sensors_used: dict mapping each contributing sensor ('landsat' /
+      'sentinel') to the number of time steps it supplied (empty if no
+      imagery was found).
     """
     if CATALOG is None:
         raise RuntimeError(
@@ -125,26 +249,40 @@ def calc_nbr(
     if dt_end < dt_start:
         raise ValueError(f"datetime range is invalid: {datetime}")
 
-    # Build subranges: Landsat before SPLIT_DATE, Sentinel-2 after
+    valid_sensors = {"landsat", "sentinel"}
+    if force_sensor is not None and force_sensor not in valid_sensors:
+        raise ValueError(
+            f"force_sensor must be one of {sorted(valid_sensors)} or None; "
+            f"got {force_sensor!r}."
+        )
+
+    # Build subranges. By default, split at SPLIT_DATE (Landsat before,
+    # Sentinel-2 after). If force_sensor is set, use that single sensor
+    # across the whole window instead.
     subranges = []
 
-    # Part strictly before SPLIT_DATE >> Landsat
-    if dt_start < SPLIT_DATE:
-        lt_start = dt_start
-        lt_end = min(dt_end, SPLIT_DATE - pd.Timedelta(seconds=1))
-        if lt_start <= lt_end:
-            subranges.append(("landsat", lt_start, lt_end))
+    if force_sensor is not None:
+        subranges.append((force_sensor, dt_start, dt_end))
+    else:
+        # Part strictly before SPLIT_DATE >> Landsat
+        if dt_start < SPLIT_DATE:
+            lt_start = dt_start
+            lt_end = min(dt_end, SPLIT_DATE - pd.Timedelta(seconds=1))
+            if lt_start <= lt_end:
+                subranges.append(("landsat", lt_start, lt_end))
 
-    # Part on/after SPLIT_DATE >> Sentinel-2
-    if dt_end >= SPLIT_DATE:
-        s2_start = max(dt_start, SPLIT_DATE)
-        s2_end = dt_end
-        if s2_start <= s2_end:
-            subranges.append(("sentinel", s2_start, s2_end))
+        # Part on/after SPLIT_DATE >> Sentinel-2
+        if dt_end >= SPLIT_DATE:
+            s2_start = max(dt_start, SPLIT_DATE)
+            s2_end = dt_end
+            if s2_start <= s2_end:
+                subranges.append(("sentinel", s2_start, s2_end))
 
-    # For each subrange, query STAC, load, and normalise band names
+    # For each subrange, query STAC, load, and normalise band names.
+    # sensor_scene_counts tracks how many time steps each sensor supplied.
     all_items = []
     ds_parts = []
+    sensor_scene_counts = {}
 
     for sensor, d0, d1 in subranges:
         # Format a STAC datetime range for this subrange
@@ -222,6 +360,9 @@ def calc_nbr(
 
         ds_parts.append(ds)
         all_items.extend(items)
+        sensor_scene_counts[sensor] = (
+            sensor_scene_counts.get(sensor, 0) + ds.sizes.get("time", 0)
+        )
 
     # Combine all sensor parts; if nothing loaded, bail out
     if not ds_parts:
@@ -229,8 +370,29 @@ def calc_nbr(
             "calc_nbr(): no imagery found for %s over the interval %s.",
             label, datetime,
         )
-        # Keep return types consistent: empty metadata, None raster
-        return [], None
+        # Keep return types consistent: empty metadata, None raster,
+        # no sensors used.
+        return [], None, {}
+
+    # Report per-sensor observation counts, and warn if this single
+    # composite mixes sensors (Landsat and Sentinel-2 NBR use different
+    # NIR/SWIR band-passes and are not directly comparable).
+    counts_str = ", ".join(
+        f"{s}={n}" for s, n in sensor_scene_counts.items()
+    )
+    logger.info(
+        "calc_nbr(): %s composite drew from %d sensor(s): %s",
+        label, len(sensor_scene_counts), counts_str,
+    )
+    if len(sensor_scene_counts) > 1:
+        logger.warning(
+            "calc_nbr(): %s NBR composite mixes multiple sensors (%s). "
+            "Landsat and Sentinel-2 NBR are not directly comparable "
+            "(different NIR/SWIR band-passes), so this composite is "
+            "uncalibrated across sensors. Pass force_sensor='landsat' or "
+            "force_sensor='sentinel' to use a single instrument.",
+            label, counts_str,
+        )
 
     # Concatenate along time dimension and sort by time
     ds_all = xr.concat(ds_parts, dim="time").sortby("time")
@@ -251,8 +413,12 @@ def calc_nbr(
             "normalisation."
         )
 
-    nir = ds_all["nir"]
-    swir = ds_all["swir"]
+    # Mask the -999 nodata fill to NaN before computing NBR. Left in
+    # place, nodata cells (nir == swir == -999) evaluate to NBR = 0 and,
+    # mixed into the time median, corrupt the composite — producing the
+    # all-zero / blacked-out NBR maps this guards against.
+    nir = mask_band_nodata(ds_all["nir"])
+    swir = mask_band_nodata(ds_all["swir"])
 
     # Avoid division-by-zero issues; skipna=True ignores bad pixels.
     nbr = (nir - swir) / (nir + swir)
@@ -260,7 +426,13 @@ def calc_nbr(
     # Take the median along time
     image = nbr.median(dim="time", skipna=True)
 
-    return image_metadata, image
+    # Log NIR/SWIR diagnostics and guard against a degenerate all-zero
+    # (NIR == SWIR) composite before it feeds into the dNBR calculation.
+    nir_med = nir.median(dim="time", skipna=True)
+    swir_med = swir.median(dim="time", skipna=True)
+    diagnose_nbr_composite(nir_med, swir_med, image, label)
+
+    return image_metadata, image, dict(sensor_scene_counts)
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +501,7 @@ def calculate_fire_severity(
     max_cloud_cover=20,
     resolution_input=20,
     bbox=None,
+    force_sensor=None,
     catchment=None,
 ):
     """
@@ -350,6 +523,11 @@ def calculate_fire_severity(
     - resolution_input: pixel resolution in metres.
     - bbox: bounding box for the catchment area; calculated from the
       catchment boundary if not supplied.
+    - force_sensor: 'landsat' or 'sentinel' to force both the pre- and
+      post-fire NBR onto a single sensor. Recommended for fires near the
+      Landsat/Sentinel-2 changeover, where the default auto-split would
+      otherwise produce an uncalibrated cross-sensor dNBR. None (default)
+      keeps the automatic split.
     - catchment: name of the catchment to process; if None, processes
       all catchments in the project.
 
@@ -369,6 +547,7 @@ def calculate_fire_severity(
                 max_cloud_cover,
                 resolution_input,
                 bbox,
+                force_sensor=force_sensor,
                 catchment=c,
             )
         )
@@ -438,11 +617,12 @@ def calculate_fire_severity(
 
     # Calculate Pre-fire NBR
     logger.info("Calculating pre-fire NBR for %s", catchment)
-    pre_image_metadata, prefire_NBR = calc_nbr(
+    pre_image_metadata, prefire_NBR, pre_sensors = calc_nbr(
         datetime=f"{start_date_pre}/{end_date_pre}",
         label=pre_fire_label,
         **common_args,
         use_mask=True,
+        force_sensor=force_sensor,
     )
 
     # Write the pre-fire NBR to disk
@@ -456,11 +636,12 @@ def calculate_fire_severity(
 
     # Calculate Post-fire NBR
     logger.info("Calculating post-fire NBR for %s", catchment)
-    post_image_metadata, postfire_NBR = calc_nbr(
+    post_image_metadata, postfire_NBR, post_sensors = calc_nbr(
         datetime=f"{start_date_post}/{end_date_post}",
         label=post_fire_label,
         **common_args,
         use_mask=False,
+        force_sensor=force_sensor,
     )
 
     # Write the post-fire NBR to disk
@@ -471,6 +652,23 @@ def calculate_fire_severity(
         post_fire_name,
         shapefile_path,
     )
+
+    # Warn if the pre- and post-fire composites came from different
+    # sensors: the resulting dNBR is a cross-sensor difference and carries
+    # an uncalibrated instrument bias. force_sensor pins both periods to
+    # one instrument to avoid this.
+    pre_set = set(pre_sensors)
+    post_set = set(post_sensors)
+    if pre_set and post_set and pre_set != post_set:
+        logger.warning(
+            "calculate_fire_severity(): pre-fire NBR used %s but post-fire "
+            "NBR used %s, so dNBR is a cross-sensor difference with an "
+            "uncalibrated instrument bias. For a fire near the "
+            "Landsat/Sentinel-2 changeover (%s) pass force_sensor='landsat' "
+            "or force_sensor='sentinel' to use one instrument for both "
+            "periods.",
+            sorted(pre_set), sorted(post_set), SPLIT_DATE.date(),
+        )
 
     # Save combined pre- and post-fire image metadata to CSV
     combined_metadata = pre_image_metadata + post_image_metadata
@@ -483,8 +681,11 @@ def calculate_fire_severity(
     # Calculate dNBR = pre-fire NBR minus post-fire NBR
     logger.info("Calculating dNBR for %s", catchment)
     delta_NBR = prefire_NBR - postfire_NBR
-    # Set negative dNBR values to 0
-    delta_NBR = delta_NBR.where(delta_NBR >= 0, 0)
+    # Set negative dNBR values to 0, but preserve no-data (NaN) cells.
+    # A plain `.where(delta_NBR >= 0, 0)` also matches NaN (NaN >= 0 is
+    # False) and would fill no-data with a valid 0, hiding gaps in the
+    # input imagery. Keep NaN by including it in the "keep original" mask.
+    delta_NBR = delta_NBR.where((delta_NBR >= 0) | delta_NBR.isnull(), 0)
     # Save fire date metadata
     fire_meta = pd.DataFrame(
         data={
