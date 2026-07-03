@@ -690,7 +690,7 @@ def run_usle_simulation(
     ------------------------------------------------------------------------
     """
     if recovery_times is None:
-    recovery_times = c.DEFAULT_RECOVERY_TIMES
+        recovery_times = c.DEFAULT_RECOVERY_TIMES
 
     if recovery_interval_years is None:
         recovery_interval_years = c.DEFAULT_RECOVERY_INTERVAL_YEARS
@@ -733,7 +733,7 @@ def run_usle_simulation(
 
             logger.info(
                 "Running RUSLE for T=%s years using rainfall interval %s to %s",
-                t,
+                recovery_time,
                 rainfall_chunk.index.min(),
                 rainfall_chunk.index.max(),
             )
@@ -753,7 +753,7 @@ def run_usle_simulation(
                 recovery_interval_years=recovery_interval_years,
             )
 
-            all_results[t] = result
+            all_results[recovery_time] = result
 
         return all_results
 
