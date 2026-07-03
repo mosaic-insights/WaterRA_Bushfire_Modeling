@@ -701,6 +701,14 @@ def calculate_fire_severity(
     fire_meta.to_csv(fire_path, date_format="%Y-%m-%d")
     logger.info("Saved fire metadata to %s", fire_path)
 
+    # Record the fire dates in the event run-context (the recovery
+    # breakpoints are added later by compute_adjusted_k_c).
+    project.update_run_context(
+        catchment,
+        fire_start_date=pd.to_datetime(fire_start_date),
+        fire_end_date=pd.to_datetime(fire_end_date),
+    )
+
     # Write the dNBR raster to the catchment folder
     delta_fire_label = "dNBR"
     write_raster_xarray(

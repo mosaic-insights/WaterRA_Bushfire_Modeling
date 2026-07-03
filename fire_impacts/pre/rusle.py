@@ -20,6 +20,7 @@ from pysheds.grid import Grid
 import numpy as np
 import os
 import logging
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ def compute_adjusted_k_c(
     k_factor_fn: str = None,
     compute_lsi_factor: bool = True,
     compute_sdr: bool = True,
+    recovery_breakpoints=None,
     recovery_times=None,
 ):
     """
@@ -50,6 +52,13 @@ def compute_adjusted_k_c(
       grid.
     - compute_lsi_factor: If True, also compute the LSI factor.
     - compute_sdr: If True, also compute the SDR.
+    - recovery_breakpoints: Monotonic array of years-since-fire boundaries
+      defining the recovery windows (n+1 breakpoints -> n windows; window
+      i is modelled at recovery time b_i). Defaults to
+      const.DEFAULT_RECOVERY_BREAKPOINTS. Persisted into the catchment's
+      run-context so the simulation step doesn't need it re-specified.
+    - recovery_times: Deprecated. The old list of window-start times; if
+      given it is converted to breakpoints using the default interval.
 
     Returns:
     - None. Outputs are written to project raster files.
@@ -62,6 +71,7 @@ def compute_adjusted_k_c(
             k_factor_fn=k_factor_fn,
             compute_lsi_factor=compute_lsi_factor,
             compute_sdr=compute_sdr,
+            recovery_breakpoints=recovery_breakpoints,
             recovery_times=recovery_times,
         ))
         return
@@ -131,8 +141,26 @@ def compute_adjusted_k_c(
     )
 
     # Model parameters
-    if recovery_times is None:
-        recovery_times = c.DEFAULT_RECOVERY_TIMES
+    # Resolve recovery breakpoints (a single monotonic array). recovery_times
+    # is deprecated: convert it to breakpoints by closing the final window
+    # with the default interval.
+    if recovery_times is not None:
+        warnings.warn(
+            "recovery_times is deprecated; pass recovery_breakpoints "
+            "(a single monotonic array) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if recovery_breakpoints is None:
+            recovery_breakpoints = c.breakpoints_from_times_and_interval(
+                recovery_times, c.DEFAULT_RECOVERY_INTERVAL_YEARS)
+    if recovery_breakpoints is None:
+        recovery_breakpoints = c.DEFAULT_RECOVERY_BREAKPOINTS
+    # Each recovery window is modelled at its start time (C/K evaluated at
+    # the window start).
+    recovery_start_times = [
+        start for start, _ in c.recovery_windows(recovery_breakpoints)
+    ]
     x_c = 0.4
     x_k = 1
     Kfire = 0.081
@@ -151,7 +179,7 @@ def compute_adjusted_k_c(
     if compute_lsi_factor:
         compute_lsi(proj, catchment)
 
-    for recovery_time in recovery_times:
+    for recovery_time in recovery_start_times:
         suffix = c.recovery_time_suffix(recovery_time)
 
         logger.info(
@@ -199,6 +227,11 @@ def compute_adjusted_k_c(
                 c_factor_path=c_out,
                 output_suffix=suffix,
             )
+
+    # Persist the recovery breakpoints into the event run-context so the
+    # simulation step can read them back instead of re-specifying them.
+    proj.update_run_context(
+        catchment, recovery_breakpoints=list(recovery_breakpoints))
 
 # ---------------------------------------------------------------------------
 # Topographic index helper
