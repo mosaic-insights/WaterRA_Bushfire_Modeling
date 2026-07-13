@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.19.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -89,10 +89,10 @@ CATCHMENT
 # The same set of replicates feeds both simulations.
 
 # %%
-START_YEAR = 2015
-YEARS = 2
-rain_data_start = f'{START_YEAR}-04-01'
-rain_data_end = f'{START_YEAR + YEARS}-03-31'
+# The simulation period spans the recovery windows recorded in the
+# run-context (fire end date -> end of the last window), so it isn't
+# hard-coded here.
+rain_data_start, rain_data_end = proj.get_simulation_period(CATCHMENT)
 
 N_REPLICATES = 10
 
@@ -132,18 +132,25 @@ rainfall_12min
 # %% [markdown]
 # ## Erosion — ensemble RUSLE simulation
 #
-# `default_rusle_recorders()` builds a factory that records:
+# `run_rusle_all_replicates` runs every replicate in parallel. Recovery
+# windows are applied internally by run_usle_simulation, so each replicate
+# yields a single continuous result. The grid recorders use
+# `grid_timesteps=('total',)` — one whole-period grid:
 #
-# * Yearly total erosion grids (`RUSLE_sum_yearly`)
-# * Yearly peak 30-min erosion grids (`RUSLE_max_yearly`)
+# * Total erosion grid over the window (`RUSLE_sum_total`)
+# * Peak 30-min erosion grid over the window (`RUSLE_max_total`)
 # * Daily subcatchment-level erosion timeseries (`erosion_daily_time_series`)
-#
-# `run_rusle_all_replicates` then runs every replicate in parallel.
 
 # %%
-recorder_factory = default_rusle_recorders(include_timeseries=True)
+recorder_factory = default_rusle_recorders(
+    include_timeseries=True,
+    grid_timesteps=('total',),
+)
 
 # %%
+# Run every replicate in parallel. Recovery windows are applied internally
+# by run_usle_simulation, so the result is the standard
+# {replicate: {catchment: recorder-results}}.
 rusle_results = run_rusle_all_replicates(
     proj,
     rainfall_30min,
@@ -172,21 +179,20 @@ baseline_results = run_rusle_all_replicates(
 # %% [markdown]
 # ### Ensemble statistics (median / P90 / IQR)
 #
-# Publication-quality three-panel map of year-1 total erosion with a
-# shared colour scale clipped to the 99th percentile to avoid extreme
-# outliers dominating.
+# Publication-quality three-panel map of the selected recovery window's
+# total erosion, with a shared colour scale clipped to the 99th percentile
+# to avoid extreme outliers dominating.
 
 # %%
 CELL_AREA_HA = 30 * 30 / 10_000  # nominal 30 m cell
 plot_ensemble_statistics_panel(
     rusle_results,
-    'RUSLE_sum_yearly',
+    'RUSLE_sum_total',
     catchment=CATCHMENT,
-    time=0,
+    time=None,
     project=proj,
     cell_area_ha=CELL_AREA_HA,
     units='t / ha',
-    suptitle='Year 1 total erosion — ensemble statistics',
 )
 plt.show()
 
@@ -200,17 +206,15 @@ plt.show()
 THRESHOLD_T_HA = 0.5
 THRESHOLD_PER_CELL = THRESHOLD_T_HA * CELL_AREA_HA
 
-for t in range(YEARS):
-    prob = exceedance_probability(
-        rusle_results, 'RUSLE_sum_yearly', THRESHOLD_PER_CELL,
-        catchment=CATCHMENT, time=t,
-    )
-    ax = plot_exceedance(prob, project=proj, catchment=CATCHMENT)
-    ax.set_title(
-        f'P(Year {t+1} erosion > {THRESHOLD_T_HA} t/ha)  '
-        f'(n={N_REPLICATES} replicates)'
-    )
-    plt.show()
+prob = exceedance_probability(
+    rusle_results, 'RUSLE_sum_total', THRESHOLD_PER_CELL,
+    catchment=CATCHMENT, time=None,
+)
+ax = plot_exceedance(prob, project=proj, catchment=CATCHMENT)
+ax.set_title(
+    f'P(erosion > {THRESHOLD_T_HA} t/ha)  (n={N_REPLICATES} replicates)'
+)
+plt.show()
 
 # %% [markdown]
 # ### Catchment-lumped exceedance curve (AEP)
@@ -218,12 +222,11 @@ for t in range(YEARS):
 # %%
 plot_catchment_exceedance_curve(
     rusle_results,
-    'RUSLE_sum_yearly',
+    'RUSLE_sum_total',
     catchment=CATCHMENT,
-    time=0,
+    time=None,
     scale=1e-3,
     value_units='thousand tonnes',
-    title='Exceedance curve — Year 1 total catchment erosion',
 )
 plt.show()
 

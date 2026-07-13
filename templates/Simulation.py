@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.19.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -26,7 +26,6 @@ logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(leveln
 from fire_impacts.sim import rusle, aggregate_rainfall_data, debris_flow
 from fire_impacts.stochastic.rainfall import get_rainfall_replicates
 from fire_impacts import FireImpactsProject
-from fire_impacts.pre.rusle import compute_sediment_delivery_ratio
 
 import matplotlib.pyplot as plt
 
@@ -127,31 +126,30 @@ rain_seq
 # We also want daily timeseries at the subcatchment scale that we can later import into Source
 
 # %%
-# Define the end of year 1 and the start of year 2
-y1_end = rain_seq.index[len(rain_seq)//2]
-y2_start = rain_seq.index[1+len(rain_seq)//2]
-
-# %%
-recorders = dict(
-    erosion_total=rusle.record_summary_grid('RUSLE'),
-    peak_erosion=rusle.record_summary_grid(
-        'RUSLE',
-        fn='max',
-    ),
-    delivered_total=rusle.record_summary_grid(
-        'delivered',
-    ),
-    peak_delivered=rusle.record_summary_grid(
-        'delivered',
-        fn='max',
-    ),
-    erosion_daily_time_series=
-        rusle.record_subcatchment_timeseries(
-            proj,
-            'RUSLE',
-            agg_count=48,
-        ),
+# Recorders are built with the default_rusle_recorders() factory: it returns
+# a factory(proj, start, end) that produces a fresh recorder set. Here we ask
+# for whole-period ('total') grids of RUSLE and delivered sediment, each as a
+# sum and a peak, plus a daily subcatchment timeseries. Other grid cadences
+# are available: 'yearly', 'quarterly', 'monthly', 'weekly', 'daily',
+# ('yearly', 'fire') for year-since-fire, or 'timestep' for a grid per model
+# step. This produces keys like 'RUSLE_sum_total' and 'delivered_max_total'.
+recorder_factory = rusle.default_rusle_recorders(
+    grid_variables=('RUSLE', 'delivered'),
+    grid_fns=('sum', 'max'),
+    grid_timesteps=('total',),
+    include_timeseries=True,
 )
+recorders = recorder_factory(proj, rain_seq.index[0], rain_seq.index[-1])
+
+# --- For reference, the factory above replaces this manual recorder set: ---
+# recorders = dict(
+#     erosion_total=rusle.record_summary_grid('RUSLE'),
+#     peak_erosion=rusle.record_summary_grid('RUSLE', fn='max'),
+#     delivered_total=rusle.record_summary_grid('delivered'),
+#     peak_delivered=rusle.record_summary_grid('delivered', fn='max'),
+#     erosion_daily_time_series=rusle.record_subcatchment_timeseries(
+#         proj, 'RUSLE', agg_count=48),
+# )
 
 # %%
 
@@ -159,10 +157,11 @@ recorders = dict(
 # ### Run the simulation
 
 # %%
-# run_usle_recovery_series splits the rainfall across the recovery windows
-# defined in the run-context and runs each one against its matching
-# fire-adjusted layers. No fire dates or recovery times are specified here.
-results = rusle.run_usle_recovery_series(
+# run_usle_simulation runs the whole rainfall period continuously, applying
+# the recovery windows internally (the fire-adjusted C/K/SDR layers switch at
+# each window boundary). Recovery is not an output dimension — results are a
+# single continuous set per catchment.
+results = rusle.run_usle_simulation(
     proj,
     rain_seq,
     recorders=recorders,
@@ -179,41 +178,14 @@ results = rusle.run_usle_recovery_series(
 # the erosion uplift caused by the fire.
 
 # %%
-# Rebuild the recorders: each recorder carries accumulator state from
-# the fire run, so we need fresh ones for the baseline.
-
-compute_sediment_delivery_ratio(
-    proj,
-    catchment_name,
-    c_factor_path=proj.catchment_path(
-        catchment_name,
-        'Erodibility',
-        'C_factor.tif',
-    ),
-    output_suffix='baseline',
-)
-
-baseline_recorders = dict(
-    erosion_total=rusle.record_summary_grid('RUSLE'),
-    peak_erosion=rusle.record_summary_grid(
-        'RUSLE',
-        fn='max',
-    ),
-    delivered_total=rusle.record_summary_grid(
-        'delivered',
-    ),
-    peak_delivered=rusle.record_summary_grid(
-        'delivered',
-        fn='max',
-    ),
-    erosion_daily_time_series=
-        rusle.record_subcatchment_timeseries(
-            proj,
-            'RUSLE',
-            agg_count=48,
-        ),
-)
-baseline_results = rusle.run_usle_recovery_series(
+# The baseline uses the unadjusted C/K factors and the baseline SDR
+# (SDR_baseline.tif). These are all produced during PrepareData by
+# compute_adjusted_k_c, so no extra preparation is needed here — just build
+# a fresh recorder set (recorders carry accumulator state from the fire run)
+# and run with use_fire_adjusted=False.
+baseline_recorders = recorder_factory(
+    proj, rain_seq.index[0], rain_seq.index[-1])
+baseline_results = rusle.run_usle_simulation(
     proj,
     rain_seq,
     recorders=baseline_recorders,
@@ -226,60 +198,57 @@ baseline_results = rusle.run_usle_recovery_series(
 # One easy, intuitive way to view the rsults is as a daily timeseries of total mass eroded each day. This is embedded within the `results` object created above
 
 # %%
-# results is keyed {catchment: {recovery_time: recorder-results}}.
-catchment_results = results[catchment_name][0]  # or results[catchment_name][0.5], etc.
+# results is keyed {catchment: recorder-results}.
+catchment_results = results[catchment_name]
 catchment_results['erosion_daily_time_series']
 
 # %% [markdown]
 # You can also visualise the various outputs.
 # - To view the results for the whole catchment as a raster, use `plot_catchment_raster()`
-#     - Specify the recovery-specific results folder (e.g. *'Results_t0'*) so the plotting function knows where to look
+#     - Grids are written to the `Results` folder, named by recorder key
+#       (e.g. 'RUSLE_sum_total', 'delivered_max_total').
 # - To view results aggregated by subcatchment, use `plot_subcatchments()`
-#     - Specify the catchment name, the recovery-specific results folder (`data_type`), and the data type you want to see
-#     - The data will be aggregated for each subcatchment using the most appropriate aggregation:
-#         - Sum for totals (e.g. 'erosion_total', 'delivered_total')
-#         - Mean for peaks (e.g. 'peak_erosion', 'peak_delivered')
+#     - Pass the catchment name, `data_type='Results'`, and the recorder key.
+#     - The data is aggregated per subcatchment using the appropriate stat:
+#         - Sum for totals (e.g. 'RUSLE_sum_total', 'delivered_sum_total')
+#         - Mean for peaks/max (e.g. 'RUSLE_max_total', 'delivered_max_total')
 #
 # Examples of the different visualisations for our example catchment are shown in the following cells
-# > **Note**: The code will show warnings if no aggregation is specified, so it is absolutely clear how values are being aggregated from rasters to subcatchments
 
 # %%
 # To see a complete picture of sediment eroded across the catchment:
-proj.plot_catchment_raster('Results_t0','erosion_total')
+proj.plot_catchment_raster('Results', 'RUSLE_sum_total')
 
 # %%
 # To see the total sediment eroded across each subcatchment:
-# The recovery-specific results folder must be given explicitly (e.g.
-# 'Results_t0'); otherwise the summary CSV defaults to the old 'Results'
-# folder, which no longer exists.
-proj.plot_subcatchments(catchment=catchment_name, data_type='Results_t0', colour_col='erosion_total')
+proj.plot_subcatchments(catchment=catchment_name, data_type='Results', colour_col='RUSLE_sum_total')
 
 # %%
 # To see the maximum erosion for any 30-minute period for each cell:
-proj.plot_catchment_raster('Results_t0', 'peak_erosion')
+proj.plot_catchment_raster('Results', 'RUSLE_max_total')
 
 # %%
 # To see the average maximum erosion in any 30-minute period across subcatchments:
-proj.plot_subcatchments(catchment=catchment_name, data_type='Results_t0', colour_col='peak_erosion')
+proj.plot_subcatchments(catchment=catchment_name, data_type='Results', colour_col='RUSLE_max_total')
 
 # %% [markdown]
 # Once we've predicted how much sediment has *eroded* from each cell, the final RUSLE step is to work out how much of that eroded sediment actually makes its way downhill and is *delivered* to the stream network.
 
 # %%
-# Total sediment delivered to streams during the first year:
-proj.plot_catchment_raster('Results_t0',  'delivered_total')
+# Total sediment delivered to streams over the simulation:
+proj.plot_catchment_raster('Results', 'delivered_sum_total')
 
 # %%
 # Totals delivered from each subcatchment:
-proj.plot_subcatchments(catchment=catchment_name, data_type='Results_t0', colour_col='delivered_total')
+proj.plot_subcatchments(catchment=catchment_name, data_type='Results', colour_col='delivered_sum_total')
 
 # %%
 # Largest mass of sediment delivered during any 30-minute period for each cell:
-proj.plot_catchment_raster('Results_t0', 'peak_delivered')
+proj.plot_catchment_raster('Results', 'delivered_max_total')
 
 # %%
 # Average maximum sediment delivered during any 30-minute period across each subcatchment:
-proj.plot_subcatchments(catchment=catchment_name, data_type='Results_t0', colour_col='peak_delivered')
+proj.plot_subcatchments(catchment=catchment_name, data_type='Results', colour_col='delivered_max_total')
 
 # %% [markdown]
 # ## Debris Flow Simulation
