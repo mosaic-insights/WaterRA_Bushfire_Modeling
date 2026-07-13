@@ -228,6 +228,17 @@ def compute_adjusted_k_c(
                 output_suffix=suffix,
             )
 
+    # Also compute the baseline (no-fire) SDR from the unadjusted C factor,
+    # so the baseline simulation has SDR_baseline.tif available without a
+    # separate step. Uses the base C_factor.tif written above.
+    if compute_sdr:
+        compute_sediment_delivery_ratio(
+            proj,
+            catchment,
+            c_factor_path=c_factor_out,
+            output_suffix='baseline',
+        )
+
     # Persist the recovery breakpoints into the event run-context so the
     # simulation step can read them back instead of re-specifying them.
     proj.update_run_context(

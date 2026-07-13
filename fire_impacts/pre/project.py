@@ -1443,7 +1443,7 @@ class FireImpactsProject(object):
                 _cl = colour_col.lower()
                 if 'i12' in _cl:
                     suffix = '_min'
-                elif 'peak' in _cl:
+                elif 'peak' in _cl or 'max' in _cl:
                     suffix = '_mean'
                 else:
                     suffix = '_sum'
