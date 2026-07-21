@@ -136,17 +136,18 @@ def compute_adjusted_k_c(
     x_c = 0.4
     x_k = 1
     Kfire = 0.081
+    Cpeak = 0.35
 
     # Compute fire-adjusted C factor using dNBR
     CdNBR = dNBR * 1000
     CdNBR[CdNBR < 0] = 0
-    CdNBR[CdNBR > 400] = 0.081
     dNBRmask = (CdNBR > 0) & (CdNBR <= 400)
     CdNBR[dNBRmask] = (
         Cbase[dNBRmask]
-        + ((0.081 - Cbase[dNBRmask]) * (CdNBR[dNBRmask] / 400))
+        + ((Cpeak - Cbase[dNBRmask]) * (CdNBR[dNBRmask] / 400))
     )
-
+    CdNBR[CdNBR > 400] = Cpeak
+    
     # LS factor does not depend on T, compute it once only.
     if compute_lsi_factor:
         compute_lsi(proj, catchment)
