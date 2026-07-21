@@ -5,7 +5,7 @@ Unit tests for veneer_config module, focusing on _detect_parameter function.
 import pytest
 import logging
 from unittest.mock import MagicMock
-from veneer_config import _detect_parameter
+from fire_impacts.source.veneer_config import _detect_parameter
 
 # Configure logging for tests
 logging.basicConfig(level=logging.DEBUG)
@@ -22,19 +22,16 @@ class TestDetectParameter:
         result = _detect_parameter(getter_func, candidates, 'constituents')
         assert result == 'TSS'
     
-    def test_substring_match_partial(self):
-        """Test partial substring match - candidate appears in option."""
+    def test_substring_match_falls_through_to_later_candidate(self):
+        """A candidate that matches nothing gives way to the next one."""
         getter_func = MagicMock(return_value=['Total Suspended Solids', 'Nitrogen', 'Phosphorus'])
-        candidates = ['TSS', 'Sediment']
-        
+        # 'TSS' is not a substring of 'Total Suspended Solids', so the
+        # scan should move on to 'Solids'.
+        candidates = ['TSS', 'Solids']
+
         result = _detect_parameter(getter_func, candidates, 'constituents')
-        # 'TSS' should not match 'Total Suspended Solids' as exact substring
-        # Actually, let me check - does 'TSS' appear in 'Total Suspended Solids'? 
-        # T-o-t-a-l S-u-s-p-e-n-d-e-d S-o-l-i-d-s
-        # No, 'TSS' as a substring doesn't appear. But we should still test this scenario.
-        # Let me use a better example
-        pass
-    
+        assert result == 'Total Suspended Solids'
+
     def test_substring_match_case_insensitive(self):
         """Test case-insensitive substring matching."""
         getter_func = MagicMock(return_value=['TSS_Load', 'Nitrogen', 'Phosphorus'])
@@ -48,7 +45,7 @@ class TestDetectParameter:
         getter_func = MagicMock(return_value=['Forested_Urban', 'Urban', 'Water'])
         candidates = ['Forested']
         
-        result = _detect_parameter(getter_func, candidates, 'functional_units')
+        result = _detect_parameter(getter_func, candidates, 'functional units')
         assert result == 'Forested_Urban'
     
     def test_substring_match_priority_order(self):
@@ -85,7 +82,7 @@ class TestDetectParameter:
             return [opt for opt in options if opt != 'Water']
         
         result = _detect_parameter(
-            getter_func, candidates, 'functional_units', filter_func=filter_out_water
+            getter_func, candidates, 'functional units', filter_func=filter_out_water
         )
         assert result == 'Forested'
     
@@ -98,7 +95,7 @@ class TestDetectParameter:
             return [opt for opt in options if opt != 'Water']
         
         result = _detect_parameter(
-            getter_func, candidates, 'functional_units', filter_func=filter_out_water
+            getter_func, candidates, 'functional units', filter_func=filter_out_water
         )
         # Should return first available after filtering
         assert result == 'Forested'
@@ -121,7 +118,7 @@ class TestDetectParameter:
         
         with pytest.raises(ValueError, match="No functional units found in model"):
             _detect_parameter(
-                getter_func, candidates, 'functional_units', filter_func=filter_out_water
+                getter_func, candidates, 'functional units', filter_func=filter_out_water
             )
     
     def test_error_when_getter_raises_exception(self):
@@ -162,7 +159,7 @@ class TestDetectParameter:
             return [opt for opt in options if opt != 'Water']
         
         result = _detect_parameter(
-            getter_func, candidates, 'functional_units', filter_func=filter_water
+            getter_func, candidates, 'functional units', filter_func=filter_water
         )
         assert result == 'Forested_Native'
     

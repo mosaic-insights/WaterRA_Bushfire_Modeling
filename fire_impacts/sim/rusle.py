@@ -245,69 +245,6 @@ def lumped_daily_rusle(
 # Recorder closures
 # ---------------------------------------------------------------------------
 
-def record_summary_grid(
-    variable,
-    fn='sum',
-    start_time=None,
-    end_time=None,
-):
-    """
-    Build a RUSLE recorder that summarises a grid variable over time.
-
-    Parameters:
-    - variable: Name of the variable to summarise (key in the timestep
-      data dict).
-    - fn: Summary function to apply: 'sum', 'mean', or 'max'.
-      Default is 'sum'.
-    - start_time: Optional start of the summary window. Timesteps
-      before this are ignored.
-    - end_time: Optional end of the summary window. Timesteps after
-      this are ignored.
-
-    Returns:
-    - A recorder closure compatible with run_usle_simulation, with
-      .reset() and .finalize() methods attached.
-    """
-    result = None
-    count = 0
-
-    def grid_recorder(timestep, **kwargs):
-        nonlocal result, count
-        count += 1
-        if start_time is not None and timestep < start_time:
-            return result
-        if end_time is not None and timestep > end_time:
-            return result
-
-        data = kwargs[variable]
-        if result is None:
-            result = data
-        elif fn == 'max':
-            result = np.maximum(result, data)
-        else:  # sum or mean
-            result += data
-        if fn == 'mean':
-            return result / count
-
-        return result
-
-    def reset():
-        nonlocal result, count
-        result = None
-        count = 0
-
-    def finalize():
-        nonlocal result, count
-        if fn == 'mean':
-            return result / count
-        return result
-
-    grid_recorder.reset = reset
-    grid_recorder.finalize = finalize
-
-    return grid_recorder
-
-
 def record_subcatchment_timeseries(
     proj: FireImpactsProject,
     variable_name: str,
@@ -643,8 +580,19 @@ def _save_grid_results(project, catchment, section, results, template_meta):
                         key, len(times),
                     )
                     continue
+                # Period grids are daily-or-coarser and label cleanly by
+                # date. record_timestep_grid is sub-daily though, so a
+                # date-only label would collide (48 slices/day at the
+                # 30 min model timestep) and each write would silently
+                # overwrite the last. Fall back to including the time
+                # only when the dates aren't unique, so existing
+                # period-grid file names are unchanged.
+                fmt = '%Y%m%d'
+                if len({pd.Timestamp(t).strftime(fmt) for t in times}) \
+                        < len(times):
+                    fmt = '%Y%m%d_%H%M'
                 for t in times:
-                    label = pd.Timestamp(t).strftime('%Y%m%d')
+                    label = pd.Timestamp(t).strftime(fmt)
                     name = f'{key}_{label}'
                     save_catchment_raster(
                         project=project, catchment_name=catchment,
