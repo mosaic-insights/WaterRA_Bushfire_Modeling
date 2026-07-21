@@ -201,17 +201,40 @@ def read_aligned(
     - resampling: rasterio Resampling method (default nearest).
 
     Returns:
-    - 2-D numpy array reprojected onto the target grid; NoData pixels
-      are replaced with NaN.
+    - 2-D numpy array reprojected onto the target grid; NoData pixels,
+      and any part of the target grid the source does not cover, are
+      NaN.
+    ------------------------------------------------------------------------
+    Notes:
+    - The destination is always float with NaN as its nodata, rather
+      than inheriting whatever the source declares. Inheriting means a
+      source carrying no nodata tag gets reproject's default 0 fill,
+      and the read-back mask is then empty, so uncovered area comes back
+      as real zeros. That is silent: a 0 in a C or K factor is a valid
+      value meaning "no erosion here", where a NaN propagates visibly
+      through the KLSCP multiplication.
+    - Integer sources are promoted to float32 for the same reason. The
+      function has always returned NaN-filled data, so a float return
+      was already implied by the contract.
+    ------------------------------------------------------------------------
     """
     logger.info("Reading raster %s and reprojecting to %s", raster_fn, crs)
     with rio.open(raster_fn) as src:
         kwargs = src.meta.copy()
+
+        # Keep float64 sources at float64; promote anything else (int
+        # categoricals, bytes) to float32 so NaN can be represented.
+        dtype = kwargs.get("dtype")
+        if not np.issubdtype(np.dtype(dtype), np.floating):
+            dtype = "float32"
+
         kwargs.update({
             "crs": crs,
             "transform": transform,
             "width": shape[1],
             "height": shape[0],
+            "dtype": dtype,
+            "nodata": np.nan,
         })
 
         with rio.MemoryFile() as memfile:

@@ -20,14 +20,15 @@ from fire_impacts.pre.util import read_aligned, read_raster
 CRS_7899 = CRS.from_epsg(7899)
 
 
-def write_raster(path, data, transform, crs=CRS_7899, nodata=None):
-    data = np.asarray(data, dtype='float32')
+def write_raster(path, data, transform, crs=CRS_7899, nodata=None,
+                 dtype='float32'):
+    data = np.asarray(data, dtype=dtype)
     profile = {
         'driver': 'GTiff',
         'height': data.shape[0],
         'width': data.shape[1],
         'count': 1,
-        'dtype': 'float32',
+        'dtype': dtype,
         'crs': crs,
         'transform': transform,
     }
@@ -113,43 +114,24 @@ class TestAlignment:
         expected = np.arange(25).reshape(5, 5)[1:4, 1:4]
         assert np.allclose(aligned, expected)
 
-    def test_uncovered_area_is_zero_when_the_source_declares_no_nodata(
+    def test_uncovered_area_is_nan_even_without_a_source_nodata_tag(
             self, source):
-        # KNOWN SHARP EDGE, pinned rather than endorsed. The docstring
-        # promises NoData becomes NaN, and it does - but only when the
-        # source raster declares a nodata value. Without one, reproject
-        # leaves its default 0 fill and the read-back mask is empty, so
-        # area outside the source silently reads as real zeros.
-        #
-        # This matters because read_aligned is how the C and K factors
-        # get onto the DEM grid. A factor raster that is smaller than the
-        # DEM and carries no nodata tag yields K=0 or C=0 outside its
-        # extent, i.e. zero erosion, with nothing to notice. A NaN would
-        # propagate visibly. See test_nodata_becomes_nan for the
-        # well-formed case.
+        # REGRESSION. read_aligned used to inherit the source's nodata,
+        # so a source carrying no tag got reproject's default 0 fill and
+        # an empty read-back mask - uncovered area came back as real
+        # zeros. Silent, and dangerous: this is how the C and K factors
+        # reach the DEM grid, and a 0 factor is a valid value meaning
+        # "no erosion here". The destination now always declares NaN.
         path, _ = source
         elsewhere = Affine(10.0, 0.0, 9000.0, 0.0, -10.0, 2000.0)
 
         aligned = read_aligned(path, elsewhere, CRS_7899, (5, 5))
 
-        assert np.all(np.asarray(aligned) == 0.0)
-        assert not np.any(np.isnan(aligned))
-
-    def test_partial_overlap_keeps_the_covered_cells(self, source):
-        # Straddle the eastern edge: left two columns overlap the source,
-        # the rest falls outside and fills with 0 (see above).
-        path, _ = source
-        straddle = Affine(10.0, 0.0, 1030.0, 0.0, -10.0, 2000.0)
-
-        aligned = np.asarray(read_aligned(path, straddle, CRS_7899, (5, 5)))
-
-        expected_first_col = np.arange(25).reshape(5, 5)[:, 3]
-        assert np.allclose(aligned[:, 0], expected_first_col)
-        assert np.all(aligned[:, 2:] == 0.0)
+        assert np.all(np.isnan(aligned))
 
     def test_uncovered_area_is_nan_when_the_source_declares_nodata(
             self, tmp_path):
-        # The well-formed case: with a nodata tag, the gap is NaN.
+        # The already-well-formed case, unchanged.
         data = np.arange(25, dtype='float32').reshape(5, 5)
         transform = Affine(10.0, 0.0, 1000.0, 0.0, -10.0, 2000.0)
         path = write_raster(
@@ -159,6 +141,77 @@ class TestAlignment:
         aligned = read_aligned(path, elsewhere, CRS_7899, (5, 5))
 
         assert np.all(np.isnan(aligned))
+
+    def test_partial_overlap_fills_the_gap_with_nan(self, source):
+        # Straddle the eastern edge: left two columns overlap the source,
+        # the rest falls outside and must be NaN, not 0.
+        path, _ = source
+        straddle = Affine(10.0, 0.0, 1030.0, 0.0, -10.0, 2000.0)
+
+        aligned = np.asarray(read_aligned(path, straddle, CRS_7899, (5, 5)))
+
+        expected_first_col = np.arange(25).reshape(5, 5)[:, 3]
+        assert np.allclose(aligned[:, 0], expected_first_col)
+        assert np.all(np.isnan(aligned[:, 2:]))
+
+    def test_a_real_zero_is_not_confused_with_a_gap(self, tmp_path):
+        # The distinction the change exists to preserve: a genuine 0 in
+        # the source stays 0, while uncovered area becomes NaN.
+        data = np.zeros((5, 5), dtype='float32')
+        transform = Affine(10.0, 0.0, 1000.0, 0.0, -10.0, 2000.0)
+        path = write_raster(tmp_path / 'zeros.tif', data, transform)
+        straddle = Affine(10.0, 0.0, 1030.0, 0.0, -10.0, 2000.0)
+
+        aligned = np.asarray(read_aligned(path, straddle, CRS_7899, (5, 5)))
+
+        assert np.all(aligned[:, :2] == 0.0)
+        assert np.all(np.isnan(aligned[:, 2:]))
+
+
+class TestDtype:
+    """
+    NaN has to be representable in the output, so integer sources are
+    promoted. Float widths are left alone.
+    """
+
+    def test_integer_source_is_promoted_to_float(self, tmp_path):
+        data = np.arange(25, dtype='int16').reshape(5, 5)
+        transform = Affine(10.0, 0.0, 1000.0, 0.0, -10.0, 2000.0)
+        path = write_raster(
+            tmp_path / 'categorical.tif', data, transform, dtype='int16')
+
+        aligned = read_aligned(path, transform, CRS_7899, (5, 5))
+
+        assert np.issubdtype(aligned.dtype, np.floating)
+        assert np.allclose(np.asarray(aligned), data)
+
+    def test_integer_source_gaps_are_nan(self, tmp_path):
+        data = np.arange(25, dtype='int16').reshape(5, 5)
+        transform = Affine(10.0, 0.0, 1000.0, 0.0, -10.0, 2000.0)
+        path = write_raster(
+            tmp_path / 'categorical.tif', data, transform, dtype='int16')
+        elsewhere = Affine(10.0, 0.0, 9000.0, 0.0, -10.0, 2000.0)
+
+        aligned = read_aligned(path, elsewhere, CRS_7899, (5, 5))
+
+        assert np.all(np.isnan(aligned))
+
+    def test_float32_stays_float32(self, source):
+        path, transform = source
+        aligned = read_aligned(path, transform, CRS_7899, (5, 5))
+
+        assert aligned.dtype == np.float32
+
+    def test_float64_precision_is_not_downcast(self, tmp_path):
+        data = np.full((3, 3), 1.0 + 1e-12, dtype='float64')
+        transform = Affine(10.0, 0.0, 1000.0, 0.0, -10.0, 2000.0)
+        path = write_raster(
+            tmp_path / 'precise.tif', data, transform, dtype='float64')
+
+        aligned = read_aligned(path, transform, CRS_7899, (3, 3))
+
+        assert aligned.dtype == np.float64
+        assert np.asarray(aligned)[0, 0] != 1.0
 
 
 class TestNoData:
