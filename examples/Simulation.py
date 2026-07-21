@@ -111,7 +111,10 @@ ctx = RunContext.solo_run(
     catchment='DR_Primary_Catchment_Thomson',
 )
 
-lumped_daily_rusle(ctx, rainfall_30min[9])
+# recovery_time selects which per-recovery fire-adjusted C/K/SDR layers
+# to read (in years since the fire end date). Pass 0 for the immediate
+# post-fire window, or use_fire_adjusted=False for the unburnt baseline.
+lumped_daily_rusle(ctx, rainfall_30min[9], recovery_time=0)
 
 # %%
 
@@ -133,7 +136,7 @@ rainfall_30min = aggregate_rainfall_data(rainfall_data,rain_data_start,rain_data
 # %%
 
 # %%
-# %time eroded, delivered, transform = gridded_total_rusle(proj,rainfall_30min[9],'DR_Primary_Catchment_Thomson')
+# %time eroded, delivered, transform = gridded_total_rusle(ctx, rainfall_30min[9])
 
 # %%
 
