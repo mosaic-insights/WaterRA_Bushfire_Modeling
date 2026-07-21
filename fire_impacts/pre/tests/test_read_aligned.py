@@ -196,6 +196,27 @@ class TestDtype:
 
         assert np.all(np.isnan(aligned))
 
+    def test_integer_promotion_is_warned_about(self, tmp_path, caplog):
+        # Silent promotion of a categorical grid would hide a misuse.
+        data = np.arange(25, dtype='int16').reshape(5, 5)
+        transform = Affine(10.0, 0.0, 1000.0, 0.0, -10.0, 2000.0)
+        path = write_raster(
+            tmp_path / 'categorical.tif', data, transform, dtype='int16')
+
+        with caplog.at_level('WARNING', logger='fire_impacts.pre.util'):
+            read_aligned(path, transform, CRS_7899, (5, 5))
+
+        assert 'read_raster' in caplog.text
+        assert 'flow direction' in caplog.text
+
+    def test_float_sources_are_not_warned_about(self, source, caplog):
+        path, transform = source
+
+        with caplog.at_level('WARNING', logger='fire_impacts.pre.util'):
+            read_aligned(path, transform, CRS_7899, (5, 5))
+
+        assert caplog.text == ''
+
     def test_float32_stays_float32(self, source):
         path, transform = source
         aligned = read_aligned(path, transform, CRS_7899, (5, 5))
@@ -241,6 +262,83 @@ class TestNoData:
 
         assert not np.any(aligned == -9999.0)
         assert np.isnan(aligned).sum() == 8
+
+
+class TestD8IsNotReprojectable:
+    """
+    A D8 flow direction grid must never go through read_aligned.
+
+    The dirmap codes name a neighbouring cell in the source grid's own
+    geometry (64 = north, 1 = east, and so on). Reprojection changes
+    which cell is the neighbour, so the codes stop describing the
+    surface even though nearest-neighbour resampling carries the
+    numbers across unchanged - the output is a plausible dirmap that
+    routes water the wrong way.
+
+    The correct workflow is to reproject the DEM and recompute flow
+    direction from the reprojected DEM. sim/debris.py:69 does the right
+    thing already: it reads Flow_direction.tif with read_raster, at
+    native dtype and native grid.
+
+    These tests document that trap. They assert what the function does
+    rather than endorsing the call.
+    """
+
+    DIRMAP = np.array([
+        [64, 128, 1, 2],
+        [32, 0, 2, 4],
+        [16, 8, 4, 8],
+        [-9999, -9999, 16, 32],
+    ], dtype='int32')
+
+    @pytest.fixture()
+    def flow_dir(self, tmp_path):
+        transform = Affine(10.0, 0.0, 1000.0, 0.0, -10.0, 2000.0)
+        path = write_raster(
+            tmp_path / 'Flow_direction.tif', self.DIRMAP, transform,
+            nodata=-9999, dtype='int32')
+        return path, transform
+
+    def test_read_raster_keeps_it_intact(self, flow_dir):
+        # The supported path: native dtype, native grid, codes untouched.
+        path, _ = flow_dir
+        data, meta = read_raster(path)
+
+        assert data.dtype == np.int32
+        assert np.array_equal(data, self.DIRMAP)
+        assert meta['nodata'] == -9999
+
+    def test_codes_survive_resampling_which_is_the_trap(self, flow_dir):
+        # Every valid code comes back unchanged, so nothing downstream
+        # can tell the grid has been invalidated by regridding. This is
+        # exactly why it needs a warning rather than silent success.
+        path, transform = flow_dir
+        aligned = np.asarray(read_aligned(path, transform, CRS_7899, (4, 4)))
+
+        codes = {int(v) for v in aligned[~np.isnan(aligned)]}
+        assert codes == {0, 1, 2, 4, 8, 16, 32, 64, 128}
+
+    def test_nodata_cells_become_nan_not_a_code(self, flow_dir):
+        path, transform = flow_dir
+        aligned = np.asarray(read_aligned(path, transform, CRS_7899, (4, 4)))
+
+        assert np.isnan(aligned[3, 0])
+        assert np.isnan(aligned[3, 1])
+        assert np.isnan(aligned).sum() == 2
+
+    def test_regridding_moves_codes_off_their_cells(self, flow_dir):
+        # Shift the grid half a cell: the codes are still a valid dirmap,
+        # but they now sit on different cells than the ones whose
+        # neighbours they describe. Nothing errors.
+        path, _ = flow_dir
+        shifted = Affine(10.0, 0.0, 1005.0, 0.0, -10.0, 2000.0)
+
+        aligned = np.asarray(read_aligned(path, shifted, CRS_7899, (4, 4)))
+        valid = aligned[~np.isnan(aligned)]
+
+        assert np.all(np.isin(valid, [0, 1, 2, 4, 8, 16, 32, 64, 128]))
+        assert not np.array_equal(
+            aligned[0], self.DIRMAP[0].astype('float32'))
 
 
 class TestReprojection:

@@ -213,9 +213,19 @@ def read_aligned(
       as real zeros. That is silent: a 0 in a C or K factor is a valid
       value meaning "no erosion here", where a NaN propagates visibly
       through the KLSCP multiplication.
-    - Integer sources are promoted to float32 for the same reason. The
-      function has always returned NaN-filled data, so a float return
-      was already implied by the contract.
+    - Integer sources are promoted to float32 for the same reason (NaN
+      is not representable in an integer band) and a warning is logged.
+      The function has always returned NaN-filled data, so a float
+      return was already implied by the contract.
+    - This function is for continuous data. Categorical and topological
+      grids belong in read_raster, which reads at native dtype without
+      regridding. In particular a D8 flow direction grid must never be
+      reprojected: the codes name a neighbouring cell in the source
+      grid's own geometry, and reprojection changes which cell is the
+      neighbour. Nearest-neighbour resampling carries the code values
+      across intact, so the result looks like a valid dirmap while
+      pointing at the wrong cells. Reproject the DEM and recompute flow
+      direction from the reprojected DEM instead.
     ------------------------------------------------------------------------
     """
     logger.info("Reading raster %s and reprojecting to %s", raster_fn, crs)
@@ -226,6 +236,18 @@ def read_aligned(
         # categoricals, bytes) to float32 so NaN can be represented.
         dtype = kwargs.get("dtype")
         if not np.issubdtype(np.dtype(dtype), np.floating):
+            logger.warning(
+                "read_aligned promoting %s from %s to float32 so NoData "
+                "can be NaN. read_aligned is for continuous data - if "
+                "this is a categorical or topological grid, read it with "
+                "read_raster instead. A D8 flow direction grid in "
+                "particular must not be reprojected: the codes name a "
+                "neighbour in the source grid's geometry, so the values "
+                "survive resampling while no longer pointing at the "
+                "right cells. Reproject the DEM and recompute flow "
+                "direction from it.",
+                raster_fn, dtype,
+            )
             dtype = "float32"
 
         kwargs.update({
