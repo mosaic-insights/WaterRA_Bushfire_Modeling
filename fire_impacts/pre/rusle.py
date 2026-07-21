@@ -20,6 +20,7 @@ from pysheds.grid import Grid
 import numpy as np
 import os
 import logging
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ def compute_adjusted_k_c(
     k_factor_fn: str = None,
     compute_lsi_factor: bool = True,
     compute_sdr: bool = True,
+    recovery_breakpoints=None,
     recovery_times=None,
 ):
     """
@@ -50,6 +52,13 @@ def compute_adjusted_k_c(
       grid.
     - compute_lsi_factor: If True, also compute the LSI factor.
     - compute_sdr: If True, also compute the SDR.
+    - recovery_breakpoints: Monotonic array of years-since-fire boundaries
+      defining the recovery windows (n+1 breakpoints -> n windows; window
+      i is modelled at recovery time b_i). Defaults to
+      const.DEFAULT_RECOVERY_BREAKPOINTS. Persisted into the catchment's
+      run-context so the simulation step doesn't need it re-specified.
+    - recovery_times: Deprecated. The old list of window-start times; if
+      given it is converted to breakpoints using the default interval.
 
     Returns:
     - None. Outputs are written to project raster files.
@@ -62,6 +71,7 @@ def compute_adjusted_k_c(
             k_factor_fn=k_factor_fn,
             compute_lsi_factor=compute_lsi_factor,
             compute_sdr=compute_sdr,
+            recovery_breakpoints=recovery_breakpoints,
             recovery_times=recovery_times,
         ))
         return
@@ -131,8 +141,26 @@ def compute_adjusted_k_c(
     )
 
     # Model parameters
-    if recovery_times is None:
-        recovery_times = c.DEFAULT_RECOVERY_TIMES
+    # Resolve recovery breakpoints (a single monotonic array). recovery_times
+    # is deprecated: convert it to breakpoints by closing the final window
+    # with the default interval.
+    if recovery_times is not None:
+        warnings.warn(
+            "recovery_times is deprecated; pass recovery_breakpoints "
+            "(a single monotonic array) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if recovery_breakpoints is None:
+            recovery_breakpoints = c.breakpoints_from_times_and_interval(
+                recovery_times, c.DEFAULT_RECOVERY_INTERVAL_YEARS)
+    if recovery_breakpoints is None:
+        recovery_breakpoints = c.DEFAULT_RECOVERY_BREAKPOINTS
+    # Each recovery window is modelled at its start time (C/K evaluated at
+    # the window start).
+    recovery_start_times = [
+        start for start, _ in c.recovery_windows(recovery_breakpoints)
+    ]
     x_c = 0.4
     x_k = 1
     Kfire = 0.081
@@ -152,7 +180,7 @@ def compute_adjusted_k_c(
     if compute_lsi_factor:
         compute_lsi(proj, catchment)
 
-    for recovery_time in recovery_times:
+    for recovery_time in recovery_start_times:
         suffix = c.recovery_time_suffix(recovery_time)
 
         logger.info(
@@ -200,6 +228,22 @@ def compute_adjusted_k_c(
                 c_factor_path=c_out,
                 output_suffix=suffix,
             )
+
+    # Also compute the baseline (no-fire) SDR from the unadjusted C factor,
+    # so the baseline simulation has SDR_baseline.tif available without a
+    # separate step. Uses the base C_factor.tif written above.
+    if compute_sdr:
+        compute_sediment_delivery_ratio(
+            proj,
+            catchment,
+            c_factor_path=c_factor_out,
+            output_suffix='baseline',
+        )
+
+    # Persist the recovery breakpoints into the event run-context so the
+    # simulation step can read them back instead of re-specifying them.
+    proj.update_run_context(
+        catchment, recovery_breakpoints=list(recovery_breakpoints))
 
 # ---------------------------------------------------------------------------
 # Topographic index helper
@@ -396,6 +440,15 @@ def compute_sediment_delivery_ratio(
       Default is 0.5.
     - k: Shape parameter for the IC-SDR relationship.
       Default is 1.
+    - c_factor_path: Path to the C-factor raster used in the
+      connectivity calculation. When None, falls back to the
+      catchment's base C_factor.tif and produces the baseline
+      (no-fire) SDR. compute_adjusted_k_c passes a recovery-specific
+      C_factor_adjusted_<suffix>.tif to build per-recovery SDRs.
+    - output_suffix: Suffix for the output SDR (and intermediate)
+      rasters, e.g. 't0' -> SDR_t0.tif. Defaults to 'baseline' when
+      no c_factor_path is supplied so the output matches the layer the
+      baseline simulation reads (SDR_baseline.tif).
 
     Returns:
     - slope_ratio: Slope as a dimensionless ratio.
@@ -412,6 +465,16 @@ def compute_sediment_delivery_ratio(
         return project.for_each_catchment(
             lambda c: compute_sediment_delivery_ratio(
                 project, c, max_sdr, ic0, k, c_factor_path, output_suffix))
+
+    # Without a C-factor raster there is no single "adjusted" C factor to
+    # fall back on (there is now one per recovery time), so default to the
+    # base C_factor.tif and write the baseline SDR — the layer the
+    # baseline (no-fire) simulation reads.
+    if c_factor_path is None:
+        c_factor_path = project.catchment_path(
+            catchment, 'Erodibility', 'C_factor.tif')
+        if output_suffix is None:
+            output_suffix = 'baseline'
 
     logger.info(
         'Computing Sediment Delivery Ratio for catchment: %s',

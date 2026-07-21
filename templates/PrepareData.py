@@ -96,6 +96,7 @@ import os
 
 # %%
 from fire_impacts import FireImpactsProject
+from fire_impacts import const
 from fire_impacts.pre import project, topography, severity, soil, rusle
 
 # %% [markdown]
@@ -313,34 +314,25 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 # ### C- and K-Factors
 
 # %%
-# Compute adjusted K- and C-factors ready for erosion simulation:
-# ------------------------------------------------------------------
-# Fire recovery settings
-# ------------------------------------------------------------------
+# Compute recovery-specific K-, C- and SDR layers ready for erosion
+# simulation.
 #
-# Recovery times are specified in years after the fire.
+# Recovery is specified as a single array of BREAKPOINTS in years after the
+# fire end date: n+1 breakpoints define n contiguous recovery windows, and
+# window i is modelled at recovery time b_i (the window start). The
+# breakpoints are stored in the project's run-context, so the Simulation
+# notebook reads them back automatically — you don't re-specify them there.
 #
-# Examples:
-#
-# [0, 0.5, 1, 1.5, 2, 2.5]
-#   -> six-month recovery intervals
-#
-# [0, 1, 2]
-#   -> yearly recovery intervals
-#
-# [0, 0.25, 0.5, 0.75, 1]
-#   -> quarterly recovery intervals
-#
-# If omitted, the package uses the defaults defined in const.py.
-#
+# If omitted, the package default is used. Shown here for reference:
+print("Default recovery breakpoints:", const.DEFAULT_RECOVERY_BREAKPOINTS)
 
-recovery_times = [0, 0.5, 1, 1.5, 2, 2.5]
-
-# Compute recovery-specific K-, C- and SDR layers.
+# To override, pass recovery_breakpoints (examples):
+#   [0, 1, 2, 3]             -> yearly windows
+#   [0, 0.25, 0.5, 0.75, 1]  -> quarterly windows
 rusle.compute_adjusted_k_c(
     proj,
     catchment=example_catchment_name,
-    recovery_times=recovery_times,
+    # recovery_breakpoints=[0, 1, 2, 3],
 )
 
 # %% [markdown]
