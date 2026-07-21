@@ -234,14 +234,27 @@ class TestSerialisation:
 
         assert context.recovery_breakpoints == [0, 1]
 
-    def test_breakpoint_types_survive_the_round_trip(self):
-        # recovery_time_suffix renders int and float differently, so the
-        # persisted types decide the layer file names on reload.
+    def test_reloaded_breakpoints_name_the_same_layers(self):
+        # The C/K/SDR layers are written from the breakpoints passed to
+        # compute_adjusted_k_c and read back from here, so a round trip
+        # must not change the suffixes those names are built from.
         restored = EventRunContext.from_dict(
             json.loads(json.dumps(ctx().to_dict())))
 
-        assert [type(b) for b in restored.recovery_breakpoints] \
-            == [type(b) for b in c.DEFAULT_RECOVERY_BREAKPOINTS]
+        assert [c.recovery_time_suffix(b)
+                for b in restored.recovery_breakpoints] \
+            == [c.recovery_time_suffix(b)
+                for b in c.DEFAULT_RECOVERY_BREAKPOINTS]
+
+    def test_float_breakpoints_reload_to_the_same_layers(self):
+        # Whichever numeric type the JSON happens to hold, the layer
+        # names must match those written from the int-valued defaults.
+        floats = [float(b) for b in c.DEFAULT_RECOVERY_BREAKPOINTS]
+        restored = EventRunContext.from_dict(json.loads(json.dumps({
+            'fire_end_date': '2020-01-15',
+            'recovery_breakpoints': floats,
+        })))
+
         assert [c.recovery_time_suffix(b)
                 for b in restored.recovery_breakpoints] \
             == [c.recovery_time_suffix(b)

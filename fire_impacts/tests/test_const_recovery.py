@@ -15,6 +15,7 @@ class TestRecoveryTimeSuffix:
 
     @pytest.mark.parametrize('recovery_time,expected', [
         (0, 't0'),
+        (0.0, 't0'),
         (0.5, 't0_5'),
         (1, 't1'),
         (1.5, 't1_5'),
@@ -34,23 +35,43 @@ class TestRecoveryTimeSuffix:
         ]
         assert len(set(suffixes)) == len(suffixes)
 
-    def test_int_and_float_zero_disagree(self):
-        # KNOWN SHARP EDGE, pinned rather than endorsed. The suffix comes
-        # from str(), so whole numbers render differently depending on
-        # whether they arrive as int or float. compute_adjusted_k_c writes
-        # the layers from its own breakpoints argument while
-        # _recovery_run_segments reads them back from the persisted
-        # run-context, so a type mismatch between those two surfaces as a
-        # FileNotFoundError on a layer that exists under a near-miss name.
-        # DEFAULT_RECOVERY_BREAKPOINTS uses ints for whole numbers, so the
-        # default path is consistent.
-        assert c.recovery_time_suffix(0) == 't0'
-        assert c.recovery_time_suffix(0.0) == 't0_0'
-        assert c.recovery_time_suffix(0) != c.recovery_time_suffix(0.0)
+    @pytest.mark.parametrize('whole_number', [0, 1, 2, 3])
+    def test_int_and_float_agree_for_whole_numbers(self, whole_number):
+        # compute_adjusted_k_c writes the layers from its own breakpoints
+        # argument while _recovery_run_segments reads them back from the
+        # persisted run-context. If those two disagreed on int vs float,
+        # the read would look for a layer that exists under a near-miss
+        # name and raise FileNotFoundError.
+        assert c.recovery_time_suffix(whole_number) \
+            == c.recovery_time_suffix(float(whole_number))
 
-    def test_whole_number_floats_keep_their_decimal(self):
-        assert c.recovery_time_suffix(1.0) == 't1_0'
-        assert c.recovery_time_suffix(2.0) == 't2_0'
+    def test_whole_number_floats_normalise_to_the_integer_form(self):
+        assert c.recovery_time_suffix(0.0) == 't0'
+        assert c.recovery_time_suffix(1.0) == 't1'
+        assert c.recovery_time_suffix(2.0) == 't2'
+
+    def test_int_and_float_breakpoint_lists_name_the_same_layers(self):
+        as_ints = [0, 1, 2]
+        as_floats = [0.0, 1.0, 2.0]
+
+        assert [c.recovery_time_suffix(b) for b in as_ints] \
+            == [c.recovery_time_suffix(b) for b in as_floats]
+
+    def test_numpy_scalars_normalise_the_same_way(self):
+        # np.arange / np.linspace are natural ways to build breakpoints.
+        np = pytest.importorskip('numpy')
+
+        assert c.recovery_time_suffix(np.float64(0.0)) == 't0'
+        assert c.recovery_time_suffix(np.float64(0.5)) == 't0_5'
+        assert c.recovery_time_suffix(np.int64(2)) == 't2'
+
+    def test_numpy_breakpoints_match_the_defaults(self):
+        np = pytest.importorskip('numpy')
+        generated = np.arange(0, 3.5, 0.5)
+
+        assert [c.recovery_time_suffix(b) for b in generated] \
+            == [c.recovery_time_suffix(b)
+                for b in c.DEFAULT_RECOVERY_BREAKPOINTS]
 
 
 class TestRecoveryWindows:
