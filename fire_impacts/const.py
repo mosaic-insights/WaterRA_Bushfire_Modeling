@@ -162,3 +162,53 @@ PER_CATCHMENT_FOLDERS = [
     SUBCATCHMENTS_FOLDER_NAME,
     RESULTS_FOLDER_NAME
     ]
+
+# Per-event definition file, written at Events/<event>/event.json.
+EVENT_DEFINITION_NAME = 'event.json'
+
+# ------- Fire recovery times and intervals: ---------------------------
+# Recovery is specified as a single monotonic array of *breakpoints* in
+# years since the fire end date. n+1 breakpoints define n contiguous
+# recovery windows: window i spans [b_i, b_{i+1}) and is modelled at
+# recovery time b_i (the window start).
+DEFAULT_RECOVERY_BREAKPOINTS = [0, 0.5, 1, 1.5, 2, 2.5, 3]
+
+
+def recovery_time_suffix(recovery_time):
+    """
+    Convert a recovery time value into a safe filename suffix.
+
+    Examples
+    --------
+    0    -> t0
+    0.5  -> t0_5
+    1    -> t1
+    1.5  -> t1_5
+    2.5  -> t2_5
+    """
+    return f"t{str(recovery_time).replace('.', '_')}"
+
+
+def recovery_windows(breakpoints):
+    """
+    Convert recovery breakpoints into (start, end) window pairs in years.
+
+    n+1 monotonically increasing breakpoints yield n contiguous windows;
+    window i is [breakpoints[i], breakpoints[i+1]) and is modelled at
+    recovery time breakpoints[i].
+
+    Raises ValueError if fewer than two breakpoints are given or they are
+    not strictly increasing.
+    """
+    bps = list(breakpoints)
+    if len(bps) < 2:
+        raise ValueError(
+            'recovery breakpoints need at least two values (one '
+            f'window); got {bps!r}.'
+            )
+    if any(b <= a for a, b in zip(bps, bps[1:])):
+        raise ValueError(
+            f'recovery breakpoints must be strictly increasing; got '
+            f'{bps!r}.'
+            )
+    return list(zip(bps[:-1], bps[1:]))

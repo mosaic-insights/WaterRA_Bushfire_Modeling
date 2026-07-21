@@ -1,5 +1,6 @@
 """
-Run-context object bundling project + catchment + event + ensemble.
+Run-context object bundling project + catchment + event + ensemble, and
+the per-event definition (fire dates + recovery windows) it resolves.
 
 A FireImpactsProject organises data along three dimensions inside each
 catchment: events (fires), ensembles (climate realisations), and the
@@ -15,13 +16,127 @@ an event and an ensemble).
 
 from __future__ import annotations
 
+import json
+import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
+import pandas as pd
+
+from . import const
+
 if TYPE_CHECKING:
     from .pre.project import FireImpactsProject
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EventDefinition:
+    """
+    Immutable description of one fire event's recovery modelling setup.
+
+    Attributes:
+    - fire_start_date / fire_end_date: pandas Timestamps, loaded from the
+      event's FireMeta.csv (written by fire-severity preprocessing, which
+      remains the source of truth for the dates).
+    - recovery_breakpoints: monotonically increasing years-since-fire
+      boundaries. n+1 breakpoints define n contiguous recovery windows;
+      window i is [b_i, b_{i+1}) and is modelled at recovery time b_i.
+
+    Only the breakpoints are persisted (to Events/<event>/event.json);
+    the dates are carried in memory so the derived-window helpers below
+    can resolve absolute dates without a second lookup.
+    """
+
+    fire_start_date: object = None
+    fire_end_date: object = None
+    recovery_breakpoints: list = field(
+        default_factory=lambda: list(const.DEFAULT_RECOVERY_BREAKPOINTS)
+    )
+
+    # -- Derived recovery structure ------------------------------------------
+
+    def recovery_times(self):
+        """Return the window-start recovery times (breakpoints[:-1])."""
+        return list(self.recovery_breakpoints[:-1])
+
+    def windows(self):
+        """Return [(start, end), ...] window pairs in years since fire."""
+        return const.recovery_windows(self.recovery_breakpoints)
+
+    def window_for(self, recovery_time):
+        """Return the (start, end) years for the window starting at
+        recovery_time. Raises ValueError if recovery_time is not a
+        window start."""
+        for start, end in self.windows():
+            if start == recovery_time:
+                return (start, end)
+        raise ValueError(
+            f'recovery_time {recovery_time} is not a window start in '
+            f'breakpoints {self.recovery_breakpoints!r}.'
+        )
+
+    def absolute_window(self, recovery_time):
+        """Return the (start, end) pandas Timestamps of the window
+        starting at recovery_time, measured from fire_end_date."""
+        start_years, end_years = self.window_for(recovery_time)
+        base = self._base_date('an absolute recovery window')
+        return (
+            base + pd.DateOffset(days=int(start_years * 365.25)),
+            base + pd.DateOffset(days=int(end_years * 365.25)),
+        )
+
+    def simulation_period(self):
+        """Return the (start, end) pandas Timestamps spanning every
+        recovery window, measured from fire_end_date.
+
+        The start is the first breakpoint (usually the fire end date
+        itself) and the end is the last breakpoint — i.e. the rainfall
+        span the recovery series needs.
+        """
+        base = self._base_date('a simulation period')
+        breakpoints = self.recovery_breakpoints
+        return (
+            base + pd.DateOffset(days=int(breakpoints[0] * 365.25)),
+            base + pd.DateOffset(days=int(breakpoints[-1] * 365.25)),
+        )
+
+    def _base_date(self, what):
+        """Return fire_end_date as a Timestamp, or raise if unset."""
+        if self.fire_end_date is None:
+            raise ValueError(
+                f'event definition has no fire_end_date; cannot resolve '
+                f'{what}.'
+            )
+        return pd.Timestamp(self.fire_end_date)
+
+    # -- Serialisation -------------------------------------------------------
+
+    def to_dict(self):
+        """Return the JSON-serialisable dict written to event.json.
+
+        Only the recovery breakpoints are persisted — the fire dates live
+        in the event's FireMeta.csv.
+        """
+        return {'recovery_breakpoints': list(self.recovery_breakpoints)}
+
+    @classmethod
+    def from_dict(cls, data, *, fire_start_date=None, fire_end_date=None):
+        """Build an EventDefinition from an event.json dict, taking the
+        fire dates from the caller (which reads them from FireMeta.csv).
+        Missing breakpoints fall back to the package default."""
+        breakpoints = data.get('recovery_breakpoints')
+        return cls(
+            fire_start_date=fire_start_date,
+            fire_end_date=fire_end_date,
+            recovery_breakpoints=(
+                list(breakpoints) if breakpoints
+                else list(const.DEFAULT_RECOVERY_BREAKPOINTS)
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -281,6 +396,101 @@ class RunContext:
             self.catchment, *args,
             event=self.event, ensemble=self.ensemble,
         )
+
+    # -- Event definition (fire dates + recovery breakpoints) ----------------
+
+    @property
+    def fire_start_date(self):
+        """The event's fire start date, as a pandas Timestamp.
+
+        Read from the event-scoped FireMeta.csv written by
+        :func:`calculate_fire_severity`. Raises if this context has no
+        event, or if fire severity has not been run for it.
+        """
+        return self._fire_meta_date('start_date')
+
+    @property
+    def fire_end_date(self):
+        """The event's fire end date, as a pandas Timestamp.
+
+        Read from the event-scoped FireMeta.csv written by
+        :func:`calculate_fire_severity`. Raises if this context has no
+        event, or if fire severity has not been run for it.
+        """
+        return self._fire_meta_date('end_date')
+
+    def event_definition(self) -> EventDefinition:
+        """Return this event's :class:`EventDefinition`.
+
+        Combines the fire dates from the event's FireMeta.csv with the
+        recovery breakpoints persisted in ``Events/<event>/event.json``.
+        If no event.json exists yet, the package default breakpoints are
+        used and a warning is logged.
+        """
+        path = self._event_definition_path()
+        if os.path.exists(path):
+            with open(path) as f:
+                data = json.load(f)
+        else:
+            logger.warning(
+                'No %s for catchment %s event %s; using the default '
+                'recovery breakpoints. Re-run compute_adjusted_k_c to '
+                'persist them.',
+                const.EVENT_DEFINITION_NAME, self.catchment, self.event,
+            )
+            data = {}
+        return EventDefinition.from_dict(
+            data,
+            fire_start_date=self.fire_start_date,
+            fire_end_date=self.fire_end_date,
+        )
+
+    def set_recovery_breakpoints(self, breakpoints) -> EventDefinition:
+        """Persist this event's recovery breakpoints to event.json.
+
+        Validates the breakpoints (at least two, strictly increasing)
+        before writing. Returns the resulting EventDefinition.
+        """
+        const.recovery_windows(breakpoints)
+        path = self._event_definition_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        definition = EventDefinition(
+            fire_start_date=self.fire_start_date,
+            fire_end_date=self.fire_end_date,
+            recovery_breakpoints=list(breakpoints),
+        )
+        with open(path, 'w') as f:
+            json.dump(definition.to_dict(), f, indent=2)
+        return definition
+
+    def simulation_period(self):
+        """Return the (start, end) pandas Timestamps of this event's
+        recovery simulation period.
+
+        The period spans the recovery windows recorded in event.json —
+        from the fire end date through the end of the last window — so
+        the simulation-period end never has to be hard-coded. Suitable
+        for get_rainfall_replicates and aggregate_rainfall_data.
+        """
+        return self.event_definition().simulation_period()
+
+    def _event_definition_path(self) -> str:
+        """Path to this event's event.json (raises if event is None)."""
+        return self.event_path(const.EVENT_DEFINITION_NAME)
+
+    def _fire_meta_date(self, key):
+        """Read one date from the event-scoped FireMeta.csv."""
+        path = self.event_path(
+            const.FIRE_SEVERITY_FOLDER_NAME, 'FireMeta.csv',
+        )
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f'No fire metadata at {path}. Run '
+                f'calculate_fire_severity for event {self.event!r} '
+                f'first.'
+            )
+        fire_meta = pd.read_csv(path, index_col=0)
+        return pd.to_datetime(fire_meta.loc[key, 'Value'])
 
 
 # ---------------------------------------------------------------------------
