@@ -516,8 +516,14 @@ def compute_sediment_delivery_ratio(
     # ------------------------------------------------------------------
     # Step 2: C-factor — compute thresholded upslope averages
     # ------------------------------------------------------------------
-    with rio.open(c_factor_path) as c_factor_src:
-        c_factor = c_factor_src.read(1)
+    # Align the C factor to the DEM grid: every other array here (Sth, Ddn,
+    # fdir, the flow accumulation) lives on the DEM grid, and the downslope
+    # BFS below indexes Cth with DEM-grid coordinates. A raw read() of a
+    # C factor stored at a coarser native resolution would be a different
+    # shape and raise IndexError. read_aligned resamples it to match.
+    c_factor = read_aligned(
+        c_factor_path, transform, dem_meta['crs'], dem_data.shape,
+    )
 
     # Threshold C factor to a minimum of 0.001
     Cth = np.where(c_factor < 0.001, 0.001, c_factor)
