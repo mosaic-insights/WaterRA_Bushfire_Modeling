@@ -54,6 +54,25 @@ CHANNEL_PARAMETERS = dict(
     )
 NUM_SIM_YEARS = 2
 
+# ------- Fire recovery time and intervals: ---------------------------------------------
+DEFAULT_RECOVERY_TIMES = [0, 0.5, 1, 1.5, 2, 2.5]
+DEFAULT_RECOVERY_INTERVAL_YEARS = 0.5
+
+
+def recovery_time_suffix(recovery_time: float) -> str:
+    """
+    Convert a recovery time value into a safe filename suffix.
+
+    Examples
+    --------
+    0    -> t0
+    0.5  -> t0_5
+    1    -> t1
+    1.5  -> t1_5
+    2.5  -> t2_5
+    """
+    return f"t{str(recovery_time).replace('.', '_')}"
+
 # ------- Dtype standards: ---------------------------------------------
 
 # Convert numpy one-character dtype.kind attributes into more
@@ -114,26 +133,20 @@ I12_CRIT_Y = HF_I12_CRIT + year_suffix
 
 # ------- Output file names: ------------------------------------------
 # RUSLE erosion:
-RUSLE_OP_PEAK_Y1_NAME = 'peak_erosion_y1'
-RUSLE_OP_PEAK_Y2_NAME = 'peak_erosion_y2'
-RUSLE_OP_TOTAL_Y1_NAME = 'erosion_y1'
-RUSLE_OP_TOTAL_Y2_NAME = 'erosion_y2'
-RUSLE_OP_TIMESERIES_NAME = 'daily_time_series'
-# Sediment delivered to streams (RUSLE x SDR ratio):
-DELIVERED_OP_PEAK_Y1_NAME = 'peak_delivered_y1'
-DELIVERED_OP_PEAK_Y2_NAME = 'peak_delivered_y2'
-DELIVERED_OP_TOTAL_Y1_NAME = 'delivered_y1'
-DELIVERED_OP_TOTAL_Y2_NAME = 'delivered_y2'
+RUSLE_OP_PEAK_NAME = 'peak_erosion'
+RUSLE_OP_TOTAL_NAME = 'erosion_total'
+RUSLE_OP_TIMESERIES_NAME = 'erosion_daily_time_series'
+
+# Sediment delivered to streams:
+DELIVERED_OP_PEAK_NAME = 'peak_delivered'
+DELIVERED_OP_TOTAL_NAME = 'delivered_total'
+
 RUSLE_OUTPUT_RASTER_NAMES = [
-    RUSLE_OP_PEAK_Y1_NAME,
-    RUSLE_OP_PEAK_Y2_NAME,
-    RUSLE_OP_TOTAL_Y1_NAME,
-    RUSLE_OP_TOTAL_Y2_NAME,
-    DELIVERED_OP_PEAK_Y1_NAME,
-    DELIVERED_OP_PEAK_Y2_NAME,
-    DELIVERED_OP_TOTAL_Y1_NAME,
-    DELIVERED_OP_TOTAL_Y2_NAME,
-    ]
+    RUSLE_OP_PEAK_NAME,
+    RUSLE_OP_TOTAL_NAME,
+    DELIVERED_OP_PEAK_NAME,
+    DELIVERED_OP_TOTAL_NAME,
+]
 RUSLE_OP_TIMESERIES_NAME = 'erosion_daily_time_series'
 # Debris flow:
 DEBRIS_OP_TIMESERIES_NAME = 'debris_daily_time_series'

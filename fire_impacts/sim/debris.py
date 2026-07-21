@@ -271,6 +271,23 @@ def prep_debris_flow_simulation(
             'columns: %s', nan_cols,
         )
     condition_data = condition_data.fillna(0.0)
+    # Remove headwaters where mean dNBR is below the debris-flow burn threshold.
+    dnbr_threshold = 100
+
+    n_before = len(condition_data)
+
+    condition_data = condition_data[
+        condition_data[DNBR_MEAN] >= dnbr_threshold
+    ].copy()
+
+    n_removed = n_before - len(condition_data)
+
+    if n_removed > 0:
+        logger.info(
+            "%d headwaters removed from debris-flow analysis because "
+            "mean dNBR was below %s.",
+            n_removed, dnbr_threshold,
+        )
 
     # Load the headwaters topographic summary
     topo_data = pd.read_csv(

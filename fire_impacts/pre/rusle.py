@@ -11,6 +11,7 @@ folders.
 from fire_impacts.pre.util import (
     clip_and_reproject_raster, read_raster, read_aligned
 )
+from fire_impacts import const as c
 import rasterio as rio
 from .project import FireImpactsProject
 from .topography import D8_FLOW_DIRECTIONS
@@ -34,6 +35,7 @@ def compute_adjusted_k_c(
     k_factor_fn: str = None,
     compute_lsi_factor: bool = True,
     compute_sdr: bool = True,
+    recovery_times=None,
 ):
     """
     Compute fire-adjusted C and K factors and prepare RUSLE inputs.
@@ -53,19 +55,51 @@ def compute_adjusted_k_c(
     - None. Outputs are written to project raster files.
     """
     if catchment is None:
-        proj.for_each_catchment(lambda c: compute_adjusted_k_c(
-            proj, c, c_factor_fn, k_factor_fn,
-            compute_lsi_factor, compute_sdr))
+        proj.for_each_catchment(lambda catchment_name: compute_adjusted_k_c(
+            proj,
+            catchment_name,
+            c_factor_fn=c_factor_fn,
+            k_factor_fn=k_factor_fn,
+            compute_lsi_factor=compute_lsi_factor,
+            compute_sdr=compute_sdr,
+            recovery_times=recovery_times,
+        ))
         return
 
     shp = proj.boundary_files[catchment]
 
+    # Create a constant C-factor layer with value 0.01 for all valid DEM cells.
+    c_factor_out = proj.catchment_path(catchment, 'Erodibility', 'C_factor.tif')
+
     if c_factor_fn is None:
-        c_factor_fn = CSIRO_C_FACTOR_GRID
-    clip_and_reproject_raster(
-        c_factor_fn, shp,
-        proj.catchment_path(catchment, 'Erodibility', 'C_factor.tif')
-    )
+        dem_fn = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
+
+        with rio.open(dem_fn) as dem_src:
+            dem_data = dem_src.read(1)
+            dem_meta = dem_src.meta.copy()
+            dem_nodata = dem_src.nodata
+
+        C_default = np.full(dem_data.shape, 0.01, dtype=np.float32)
+
+        if dem_nodata is not None:
+            C_default = np.where(dem_data == dem_nodata, np.nan, C_default)
+
+        dem_meta.update({
+            "dtype": "float32",
+            "nodata": np.nan,
+            "compress": "lzw"
+        })
+
+        with rio.open(c_factor_out, "w", **dem_meta) as dest:
+            dest.write(C_default, 1)
+
+    else:
+        # If the user provides a C-factor raster, clip/reproject it to the catchment.
+        clip_and_reproject_raster(
+            c_factor_fn,
+            shp,
+            c_factor_out
+        )
 
     if k_factor_fn is None:
         k_factor_fn = CSIRO_K_FACTOR_GRID
@@ -97,56 +131,75 @@ def compute_adjusted_k_c(
     )
 
     # Model parameters
-    t = 1
+    if recovery_times is None:
+        recovery_times = c.DEFAULT_RECOVERY_TIMES
     x_c = 0.4
     x_k = 1
     Kfire = 0.081
+    Cpeak = 0.35
 
     # Compute fire-adjusted C factor using dNBR
     CdNBR = dNBR * 1000
     CdNBR[CdNBR < 0] = 0
-    CdNBR[CdNBR > 400] = 0.081
     dNBRmask = (CdNBR > 0) & (CdNBR <= 400)
     CdNBR[dNBRmask] = (
         Cbase[dNBRmask]
-        + ((0.081 - Cbase[dNBRmask]) * (CdNBR[dNBRmask] / 400))
+        + ((Cpeak - Cbase[dNBRmask]) * (CdNBR[dNBRmask] / 400))
     )
-
-    C = (CdNBR - Cbase) * np.exp(-t / (x_c * AI)) + Cbase
-    K = (Kfire - Kbase) * np.exp(-t / (x_k * AI)) + Kbase
-
-    out_meta = {
-        'driver': 'GTiff',
-        'height': dem.shape[0],
-        'width': dem.shape[1],
-        'count': 1,
-        'dtype': 'float32',
-        'crs': dem_crs,
-        'transform': dem_transform,
-        'compress': 'lzw',
-        'nodata': np.nan
-    }
-    c_out = proj.catchment_path(
-        catchment, 'Erodibility', 'C_factor_adjusted.tif')
-    with rio.open(c_out, 'w', **out_meta) as dest:
-        dest.write(C, 1)
-
-    k_out = proj.catchment_path(
-        catchment, 'Erodibility', 'K_factor_adjusted.tif')
-    with rio.open(k_out, 'w', **out_meta) as dest:
-        dest.write(K, 1)
-
-    # Compute remaining RUSLE input rasters. Both LS_factor.tif and
-    # SDR.tif are required before running simulations. They are
-    # computed here so that a single call to compute_adjusted_k_c
-    # leaves the project fully prepared for RUSLE simulation. Each
-    # can be suppressed via its keyword argument if the caller wants
-    # to run them separately with custom parameters.
+    CdNBR[CdNBR > 400] = Cpeak
+    
+    # LS factor does not depend on T, compute it once only.
     if compute_lsi_factor:
         compute_lsi(proj, catchment)
-    if compute_sdr:
-        compute_sediment_delivery_ratio(proj, catchment)
 
+    for recovery_time in recovery_times:
+        suffix = c.recovery_time_suffix(recovery_time)
+
+        logger.info(
+            "Computing fire-adjusted C/K factors for catchment %s at T=%s years",
+            catchment, recovery_time
+        )
+
+        C = (
+            (CdNBR - Cbase)
+            * np.exp(-recovery_time / (x_c * AI))
+            + Cbase
+        )
+        K = (
+            (Kfire - Kbase)
+            * np.exp(-recovery_time / (x_k * AI))
+            + Kbase
+        )
+
+        out_meta = {
+            'driver': 'GTiff',
+            'height': dem.shape[0],
+            'width': dem.shape[1],
+            'count': 1,
+            'dtype': 'float32',
+            'crs': dem_crs,
+            'transform': dem_transform,
+            'compress': 'lzw',
+            'nodata': np.nan
+        }
+
+        c_out = proj.catchment_path(
+            catchment, 'Erodibility', f'C_factor_adjusted_{suffix}.tif')
+        with rio.open(c_out, 'w', **out_meta) as dest:
+            dest.write(C.astype(np.float32), 1)
+
+        k_out = proj.catchment_path(
+            catchment, 'Erodibility', f'K_factor_adjusted_{suffix}.tif')
+        with rio.open(k_out, 'w', **out_meta) as dest:
+            dest.write(K.astype(np.float32), 1)
+
+        if compute_sdr:
+            compute_sediment_delivery_ratio(
+                proj,
+                catchment,
+                c_factor_path=c_out,
+                output_suffix=suffix,
+            )
 
 # ---------------------------------------------------------------------------
 # Topographic index helper
@@ -328,6 +381,8 @@ def compute_sediment_delivery_ratio(
     max_sdr=DEFAULT_MAX_SDR,
     ic0=DEFAULT_IC0,
     k=DEFAULT_K,
+    c_factor_path=None,
+    output_suffix=None,
 ):
     """
     Calculate the Sediment Delivery Ratio (SDR) for a catchment.
@@ -356,7 +411,7 @@ def compute_sediment_delivery_ratio(
     if catchment is None:
         return project.for_each_catchment(
             lambda c: compute_sediment_delivery_ratio(
-                project, c, max_sdr, ic0, k))
+                project, c, max_sdr, ic0, k, c_factor_path, output_suffix))
 
     logger.info(
         'Computing Sediment Delivery Ratio for catchment: %s',
@@ -418,15 +473,14 @@ def compute_sediment_delivery_ratio(
     # ------------------------------------------------------------------
     # Step 2: C-factor — compute thresholded upslope averages
     # ------------------------------------------------------------------
-    c_factor_path = project.catchment_path(
-        catchment, 'Erodibility', 'C_factor_adjusted.tif')
+    suffix_text = f"_{output_suffix}" if output_suffix else ""
     with rio.open(c_factor_path) as c_factor_src:
         c_factor = c_factor_src.read(1)
 
     # Threshold C factor to a minimum of 0.001
     Cth = np.where(c_factor < 0.001, 0.001, c_factor)
     Cth_path = project.catchment_path(
-        catchment, 'Delivery', 'Cth.tif')
+        catchment, 'Delivery', f'Cth{suffix_text}.tif')
     dem_meta.update(dtype='float32')
     with rio.open(Cth_path, 'w', **dem_meta) as dest:
         dest.write(Cth.astype('float32'), 1)
@@ -515,7 +569,7 @@ def compute_sediment_delivery_ratio(
 
     Ddn[null_mask] = np.nan
     Ddn_path = project.catchment_path(
-        catchment, 'Delivery', 'Ddn.tif')
+        catchment, 'Delivery', f'Ddn{suffix_text}.tif')
     with rio.open(Ddn_path, 'w', **dem_profile) as dst:
         dst.write(Ddn.astype(rio.float32), 1)
 
@@ -527,7 +581,7 @@ def compute_sediment_delivery_ratio(
     Dup = Av_Cth * Av_Sth * np.sqrt(area)
     Dup[null_mask] = np.nan
     Dup_path = project.catchment_path(
-        catchment, 'Delivery', 'Dup.tif')
+        catchment, 'Delivery', f'Dup{suffix_text}.tif')
     with rio.open(Dup_path, 'w', **dem_profile) as dst:
         dst.write(Dup.astype(rio.float32), 1)
 
@@ -539,7 +593,7 @@ def compute_sediment_delivery_ratio(
     IC = np.log10(Dup / Ddn)
     IC[null_mask] = np.nan
     IC_path = project.catchment_path(
-        catchment, 'Delivery', 'IC.tif')
+        catchment, 'Delivery', f'IC{suffix_text}.tif')
     with rio.open(IC_path, 'w', **dem_profile) as dst:
         dst.write(IC.astype(rio.float32), 1)
 
@@ -548,7 +602,7 @@ def compute_sediment_delivery_ratio(
     # Calculate and save Sediment Delivery Ratio
     SDR = max_sdr / (1 + np.exp((ic0 - IC) / k))
     output_sdr_path = project.catchment_path(
-        catchment, 'Delivery', 'SDR.tif')
+        catchment, 'Delivery', f'SDR{suffix_text}.tif')
     dem_profile.update(dtype=rio.float32)
     with rio.open(output_sdr_path, 'w', **dem_profile) as dst:
         dst.write(SDR.astype(np.float32), 1)
