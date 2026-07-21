@@ -1523,7 +1523,7 @@ class FireImpactsProject(object):
                 _cl = colour_col.lower()
                 if 'i12' in _cl:
                     suffix = '_min'
-                elif 'peak' in _cl:
+                elif 'peak' in _cl or 'max' in _cl:
                     suffix = '_mean'
                 else:
                     suffix = '_sum'
@@ -2024,7 +2024,8 @@ def _filter_zones_by_masked_dnbr(
         logger.info(
             f'Excluded {len(exclude_ids)} of {n_before} zones '
             f'exceeding {masked_nan_threshold * 100:.0f}% NaN '
-            f'threshold in masked dNBR for {catchment}.'
+            f'threshold in masked dNBR for {ctx.catchment} '
+            f'event {ctx.event}.'
             )
 
     return zones_gdf

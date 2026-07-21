@@ -6,14 +6,12 @@ replicate runs and producing publication-quality maps.
 """
 
 import warnings
-
 import numpy as np
 import xarray as xr
 import pandas as pd
 import logging
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Grid extraction helpers
@@ -508,6 +506,8 @@ def plot_ensemble_statistics_panel(
     vmax_percentile=99,
     suptitle=None,
     figsize=(16, 5.5),
+    recovery_time=None,
+    recovery_interval_years=None,
 ):
     """
     Render a three-panel map showing median, 90th-percentile, and IQR
@@ -560,8 +560,13 @@ def plot_ensemble_statistics_panel(
         1, 3, figsize=figsize, constrained_layout=True
     )
     if suptitle is None:
+        recovery_label = (
+            f" — recovery time T={recovery_time} years"
+            if recovery_time is not None else ""
+        )
         suptitle = (
             f'{result_key} — ensemble statistics (n={n} replicates)'
+            f'{recovery_label}'
         )
     fig.suptitle(suptitle, fontsize=13)
 
@@ -624,6 +629,8 @@ def plot_catchment_exceedance_curve(
     title=None,
     color='steelblue',
     figsize=(7, 5),
+    recovery_time=None,
+    recovery_interval_years=None,
 ):
     """
     Plot a flood-frequency-style exceedance curve for catchment totals
@@ -667,7 +674,13 @@ def plot_catchment_exceedance_curve(
     )
     ax.set_ylabel(label)
     if title is None:
-        title = f'Exceedance curve — {result_key} (n={n})'
+        if recovery_time is not None:
+            recovery_label = f" — recovery time T={recovery_time} years"
+            if recovery_interval_years is not None:
+                recovery_label += f" ({recovery_interval_years}-year interval)"
+        else:
+            recovery_label = ""
+        title = f'Exceedance curve — {result_key} (n={n}){recovery_label}'
     ax.set_title(title)
     ax.grid(True, linestyle='--', alpha=0.5)
     return ax
@@ -683,6 +696,8 @@ def plot_ensemble_daily_ribbon(
     ylabel='Daily sediment yield (t)',
     color='steelblue',
     figsize=(14, 5),
+    recovery_time=None,
+    recovery_interval_years=None,
 ):
     """
     Plot a spread of daily timeseries across replicates as a ribbon
@@ -763,6 +778,10 @@ def plot_ensemble_daily_ribbon(
         title
         or f'Ensemble daily timeseries — {timeseries_key} '
         f'(n={len(daily_totals)} replicates)'
+        + (
+            f' — T={recovery_time} years'
+            if recovery_time is not None else ''
+        )
     )
     ax.legend(loc='upper right')
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))

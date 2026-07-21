@@ -32,7 +32,7 @@ realisation can drive multiple fires without duplication; the
 """
 
 from __future__ import annotations
-
+from fire_impacts import const as c
 import json
 import logging
 import os
@@ -48,7 +48,6 @@ logger = logging.getLogger(__name__)
 MANIFEST_NAME = 'manifest.json'
 RAINFALL_NAME = 'rainfall.nc'
 REPLICATES_DIR = 'replicates'
-
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -175,6 +174,12 @@ def save_ensemble_run(
                 rep_dir = _replicate_dir(root, rep)
                 _save_combined_replicate(df, rep_dir, freq=freq)
 
+    try:
+        recovery_breakpoints = list(
+            ctx.event_definition().recovery_breakpoints)
+    except (FileNotFoundError, ValueError):
+        recovery_breakpoints = None
+
     manifest = _build_manifest(
         catchment=catchment,
         event=ctx.event,
@@ -188,6 +193,7 @@ def save_ensemble_run(
         has_debris=debris_results is not None,
         subcatchment_label_field=subcatchment_label_field,
         extra=extra_manifest,
+        recovery_breakpoints=recovery_breakpoints,
     )
     with open(root / MANIFEST_NAME, 'w') as f:
         json.dump(manifest, f, indent=2, default=str)
@@ -269,7 +275,7 @@ def _save_combined_replicate(df: pd.DataFrame, rep_dir, *, freq: str):
 
 
 def _build_manifest(
-    *, catchment, event, ensemble, replicate_ids,
+    *, catchment, event, ensemble, replicate_ids, recovery_breakpoints,
     rainfall_ds, combined_by_freq, include_rusle_grids,
     include_raw_debris, has_rusle, has_debris,
     subcatchment_label_field, extra,
@@ -291,6 +297,7 @@ def _build_manifest(
         'replicates': list(replicate_ids),
         'n_replicates': len(replicate_ids),
         'rainfall': rainfall_meta,
+        'recovery_breakpoints': recovery_breakpoints,
         'combined_frequencies': (
             sorted(combined_by_freq.keys()) if combined_by_freq else []
         ),

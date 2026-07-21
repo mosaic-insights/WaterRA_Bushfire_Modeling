@@ -826,9 +826,6 @@ def plot_spatial_vector(
             shapes, symbol_data, on=id_col_name
             )
         colour_col = data_col_name
-        geom_with_data.to_csv(
-            '\\zz_TempDump\\geom_with_data.csv', index=False
-            )
 
         # Build a normaliser, honouring any fixed vmin/vmax from
         # vis_params so callers can lock the colour range:

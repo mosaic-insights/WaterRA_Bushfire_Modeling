@@ -11,6 +11,7 @@ folders.
 from fire_impacts.pre.util import (
     clip_and_reproject_raster, read_raster, read_aligned
 )
+from fire_impacts import const as c
 import rasterio as rio
 from .project import FireImpactsProject
 from ..context import RunContext
@@ -20,6 +21,7 @@ from pysheds.grid import Grid
 import numpy as np
 import os
 import logging
+import warnings
 
 logger = logging.getLogger(__name__)
 
@@ -34,17 +36,28 @@ def compute_adjusted_k_c(
     k_factor_fn: str = None,
     compute_lsi_factor: bool = True,
     compute_sdr: bool = True,
+    recovery_breakpoints=None,
+    recovery_times=None,
 ):
     """
     Compute fire-adjusted C and K factors and prepare RUSLE inputs.
 
     Parameters:
     - ctx: event-level RunContext identifying the catchment + event.
-    - c_factor_fn: Path to C-factor raster. Defaults to CSIRO grid.
+    - c_factor_fn: Path to C-factor raster. When None, a constant
+      C factor of 0.01 is written over the valid DEM cells.
     - k_factor_fn: Path to K-factor raster. Defaults to CSIRO grid.
     - compute_lsi_factor: If True, also compute the LSI factor
       (static — written at catchment level).
-    - compute_sdr: If True, also compute the SDR (per-event).
+    - compute_sdr: If True, also compute the per-recovery SDRs (event
+      level) and the baseline SDR (catchment level).
+    - recovery_breakpoints: Monotonic array of years-since-fire boundaries
+      defining the recovery windows (n+1 breakpoints -> n windows; window
+      i is modelled at recovery time b_i). Defaults to
+      const.DEFAULT_RECOVERY_BREAKPOINTS. Persisted into the event's
+      event.json so the simulation step doesn't need it re-specified.
+    - recovery_times: Deprecated. The old list of window-start times; if
+      given it is converted to breakpoints using the default interval.
 
     Returns:
     - None. Outputs are written to project raster files.
@@ -57,13 +70,35 @@ def compute_adjusted_k_c(
 
     # Base C and K factors are static (do not depend on the fire) and
     # live at the catchment level.
-    if c_factor_fn is None:
-        c_factor_fn = CSIRO_C_FACTOR_GRID
     os.makedirs(ctx.catchment_path('Erodibility'), exist_ok=True)
-    clip_and_reproject_raster(
-        c_factor_fn, shp,
-        ctx.catchment_path('Erodibility', 'C_factor.tif'),
-    )
+    c_factor_out = ctx.catchment_path('Erodibility', 'C_factor.tif')
+
+    if c_factor_fn is None:
+        # Create a constant C-factor layer of 0.01 over valid DEM cells.
+        dem_fn = ctx.catchment_path('Topography', 'DEM.tif')
+
+        with rio.open(dem_fn) as dem_src:
+            dem_data = dem_src.read(1)
+            dem_meta = dem_src.meta.copy()
+            dem_nodata = dem_src.nodata
+
+        C_default = np.full(dem_data.shape, 0.01, dtype=np.float32)
+
+        if dem_nodata is not None:
+            C_default = np.where(dem_data == dem_nodata, np.nan, C_default)
+
+        dem_meta.update({
+            "dtype": "float32",
+            "nodata": np.nan,
+            "compress": "lzw"
+        })
+
+        with rio.open(c_factor_out, "w", **dem_meta) as dest:
+            dest.write(C_default, 1)
+
+    else:
+        # A user-supplied C-factor raster is clipped to the catchment.
+        clip_and_reproject_raster(c_factor_fn, shp, c_factor_out)
 
     if k_factor_fn is None:
         k_factor_fn = CSIRO_K_FACTOR_GRID
@@ -95,23 +130,49 @@ def compute_adjusted_k_c(
     )
 
     # Model parameters
-    t = 1
+    # Resolve recovery breakpoints (a single monotonic array). recovery_times
+    # is deprecated: convert it to breakpoints by closing the final window
+    # with the default interval.
+    if recovery_times is not None:
+        warnings.warn(
+            "recovery_times is deprecated; pass recovery_breakpoints "
+            "(a single monotonic array) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if recovery_breakpoints is None:
+            recovery_breakpoints = c.breakpoints_from_times_and_interval(
+                recovery_times, c.DEFAULT_RECOVERY_INTERVAL_YEARS)
+    if recovery_breakpoints is None:
+        recovery_breakpoints = c.DEFAULT_RECOVERY_BREAKPOINTS
+    # Each recovery window is modelled at its start time (C/K evaluated at
+    # the window start).
+    recovery_start_times = [
+        start for start, _ in c.recovery_windows(recovery_breakpoints)
+    ]
     x_c = 0.4
     x_k = 1
     Kfire = 0.081
+    Cpeak = 0.35
 
     # Compute fire-adjusted C factor using dNBR
     CdNBR = dNBR * 1000
     CdNBR[CdNBR < 0] = 0
-    CdNBR[CdNBR > 400] = 0.081
     dNBRmask = (CdNBR > 0) & (CdNBR <= 400)
     CdNBR[dNBRmask] = (
         Cbase[dNBRmask]
-        + ((0.081 - Cbase[dNBRmask]) * (CdNBR[dNBRmask] / 400))
+        + ((Cpeak - Cbase[dNBRmask]) * (CdNBR[dNBRmask] / 400))
     )
+    CdNBR[CdNBR > 400] = Cpeak
 
-    C = (CdNBR - Cbase) * np.exp(-t / (x_c * AI)) + Cbase
-    K = (Kfire - Kbase) * np.exp(-t / (x_k * AI)) + Kbase
+    # LS factor is static (independent of both the fire and the recovery
+    # time) — written once at the catchment level.
+    if compute_lsi_factor:
+        compute_lsi(ctx)
+
+    # The fire-adjusted layers are per-event and per-recovery-time.
+    event_erod_dir = ctx.event_path('Erodibility')
+    os.makedirs(event_erod_dir, exist_ok=True)
 
     out_meta = {
         'driver': 'GTiff',
@@ -124,24 +185,55 @@ def compute_adjusted_k_c(
         'compress': 'lzw',
         'nodata': np.nan
     }
-    event_erod_dir = ctx.event_path('Erodibility')
-    os.makedirs(event_erod_dir, exist_ok=True)
 
-    c_out = os.path.join(event_erod_dir, 'C_factor_adjusted.tif')
-    with rio.open(c_out, 'w', **out_meta) as dest:
-        dest.write(C, 1)
+    for recovery_time in recovery_start_times:
+        suffix = c.recovery_time_suffix(recovery_time)
 
-    k_out = os.path.join(event_erod_dir, 'K_factor_adjusted.tif')
-    with rio.open(k_out, 'w', **out_meta) as dest:
-        dest.write(K, 1)
+        logger.info(
+            'Computing fire-adjusted C/K factors for catchment %s '
+            'event %s at T=%s years',
+            catchment, ctx.event, recovery_time
+        )
 
-    # LS factor is static — written once at the catchment level.
-    # SDR depends on the fire-adjusted C factor, so it is per-event.
-    if compute_lsi_factor:
-        compute_lsi(ctx)
+        C = (
+            (CdNBR - Cbase)
+            * np.exp(-recovery_time / (x_c * AI))
+            + Cbase
+        )
+        K = (
+            (Kfire - Kbase)
+            * np.exp(-recovery_time / (x_k * AI))
+            + Kbase
+        )
+
+        c_out = os.path.join(
+            event_erod_dir, f'C_factor_adjusted_{suffix}.tif')
+        with rio.open(c_out, 'w', **out_meta) as dest:
+            dest.write(C.astype(np.float32), 1)
+
+        k_out = os.path.join(
+            event_erod_dir, f'K_factor_adjusted_{suffix}.tif')
+        with rio.open(k_out, 'w', **out_meta) as dest:
+            dest.write(K.astype(np.float32), 1)
+
+        if compute_sdr:
+            compute_sediment_delivery_ratio(
+                ctx,
+                c_factor_path=c_out,
+                output_suffix=suffix,
+            )
+
+    # Also compute the baseline (no-fire) SDR from the unadjusted C factor,
+    # so the baseline simulation has SDR_baseline.tif available without a
+    # separate step. It uses the base C_factor.tif and so is
+    # fire-independent: written at catchment scope (see
+    # compute_sediment_delivery_ratio).
     if compute_sdr:
-        compute_sediment_delivery_ratio(ctx)
+        compute_sediment_delivery_ratio(ctx, output_suffix='baseline')
 
+    # Persist the recovery breakpoints into the event definition so the
+    # simulation step can read them back instead of re-specifying them.
+    ctx.set_recovery_breakpoints(recovery_breakpoints)
 
 # ---------------------------------------------------------------------------
 # Topographic index helper
@@ -307,6 +399,8 @@ def compute_sediment_delivery_ratio(
     max_sdr=DEFAULT_MAX_SDR,
     ic0=DEFAULT_IC0,
     k=DEFAULT_K,
+    c_factor_path=None,
+    output_suffix=None,
 ):
     """
     Calculate the Sediment Delivery Ratio (SDR) for the context's event.
@@ -320,6 +414,15 @@ def compute_sediment_delivery_ratio(
       Default is 0.5.
     - k: Shape parameter for the IC-SDR relationship.
       Default is 1.
+    - c_factor_path: Path to the C-factor raster used in the
+      connectivity calculation. When None, falls back to the
+      catchment's base C_factor.tif and produces the baseline
+      (no-fire) SDR. compute_adjusted_k_c passes a recovery-specific
+      C_factor_adjusted_<suffix>.tif to build per-recovery SDRs.
+    - output_suffix: Suffix for the output SDR (and intermediate)
+      rasters, e.g. 't0' -> SDR_t0.tif. Defaults to 'baseline' when
+      no c_factor_path is supplied so the output matches the layer the
+      baseline simulation reads (SDR_baseline.tif).
 
     Returns:
     - slope_ratio: Slope as a dimensionless ratio.
@@ -335,14 +438,29 @@ def compute_sediment_delivery_ratio(
     ctx.validate()
     catchment = ctx.catchment
 
+    # Without a C-factor raster there is no single "adjusted" C factor to
+    # fall back on (there is now one per recovery time), so default to the
+    # base C_factor.tif and write the baseline SDR — the layer the
+    # baseline (no-fire) simulation reads.
+    baseline = c_factor_path is None
+    if baseline:
+        c_factor_path = ctx.catchment_path('Erodibility', 'C_factor.tif')
+        if output_suffix is None:
+            output_suffix = 'baseline'
+    suffix_text = f"_{output_suffix}" if output_suffix else ""
+
     logger.info(
         'Computing Sediment Delivery Ratio for catchment: %s (event %s)',
         catchment, ctx.event)
 
-    # All Delivery/ outputs are per-event because they depend on the
-    # fire-adjusted C factor.
-    event_delivery_dir = ctx.event_path('Delivery')
-    os.makedirs(event_delivery_dir, exist_ok=True)
+    # The per-recovery SDRs depend on the fire-adjusted C factor and are
+    # written per event; the baseline SDR is derived from the base C
+    # factor, so it is fire-independent and lives at catchment scope.
+    delivery_dir = (
+        ctx.catchment_path('Delivery') if baseline
+        else ctx.event_path('Delivery')
+    )
+    os.makedirs(delivery_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Step 1: Read DEM and compute flow direction, accumulation, slope
@@ -383,7 +501,7 @@ def compute_sediment_delivery_ratio(
     Sth[nan_mask] = np.nan
 
     # Accumulate thresholded slope over upslope contributing area
-    Sth_path = os.path.join(event_delivery_dir, 'Sth.tif')
+    Sth_path = os.path.join(delivery_dir, 'Sth.tif')
     with rio.open(Sth_path, 'w', **dem_meta) as dest:
         dest.write(Sth.astype('float32'), 1)
     Sth_raster = grid.read_raster(Sth_path)
@@ -398,13 +516,13 @@ def compute_sediment_delivery_ratio(
     # ------------------------------------------------------------------
     # Step 2: C-factor — compute thresholded upslope averages
     # ------------------------------------------------------------------
-    c_factor_path = ctx.event_path('Erodibility', 'C_factor_adjusted.tif')
     with rio.open(c_factor_path) as c_factor_src:
         c_factor = c_factor_src.read(1)
 
     # Threshold C factor to a minimum of 0.001
     Cth = np.where(c_factor < 0.001, 0.001, c_factor)
-    Cth_path = os.path.join(event_delivery_dir, 'Cth.tif')
+    Cth_path = os.path.join(
+        delivery_dir, f'Cth{suffix_text}.tif')
     dem_meta.update(dtype='float32')
     with rio.open(Cth_path, 'w', **dem_meta) as dest:
         dest.write(Cth.astype('float32'), 1)
@@ -422,7 +540,7 @@ def compute_sediment_delivery_ratio(
     # Define stream network based on contributing area threshold
     streams = area > 1.3e4
     stream_cells = np.where(streams)
-    streams_path = os.path.join(event_delivery_dir, 'Streams.tif')
+    streams_path = os.path.join(delivery_dir, 'Streams.tif')
     with rio.open(streams_path, 'w', **dem_meta) as dest:
         dest.write(streams.astype(np.uint8), 1)
 
@@ -485,12 +603,13 @@ def compute_sediment_delivery_ratio(
     # Mask nodata cells and write Ddn and distance outputs
     distance_to_stream[null_mask] = np.nan
     dem_profile.update(dtype=rio.float32, nodata=np.nan)
-    dist_path = os.path.join(event_delivery_dir, 'Distance_to_stream.tif')
+    dist_path = os.path.join(delivery_dir, 'Distance_to_stream.tif')
     with rio.open(dist_path, 'w', **dem_profile) as dst:
         dst.write(distance_to_stream.astype(rio.float32), 1)
 
     Ddn[null_mask] = np.nan
-    Ddn_path = os.path.join(event_delivery_dir, 'Ddn.tif')
+    Ddn_path = os.path.join(
+        delivery_dir, f'Ddn{suffix_text}.tif')
     with rio.open(Ddn_path, 'w', **dem_profile) as dst:
         dst.write(Ddn.astype(rio.float32), 1)
 
@@ -501,7 +620,8 @@ def compute_sediment_delivery_ratio(
     # Calculate the upslope component Dup
     Dup = Av_Cth * Av_Sth * np.sqrt(area)
     Dup[null_mask] = np.nan
-    Dup_path = os.path.join(event_delivery_dir, 'Dup.tif')
+    Dup_path = os.path.join(
+        delivery_dir, f'Dup{suffix_text}.tif')
     with rio.open(Dup_path, 'w', **dem_profile) as dst:
         dst.write(Dup.astype(rio.float32), 1)
 
@@ -512,7 +632,8 @@ def compute_sediment_delivery_ratio(
     # Calculate Connectivity Index (IC)
     IC = np.log10(Dup / Ddn)
     IC[null_mask] = np.nan
-    IC_path = os.path.join(event_delivery_dir, 'IC.tif')
+    IC_path = os.path.join(
+        delivery_dir, f'IC{suffix_text}.tif')
     with rio.open(IC_path, 'w', **dem_profile) as dst:
         dst.write(IC.astype(rio.float32), 1)
 
@@ -520,7 +641,8 @@ def compute_sediment_delivery_ratio(
 
     # Calculate and save Sediment Delivery Ratio
     SDR = max_sdr / (1 + np.exp((ic0 - IC) / k))
-    output_sdr_path = os.path.join(event_delivery_dir, 'SDR.tif')
+    output_sdr_path = os.path.join(
+        delivery_dir, f'SDR{suffix_text}.tif')
     dem_profile.update(dtype=rio.float32)
     with rio.open(output_sdr_path, 'w', **dem_profile) as dst:
         dst.write(SDR.astype(np.float32), 1)

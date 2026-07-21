@@ -54,6 +54,79 @@ CHANNEL_PARAMETERS = dict(
     )
 NUM_SIM_YEARS = 2
 
+# Headwaters with a mean dNBR below this value are excluded from the
+# debris-flow analysis (they are considered insufficiently burnt).
+DEFAULT_DEBRIS_DNBR_THRESHOLD = 100
+
+# ------- Fire recovery time and intervals: ---------------------------------------------
+# Recovery is specified as a single monotonic array of *breakpoints* in
+# years since the fire end date. n+1 breakpoints define n contiguous
+# recovery windows: window i spans [b_i, b_{i+1}) and is modelled at
+# recovery time b_i (the window start). This replaces the old
+# (recovery_times + interval) pair, which was redundant for contiguous
+# windows and could silently leave gaps/overlaps.
+DEFAULT_RECOVERY_BREAKPOINTS = [0, 0.5, 1, 1.5, 2, 2.5, 3]
+
+# Deprecated: retained for one release, derived from the breakpoints.
+# Prefer DEFAULT_RECOVERY_BREAKPOINTS.
+DEFAULT_RECOVERY_TIMES = DEFAULT_RECOVERY_BREAKPOINTS[:-1]
+DEFAULT_RECOVERY_INTERVAL_YEARS = 0.5
+
+# Per-event definition file, written at Events/<event>/event.json.
+EVENT_DEFINITION_NAME = 'event.json'
+
+
+def recovery_time_suffix(recovery_time: float) -> str:
+    """
+    Convert a recovery time value into a safe filename suffix.
+
+    Examples
+    --------
+    0    -> t0
+    0.5  -> t0_5
+    1    -> t1
+    1.5  -> t1_5
+    2.5  -> t2_5
+    """
+    return f"t{str(recovery_time).replace('.', '_')}"
+
+
+def recovery_windows(breakpoints):
+    """
+    Convert recovery breakpoints into (start, end) window pairs in years.
+
+    n+1 monotonically increasing breakpoints yield n contiguous windows;
+    window i is [breakpoints[i], breakpoints[i+1]) and is modelled at
+    recovery time breakpoints[i].
+
+    Raises ValueError if fewer than two breakpoints are given or they are
+    not strictly increasing.
+    """
+    bps = list(breakpoints)
+    if len(bps) < 2:
+        raise ValueError(
+            "recovery breakpoints need at least two values (one window); "
+            f"got {bps!r}."
+        )
+    if any(b <= a for a, b in zip(bps, bps[1:])):
+        raise ValueError(
+            f"recovery breakpoints must be strictly increasing; got {bps!r}."
+        )
+    return list(zip(bps[:-1], bps[1:]))
+
+
+def breakpoints_from_times_and_interval(recovery_times, interval):
+    """
+    Convert the deprecated (recovery_times, interval) pair into breakpoints.
+
+    Appends a trailing boundary (last start + interval) to close the final
+    window. Used to keep deprecated call sites working.
+    """
+    times = list(recovery_times)
+    if not times:
+        raise ValueError("recovery_times is empty.")
+    return times + [times[-1] + interval]
+
 # ------- Dtype standards: ---------------------------------------------
 
 # Convert numpy one-character dtype.kind attributes into more
@@ -114,26 +187,20 @@ I12_CRIT_Y = HF_I12_CRIT + year_suffix
 
 # ------- Output file names: ------------------------------------------
 # RUSLE erosion:
-RUSLE_OP_PEAK_Y1_NAME = 'peak_erosion_y1'
-RUSLE_OP_PEAK_Y2_NAME = 'peak_erosion_y2'
-RUSLE_OP_TOTAL_Y1_NAME = 'erosion_y1'
-RUSLE_OP_TOTAL_Y2_NAME = 'erosion_y2'
-RUSLE_OP_TIMESERIES_NAME = 'daily_time_series'
-# Sediment delivered to streams (RUSLE x SDR ratio):
-DELIVERED_OP_PEAK_Y1_NAME = 'peak_delivered_y1'
-DELIVERED_OP_PEAK_Y2_NAME = 'peak_delivered_y2'
-DELIVERED_OP_TOTAL_Y1_NAME = 'delivered_y1'
-DELIVERED_OP_TOTAL_Y2_NAME = 'delivered_y2'
+RUSLE_OP_PEAK_NAME = 'peak_erosion'
+RUSLE_OP_TOTAL_NAME = 'erosion_total'
+RUSLE_OP_TIMESERIES_NAME = 'erosion_daily_time_series'
+
+# Sediment delivered to streams:
+DELIVERED_OP_PEAK_NAME = 'peak_delivered'
+DELIVERED_OP_TOTAL_NAME = 'delivered_total'
+
 RUSLE_OUTPUT_RASTER_NAMES = [
-    RUSLE_OP_PEAK_Y1_NAME,
-    RUSLE_OP_PEAK_Y2_NAME,
-    RUSLE_OP_TOTAL_Y1_NAME,
-    RUSLE_OP_TOTAL_Y2_NAME,
-    DELIVERED_OP_PEAK_Y1_NAME,
-    DELIVERED_OP_PEAK_Y2_NAME,
-    DELIVERED_OP_TOTAL_Y1_NAME,
-    DELIVERED_OP_TOTAL_Y2_NAME,
-    ]
+    RUSLE_OP_PEAK_NAME,
+    RUSLE_OP_TOTAL_NAME,
+    DELIVERED_OP_PEAK_NAME,
+    DELIVERED_OP_TOTAL_NAME,
+]
 RUSLE_OP_TIMESERIES_NAME = 'erosion_daily_time_series'
 # Debris flow:
 DEBRIS_OP_TIMESERIES_NAME = 'debris_daily_time_series'
@@ -162,53 +229,3 @@ PER_CATCHMENT_FOLDERS = [
     SUBCATCHMENTS_FOLDER_NAME,
     RESULTS_FOLDER_NAME
     ]
-
-# Per-event definition file, written at Events/<event>/event.json.
-EVENT_DEFINITION_NAME = 'event.json'
-
-# ------- Fire recovery times and intervals: ---------------------------
-# Recovery is specified as a single monotonic array of *breakpoints* in
-# years since the fire end date. n+1 breakpoints define n contiguous
-# recovery windows: window i spans [b_i, b_{i+1}) and is modelled at
-# recovery time b_i (the window start).
-DEFAULT_RECOVERY_BREAKPOINTS = [0, 0.5, 1, 1.5, 2, 2.5, 3]
-
-
-def recovery_time_suffix(recovery_time):
-    """
-    Convert a recovery time value into a safe filename suffix.
-
-    Examples
-    --------
-    0    -> t0
-    0.5  -> t0_5
-    1    -> t1
-    1.5  -> t1_5
-    2.5  -> t2_5
-    """
-    return f"t{str(recovery_time).replace('.', '_')}"
-
-
-def recovery_windows(breakpoints):
-    """
-    Convert recovery breakpoints into (start, end) window pairs in years.
-
-    n+1 monotonically increasing breakpoints yield n contiguous windows;
-    window i is [breakpoints[i], breakpoints[i+1]) and is modelled at
-    recovery time breakpoints[i].
-
-    Raises ValueError if fewer than two breakpoints are given or they are
-    not strictly increasing.
-    """
-    bps = list(breakpoints)
-    if len(bps) < 2:
-        raise ValueError(
-            'recovery breakpoints need at least two values (one '
-            f'window); got {bps!r}.'
-            )
-    if any(b <= a for a, b in zip(bps, bps[1:])):
-        raise ValueError(
-            f'recovery breakpoints must be strictly increasing; got '
-            f'{bps!r}.'
-            )
-    return list(zip(bps[:-1], bps[1:]))

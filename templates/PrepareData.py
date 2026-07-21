@@ -96,6 +96,7 @@ import os
 
 # %%
 from fire_impacts import FireImpactsProject
+from fire_impacts import const
 from fire_impacts.context import RunContext
 from fire_impacts.pre import project, topography, severity, soil, rusle
 
@@ -323,8 +324,25 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 # ### C- and K-Factors
 
 # %%
-# Compute adjusted K- and C-factors ready for erosion simulation:
-rusle.compute_adjusted_k_c(ctx)
+# Compute recovery-specific K-, C- and SDR layers ready for erosion
+# simulation.
+#
+# Recovery is specified as a single array of BREAKPOINTS in years after the
+# fire end date: n+1 breakpoints define n contiguous recovery windows, and
+# window i is modelled at recovery time b_i (the window start). The
+# breakpoints are stored in the event's event.json, so the Simulation
+# notebook reads them back automatically — you don't re-specify them there.
+#
+# If omitted, the package default is used. Shown here for reference:
+print("Default recovery breakpoints:", const.DEFAULT_RECOVERY_BREAKPOINTS)
+
+# To override, pass recovery_breakpoints (examples):
+#   [0, 1, 2, 3]             -> yearly windows
+#   [0, 0.25, 0.5, 0.75, 1]  -> quarterly windows
+rusle.compute_adjusted_k_c(
+    ctx,
+    # recovery_breakpoints=[0, 1, 2, 3],
+)
 
 # %% [markdown]
 # ## Summary information for Fire Severity
