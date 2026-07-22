@@ -37,8 +37,10 @@
 # ## Prerequisites
 #
 # 1. You have already run `SimulationEnsemble.py` (or equivalent) against
-#    this `FireImpactsProject` and the results live under
-#    `Catchments/<catchment>/Events/<event>/Ensemble/<ensemble>/`.
+#    this `FireImpactsProject`. The combined loads live under
+#    `Catchments/<catchment>/Runs/<event>/<ensemble>/` and the driving
+#    rainfall under `Catchments/<catchment>/Ensembles/<ensemble>/`; the
+#    RunContext built below resolves both.
 # 2. Your Source project is open in Source with the
 #    [**Load Distributor**](https://github.com/flowmatters/source-loaddistributor)
 #    plugin loaded, and Veneer is running (default port `9876`).
