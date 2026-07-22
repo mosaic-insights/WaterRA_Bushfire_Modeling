@@ -16,6 +16,11 @@ from fire_impacts.pre.util import (
     write_raster,
     slope_from_dem,
     clip_raster,
+    condition_dem,
+    breach_pits,
+    upslope_weighted_mean,
+    _dem_with_real_nodata,
+    PYSHEDS_PIT_CODE,
 )
 
 CRS = 'EPSG:7855'
@@ -47,16 +52,18 @@ def test_read_raster_masked_numeric_nodata(tmp_path):
     assert np.array_equal(grid.data[grid.data > 0], data[data > 0])
 
 
-def test_read_raster_masked_nan_nodata_matches_legacy_behaviour(tmp_path):
-    """With NaN nodata (the standard project output), the mask is all-False
-    (NaN never compares equal) and the data comes back unchanged — the same
-    behaviour as the `data == nodata` call sites this consolidates."""
+def test_read_raster_masked_nan_nodata_is_detected(tmp_path):
+    """With NaN nodata (the standard project output), the nodata cells are
+    detected via isnan rather than the `data == nodata` test (which never
+    matches NaN and would report an empty mask). The data still carries NaN
+    at those cells and valid cells are unchanged."""
     data = np.ones((3, 4), dtype='float32')
     data[1, 1] = np.nan
     fn = _write_tif(str(tmp_path / 'b.tif'), data, nodata=np.nan)
 
     grid = read_raster_masked(fn)
-    assert not grid.nodata_mask.any()
+    assert grid.nodata_mask[1, 1]
+    assert grid.nodata_mask.sum() == 1
     assert np.isnan(grid.data[1, 1])
     assert grid.data[0, 0] == 1.0
 
@@ -182,6 +189,130 @@ def test_slope_from_dem_propagates_nan():
     assert np.isnan(slope_ratio[1, 2])
     assert np.isnan(slope_ratio[2, 1])
     assert np.isfinite(slope_ratio[0, 0])
+
+
+# --- DEM conditioning: nodata sentinel + breach ----------------------------
+
+def _pysheds_raster(arr, nodata):
+    """Build a pysheds Raster from a numpy array with a given nodata."""
+    from pysheds.view import Raster, ViewFinder
+    vf = ViewFinder(
+        affine=from_origin(500000, 6000000, 10, 10),
+        shape=arr.shape, nodata=np.dtype(arr.dtype).type(nodata), crs=CRS)
+    return Raster(arr, viewfinder=vf)
+
+
+def test_dem_with_real_nodata_replaces_nan_sentinel():
+    """A NaN nodata (which pysheds' `dem == nodata` never matches) is
+    swapped for a finite sentinel below the DEM range, with the nodata
+    cells filled to that sentinel."""
+    arr = np.array([[10.0, 11.0], [np.nan, 12.0]], dtype='float32')
+    out = _dem_with_real_nodata(_pysheds_raster(arr, np.nan))
+    nod = float(out.viewfinder.nodata)
+    assert np.isfinite(nod)
+    assert nod < 10.0                      # below the valid range
+    data = np.asarray(out)
+    assert data[1, 0] == np.dtype('float32').type(nod)   # NaN cell filled
+    assert data[0, 0] == 10.0              # valid cells untouched
+    assert not np.isnan(data).any()        # no NaN survives for pysheds
+
+
+def test_dem_with_real_nodata_passes_through_finite_nodata():
+    """A DEM that already has a finite, matchable nodata is returned
+    unchanged."""
+    arr = np.array([[10.0, 11.0], [12.0, 13.0]], dtype='float32')
+    src = _pysheds_raster(arr, -9999.0)
+    assert _dem_with_real_nodata(src) is src
+
+
+def test_breach_pits_drains_an_enclosed_pit():
+    """A cell lower than all its neighbours is a pit (fdir == -2); breaching
+    carves a descending channel to an outlet so flow direction resolves."""
+    from pysheds.grid import Grid
+    # A walled interior valley (row 3) draining off the right edge, dammed
+    # at column 3 so column 2 is an enclosed pit. The high walls make the
+    # dam the cheapest escape, so breaching must carve *through* it rather
+    # than draining off a nearby edge.
+    arr = np.full((7, 7), 10.0, dtype='float32')
+    arr[3] = [10, 4, 3, 6, 2, 1, 0]
+    dem = _pysheds_raster(arr, -9999.0)
+    grid = Grid(viewfinder=dem.viewfinder)
+
+    fdir_before = np.asarray(grid.flowdir(dem))
+    assert fdir_before[3, 2] == PYSHEDS_PIT_CODE      # the dammed cell
+
+    breached = breach_pits(grid, dem)
+    fdir_after = np.asarray(grid.flowdir(breached))
+    assert fdir_after[3, 2] != PYSHEDS_PIT_CODE        # pit now drains
+    # Breaching only lowers cells, never raises them.
+    assert np.all(np.asarray(breached) <= np.asarray(dem) + 1e-6)
+    # The dam (column 3) is the cell that gets carved through.
+    assert np.asarray(breached)[3, 3] < 6.0
+
+
+def test_condition_dem_nan_boundary_has_no_spurious_pits(tmp_path):
+    """A DEM clipped to an irregular shape (NaN boundary) draining to one
+    edge must condition without a rash of boundary pits. Regression for
+    pysheds treating the NaN boundary as valid terrain."""
+    # Plane sloping down to the west; NaN border on all four sides mimics
+    # the clipped-catchment nodata frame.
+    arr = (np.arange(10, dtype='float32')[None, :] * np.ones((8, 1))).copy()
+    arr[0, :] = np.nan
+    arr[-1, :] = np.nan
+    arr[:, -1] = np.nan
+    fn = _write_tif(str(tmp_path / 'dem.tif'), arr, nodata=np.nan)
+
+    inflated, grid = condition_dem(fn)
+    fdir = np.asarray(grid.flowdir(inflated))
+    finite = np.isfinite(arr)
+    assert not (fdir[finite] == PYSHEDS_PIT_CODE).any()
+
+
+def test_condition_dem_does_not_route_through_nodata(tmp_path):
+    """The nodata region must be masked out of routing. Regression: the
+    real sentinel that fixes boundary pits is itself a routable (low)
+    value, so without a viewfinder mask pysheds drains the sentinel-filled
+    nodata area and sprays spurious streams/headwaters outside the
+    catchment."""
+    arr = (np.arange(10, dtype='float32')[None, :] * np.ones((8, 1))).copy()
+    arr[0, :] = np.nan
+    arr[-1, :] = np.nan
+    arr[:, -1] = np.nan
+    fn = _write_tif(str(tmp_path / 'dem.tif'), arr, nodata=np.nan)
+
+    inflated, grid = condition_dem(fn)
+    acc = np.asarray(grid.accumulation(grid.flowdir(inflated)))
+    nodata = ~np.isfinite(arr)
+    # No contributing area should accumulate onto the missing-data cells.
+    assert not (acc[nodata] > 1).any()
+
+
+# --- upslope_weighted_mean -------------------------------------------------
+
+def test_upslope_weighted_mean_ignores_nan_weights():
+    """A NaN weight upstream must not null the downstream average (the SDR
+    stream-nulling bug): it is dropped from both the sum and the count, so
+    the mean is over the valid contributors only."""
+    from pysheds.grid import Grid
+    from pysheds.view import Raster, ViewFinder
+    # Single row draining east to the edge: every cell flows into the next.
+    dem = np.array([[5, 4, 3, 2, 1]], dtype='float32')
+    vf = ViewFinder(affine=from_origin(500000, 6000000, 10, 10),
+                    shape=dem.shape, nodata=np.float32(-9999), crs=CRS)
+    grid = Grid(viewfinder=vf)
+    fdir = grid.flowdir(Raster(dem, viewfinder=vf))
+
+    # Weight 2.0 everywhere except a NaN at the head of the chain.
+    w = np.full(dem.shape, 2.0, dtype='float64')
+    w[0, 0] = np.nan
+    mean = upslope_weighted_mean(grid, fdir, Raster(w, viewfinder=vf))
+
+    # The most-downstream cell drains all five cells; four have weight 2,
+    # one is NaN → mean is exactly 2.0, not NaN.
+    assert np.isclose(mean[0, -1], 2.0)
+    assert not np.isnan(mean[0, -1])
+    # The NaN cell has no valid contributor, so it is NaN.
+    assert np.isnan(mean[0, 0])
 
 
 # --- clip_raster temp handling ---------------------------------------------

@@ -365,6 +365,13 @@ def read_raster_masked(path_to_file: str) -> RasterGrid:
     nodata = meta.get('nodata')
     if nodata is None:
         nodata_mask = np.zeros(data.shape, dtype=bool)
+    elif np.isnan(nodata):
+        # A NaN nodata never equals itself, so `data == nodata` would
+        # match nothing and report an empty mask even though the nodata
+        # cells are already NaN in the array. Detect them with isnan
+        # instead. (This is the same trap that made pysheds treat the
+        # catchment boundary as valid terrain — see condition_dem.)
+        nodata_mask = np.isnan(data)
     else:
         nodata_mask = data == nodata
         data = np.where(nodata_mask, np.nan, data)
@@ -547,7 +554,186 @@ def slope_from_dem(dem_data: np.ndarray, xres: float, yres: float):
     return slope_ratio, dz_dx, dz_dy
 
 
-def condition_dem(dem_path: str):
+# pysheds' D8 flowdir marks a cell with no downhill neighbour as a pit
+# with this sentinel; residual pits after conditioning carry this code.
+PYSHEDS_PIT_CODE = -2
+# Per-cell drop used to guarantee a strictly descending breach channel
+# across otherwise-flat valley floors (metres).
+BREACH_EPSILON = 1e-3
+
+
+def _dem_with_real_nodata(dem, sentinel=None):
+    """
+    Return a pysheds Raster whose nodata is a real (matchable) value.
+
+    pysheds identifies nodata cells with the test ``dem == nodata``. When
+    the DEM's nodata is NaN this matches nothing (``NaN != NaN``), so
+    pysheds treats every nodata cell — including the whole catchment
+    boundary of a clipped DEM — as valid terrain. Flow then dead-ends
+    against the boundary instead of draining out of it, leaving a rash of
+    spurious pits hugging the perimeter.
+
+    Replace NaN nodata with a real sentinel below the DEM range and return
+    a Raster carrying that sentinel so pysheds recognises the boundary.
+    A DEM that already has a finite, matchable nodata is returned
+    unchanged.
+
+    Crucially the returned viewfinder also carries a **mask** (True on the
+    valid cells). The sentinel alone makes the boundary matchable, but a
+    finite sentinel value is also routable: without a mask pysheds treats
+    the sentinel-filled nodata region as one huge low flat and
+    resolve_flats drains it, spraying spurious streams/headwaters across
+    the missing-data area outside the catchment. The mask marks those
+    cells out-of-domain so they are excluded from filling, routing and
+    accumulation entirely.
+    """
+    from pysheds.view import Raster, ViewFinder
+
+    arr = np.asarray(dem)
+    vf = dem.viewfinder
+    nodata = vf.nodata
+    valid = np.isfinite(arr)
+    nan_cells = ~valid
+    existing_mask = np.asarray(vf.mask) if vf.mask is not None else None
+    mask_covers_nodata = (
+        existing_mask is not None and not existing_mask[nan_cells].any()
+    )
+    if (nodata is not None and np.isfinite(nodata) and not nan_cells.any()
+            and (existing_mask is None or mask_covers_nodata)):
+        return dem
+
+    if sentinel is None:
+        finite = arr[valid]
+        low = float(finite.min()) if finite.size else 0.0
+        sentinel = low - 1000.0
+    sentinel = np.dtype(dem.dtype).type(sentinel)
+
+    new_arr = np.where(nan_cells, sentinel, arr).astype(dem.dtype)
+    new_vf = ViewFinder(
+        affine=vf.affine, shape=new_arr.shape,
+        nodata=sentinel, crs=vf.crs, mask=valid,
+    )
+    return Raster(new_arr, viewfinder=new_vf)
+
+
+def breach_pits(grid, dem, max_search=None):
+    """
+    Prototype: least-cost breaching of residual pits.
+
+    Depression *filling* raises a basin to its spill elevation. On a
+    near-flat valley floor (e.g. a hydrologically-enforced DEM smoothed by
+    bilinear reprojection) float32 precision leaves the spill cell a hair
+    proud of its own filled flat, so pysheds still flags it as a pit and
+    the trunk stream dead-ends there. Breaching instead *cuts* an outlet:
+    for every cell D8 flow direction flags as a pit, carve a monotonically
+    descending channel to the nearest lower cell (or nodata/edge),
+    lowering only the intervening cells. This preserves the valley-floor
+    elevations that feed the downslope slope/connectivity terms rather
+    than flooding them flat.
+
+    Parameters:
+    - grid: pysheds Grid whose viewfinder matches ``dem``.
+    - dem: conditioned pysheds Raster (real nodata, see
+      _dem_with_real_nodata).
+    - max_search: cap on cells expanded per pit before giving up
+      (defaults to the whole grid).
+
+    Returns:
+    - A new pysheds Raster with the breach channels carved in.
+    """
+    import heapq
+    from pysheds.view import Raster, ViewFinder
+
+    vf = dem.viewfinder
+    arr = np.asarray(dem, dtype=np.float64).copy()
+    height, width = arr.shape
+    nodata = float(vf.nodata)
+    nod = ~np.isfinite(arr) if np.isnan(nodata) else (arr == nodata)
+    if max_search is None:
+        max_search = height * width
+
+    fdir = np.asarray(grid.flowdir(dem))
+    pit_cells = [tuple(rc) for rc in
+                 np.argwhere((fdir == PYSHEDS_PIT_CODE) & ~nod)]
+
+    def _on_border(r, col):
+        return r == 0 or col == 0 or r == height - 1 or col == width - 1
+
+    neighbours = ((-1, -1), (-1, 0), (-1, 1), (0, -1),
+                  (0, 1), (1, -1), (1, 0), (1, 1))
+    breached = 0
+    for (pit_r, pit_c) in pit_cells:
+        z0 = arr[pit_r, pit_c]
+        # Dijkstra minimising the highest barrier crossed to reach an
+        # outlet. An outlet is a valid cell below the pit (every genuine
+        # depression has an interior spill point) or the raster edge,
+        # where pysheds routes flow off the grid. Interior nodata is the
+        # catchment wall, not a drain: pysheds won't route flow into it,
+        # so the search treats it as impassable rather than carving
+        # through the catchment boundary.
+        best = {(pit_r, pit_c): z0}
+        parent = {}
+        frontier = [(z0, pit_r, pit_c)]
+        outlet = None
+        expanded = 0
+        while frontier and expanded < max_search:
+            cost, r, col = heapq.heappop(frontier)
+            if cost > best.get((r, col), np.inf):
+                continue
+            if (r, col) != (pit_r, pit_c) and (arr[r, col] < z0
+                                               or _on_border(r, col)):
+                outlet = (r, col)
+                break
+            expanded += 1
+            for d_r, d_c in neighbours:
+                n_r, n_c = r + d_r, col + d_c
+                if not (0 <= n_r < height and 0 <= n_c < width):
+                    continue
+                if nod[n_r, n_c]:      # catchment wall — impassable
+                    continue
+                nb_cost = max(cost, arr[n_r, n_c])
+                if nb_cost < best.get((n_r, n_c), np.inf):
+                    best[(n_r, n_c)] = nb_cost
+                    parent[(n_r, n_c)] = (r, col)
+                    heapq.heappush(frontier, (nb_cost, n_r, n_c))
+        if outlet is None:
+            logger.warning(
+                "breach_pits: no outlet found for pit at (%d, %d)",
+                pit_r, pit_c)
+            continue
+
+        # Reconstruct the pit -> outlet path and carve a strictly
+        # descending channel along it.
+        path = [outlet]
+        while path[-1] != (pit_r, pit_c):
+            path.append(parent[path[-1]])
+        path.reverse()
+        # Descend from the pit to the outlet; never above the pit level so
+        # the carved channel is monotonic (BREACH_EPSILON guarantees a
+        # strict drop even when the outlet is not lower, e.g. a raster
+        # edge).
+        z_out = min(arr[outlet], z0)
+        span = z0 - z_out
+        n = len(path)
+        for i, (r, col) in enumerate(path):
+            if nod[r, col]:
+                continue
+            frac = i / (n - 1) if n > 1 else 1.0
+            carve = z0 - span * frac - BREACH_EPSILON * i
+            if carve < arr[r, col]:
+                arr[r, col] = carve
+        breached += 1
+
+    logger.info(
+        "breach_pits: carved %d of %d residual pit(s)",
+        breached, len(pit_cells))
+    new_vf = ViewFinder(
+        affine=vf.affine, shape=arr.shape, nodata=vf.nodata, crs=vf.crs)
+    return Raster(arr.astype(dem.dtype), viewfinder=new_vf)
+
+
+def condition_dem(dem_path: str, breach: bool = True,
+                  max_breach_iters: int = 5):
     """
     Hydrologically condition a DEM: fill pits, fill depressions, and
     resolve flats.
@@ -557,6 +743,13 @@ def condition_dem(dem_path: str):
 
     Parameters:
     - dem_path: path to the DEM raster.
+    - breach: if True, follow the fill/resolve chain with least-cost
+      breaching of any residual pits (see breach_pits). Off by default;
+      fixing the NaN-nodata boundary already removes the great majority
+      of pits, and breaching only targets the few genuine flat-valley
+      pits that survive.
+    - max_breach_iters: cap on breach+resolve passes when breach is True
+      (carving one pit can expose a tied neighbour).
 
     Returns:
     - inflated_dem: pysheds Raster with pits, depressions, and flats
@@ -567,12 +760,30 @@ def condition_dem(dem_path: str):
 
     grid = _PyshedsGrid.from_raster(dem_path)
     dem = grid.read_raster(dem_path)
+    # Give pysheds a nodata value it can actually match, then route on a
+    # grid that shares that viewfinder (otherwise the boundary is treated
+    # as terrain and flow dead-ends against it).
+    dem = _dem_with_real_nodata(dem)
+    grid = _PyshedsGrid(viewfinder=dem.viewfinder)
     logger.info("Filling pits")
     fill_dem = grid.fill_pits(dem)
     logger.info("Filling depressions")
     flooded_dem = grid.fill_depressions(fill_dem)
     logger.info("Resolving flats")
     inflated_dem = grid.resolve_flats(flooded_dem)
+
+    if breach:
+        for i in range(max_breach_iters):
+            fdir = np.asarray(grid.flowdir(inflated_dem))
+            n_pits = int((fdir == PYSHEDS_PIT_CODE).sum())
+            if not n_pits:
+                break
+            logger.info(
+                "Breaching residual pits (pass %d, %d pit(s))",
+                i + 1, n_pits)
+            inflated_dem = breach_pits(grid, inflated_dem)
+            inflated_dem = grid.resolve_flats(inflated_dem)
+
     return inflated_dem, grid
 
 
@@ -598,6 +809,48 @@ def dem_flow_layers(
     fdir = grid.flowdir(inflated_dem, dirmap=dirmap, routing=routing)
     acc = grid.accumulation(fdir, dirmap=dirmap, routing=routing)
     return grid, fdir, acc
+
+
+def upslope_weighted_mean(grid, fdir, weight_raster):
+    """
+    Mean of a weight over each cell's upslope contributing area, excluding
+    cells whose weight is NaN.
+
+    pysheds flow accumulation propagates a NaN weight to every downstream
+    cell, so a single undefined weight nulls the whole downstream path —
+    worst on the largest streams, which have the most upslope cells and
+    thus the highest chance of a NaN somewhere above them. The classic
+    trigger is slope on the one-cell halo of valid DEM cells bordering
+    nodata (np.gradient needs all eight neighbours), or a factor raster
+    that doesn't cover the full DEM extent.
+
+    Accumulate the weight with NaN cells zeroed AND a companion count of
+    the cells that actually contributed, then divide. The result is the
+    exact mean of the valid upslope weights, with the dropped cells left
+    out of the denominator rather than diluting it. Cells with no valid
+    contributor come back NaN.
+
+    Parameters:
+    - grid: pysheds Grid used for the accumulation.
+    - fdir: D8 flow direction raster on that grid.
+    - weight_raster: pysheds Raster of per-cell weights (NaN where the
+      weight is undefined).
+
+    Returns:
+    - 2-D float32 array of the upslope mean weight at each cell.
+    """
+    from pysheds.view import Raster
+
+    vals = np.asarray(weight_raster, dtype='float64')
+    missing = np.isnan(vals)
+    vf = weight_raster.viewfinder
+    weighted = Raster(np.where(missing, 0.0, vals), viewfinder=vf)
+    counted = Raster(np.where(missing, 0.0, 1.0), viewfinder=vf)
+    acc_w = np.array(
+        grid.accumulation(fdir=fdir, weights=weighted), dtype=np.float32)
+    acc_n = np.array(
+        grid.accumulation(fdir=fdir, weights=counted), dtype=np.float32)
+    return acc_w / np.where(acc_n == 0, np.nan, acc_n)
 
 
 # ---------------------------------------------------------------------------

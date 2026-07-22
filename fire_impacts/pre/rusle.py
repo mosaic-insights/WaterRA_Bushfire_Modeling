@@ -10,7 +10,7 @@ folders.
 
 from fire_impacts.pre.util import (
     clip_and_reproject_raster, read_raster_masked, read_aligned_like,
-    write_raster, slope_from_dem, dem_flow_layers
+    write_raster, slope_from_dem, dem_flow_layers, upslope_weighted_mean
 )
 from fire_impacts import const as c
 from .project import FireImpactsProject
@@ -466,15 +466,21 @@ def compute_sediment_delivery_ratio(
     nan_mask = np.isnan(slope_ratio)
     Sth[nan_mask] = np.nan
 
-    # Accumulate thresholded slope over upslope contributing area
+    # Mean slope over each cell's upslope contributing area. Sth is NaN
+    # wherever slope is undefined: the one-cell halo of valid DEM cells
+    # bordering nodata (np.gradient needs all neighbours) and any interior
+    # DEM voids. A raw NaN weight poisons the pysheds accumulation for
+    # every downstream cell, so the biggest streams — largest upslope area,
+    # hence the highest chance of a NaN somewhere above them — come back
+    # NaN. upslope_weighted_mean zeroes those cells and divides by a count
+    # of the cells that actually contributed, dropping them from the
+    # average rather than nulling the whole downstream path.
+    #
+    # Sth.tif keeps the raw (NaN-carrying) slope for inspection.
     Sth_path = os.path.join(delivery_dir, 'Sth.tif')
     write_raster(Sth_path, Sth, out_meta)
     Sth_raster = grid.read_raster(Sth_path)
-    acc_Sth = grid.accumulation(fdir=fdir, weights=Sth_raster)
-    acc_Sth_arr = np.array(acc_Sth, dtype=np.float32)
-    # Avoid divide-by-zero when computing upslope averages
-    acc_no0 = np.where(acc_data == 0, np.nan, acc_data)
-    Av_Sth = acc_Sth_arr / acc_no0
+    Av_Sth = upslope_weighted_mean(grid, fdir, Sth_raster)
 
     logger.info('Upslope slope averages (Sth) computed')
 
@@ -493,10 +499,12 @@ def compute_sediment_delivery_ratio(
     Cth_path = os.path.join(
         delivery_dir, f'Cth{suffix_text}.tif')
     write_raster(Cth_path, Cth, out_meta)
+    # Same sanitised upslope mean as Sth: a C-factor raster that doesn't
+    # cover the full DEM extent would carry NaN and poison the streams the
+    # same way, so drop those cells from the average rather than the whole
+    # downstream path.
     Cth_raster = grid.read_raster(Cth_path)
-    acc_Cth = grid.accumulation(fdir=fdir, weights=Cth_raster)
-    acc_Cth_arr = np.array(acc_Cth, dtype=np.float32)
-    Av_Cth = acc_Cth_arr / acc_no0
+    Av_Cth = upslope_weighted_mean(grid, fdir, Cth_raster)
 
     logger.info('Upslope C-factor averages (Cth) computed')
 
