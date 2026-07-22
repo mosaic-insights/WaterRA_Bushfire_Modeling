@@ -1522,7 +1522,7 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         Notes:
         - Auto-detection rules (when data_file is not supplied):
-            - colour_col contains 'erosion' or 'delivered':
+            - colour_col contains 'rusle', 'erosion' or 'delivered':
               reads rusle_subcatchment_summary.csv from Results/
             - colour_col contains 'events', 'debris', 'mass', or
               'i12': reads DebrisFlowData_subcatchments.csv from
@@ -1552,7 +1552,9 @@ class FireImpactsProject(object):
         # also set data_type if not already provided:
         if data_file is None and table is None:
             col_lower = colour_col.lower()
-            if any(k in col_lower for k in ('erosion', 'delivered')):
+            # RUSLE recorder keys are 'RUSLE_*' / 'delivered_*' (e.g.
+            # 'RUSLE_max_total'); 'erosion' covers the legacy names.
+            if any(k in col_lower for k in ('rusle', 'erosion', 'delivered')):
                 if data_type is None:
                     data_type = const.RESULTS_FOLDER_NAME
                 data_file = const.RUSLE_SC_SUMMARY_NAME
@@ -1575,7 +1577,7 @@ class FireImpactsProject(object):
             data_type=data_type,
             data_file=data_file,
             catchment=catchment,
-            allow_basic=True,
+            allow_basic=False,
             table=table,
             ctx=ctx,
             )
@@ -1623,9 +1625,9 @@ class FireImpactsProject(object):
         # aggregation suffix on the column name (_sum or _mean) tells
         # us exactly what was computed, so we can label it precisely:
         col_lower = colour_col.lower()
-        if 'erosion' in col_lower or 'delivered' in col_lower:
+        if any(k in col_lower for k in ('rusle', 'erosion', 'delivered')):
             var_type = (
-                'Erosion' if 'erosion' in col_lower else 'Delivered'
+                'Delivered' if 'delivered' in col_lower else 'Erosion'
                 )
             year = (
                 'Year 1' if 'y1' in col_lower
@@ -1771,12 +1773,14 @@ class FireImpactsProject(object):
                     name=data_file,
                     ctx=ctx,
                     )
-            except FileNotFoundError:
+            except FileNotFoundError as exc:
                 if allow_basic:
-                    logger.info(
-                        'Plotting polygons was requested with no '
-                        'data to colour the shapes with. Proceeding '
-                        'with uniform colours.'
+                    logger.warning(
+                        'Plotting polygons was requested to colour by '
+                        "'%s' but the data table was not found (%s); "
+                        'proceeding with uniform colours. Pass '
+                        'allow_basic=False to raise instead.',
+                        colour_col, exc,
                         )
                     non_geo_data = None
                 else:

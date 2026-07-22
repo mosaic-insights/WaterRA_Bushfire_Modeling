@@ -64,12 +64,10 @@ def pipeline(tmp_path_factory):
     proj.add_catchment(_data(CATCHMENT_FILE), subcatchment_id_cols=['Id'])
     catchment = proj.catchments[0]
 
-    # Register the provided subcatchment coverage.
-    import geopandas as gpd
-    sc_dir = Path(proj.catchment_path(catchment, 'Subcatchments'))
-    sc_dir.mkdir(parents=True, exist_ok=True)
-    gpd.read_file(_data(SUBCATCHMENT_FILE)).to_file(
-        str(sc_dir / 'Subcatchments.shp'))
+    # Register the provided subcatchment coverage through the library so it
+    # lands where get_subcatchments looks (<catchment>_subcatchments.shp) and
+    # the RUSLE aggregation writes its subcatchment summary.
+    proj.add_subcatchments(catchment, _data(SUBCATCHMENT_FILE), id_cols=['Id'])
 
     prep = RunContext.solo_catchment(proj)
     ev = RunContext.solo_event(proj, event=EVENT)
@@ -171,6 +169,32 @@ def test_results_land_at_run_scope(pipeline):
     assert Path(run.run_path(c.RESULTS_FOLDER_NAME, ts)).exists()
     assert Path(run.run_path(c.RESULTS_BASELINE_FOLDER_NAME, ts)).exists()
     assert not Path(prep.catchment_path(c.RESULTS_FOLDER_NAME, ts)).exists()
+
+
+def test_rusle_subcatchment_plot_finds_run_scoped_summary(pipeline):
+    """Regression: plotting a 'RUSLE_*' subcatchment column must route to the
+    run-scoped rusle_subcatchment_summary. The recorder keys are 'RUSLE_*'
+    (not the legacy 'erosion_*'), which previously missed plot_subcatchments'
+    auto-detection and fell through to the soil/slope summary — a file that
+    doesn't exist, so the plot silently rendered blank. With allow_basic=False
+    this raises unless the column is routed correctly."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    proj, run, catchment = (
+        pipeline['proj'], pipeline['run'], pipeline['catchment'])
+
+    summary = run.run_path(
+        c.RESULTS_FOLDER_NAME, c.RUSLE_SC_SUMMARY_NAME + '.csv')
+    assert Path(summary).exists(), 'the run did not write the RUSLE summary'
+
+    # Colouring by a RUSLE column must find the run-scoped summary and not
+    # raise (allow_basic=False turns a missing table into an error).
+    proj.plot_subcatchments(
+        catchment=catchment, data_type=c.RESULTS_FOLDER_NAME,
+        colour_col='RUSLE_sum_total', ctx=run)
+    plt.close('all')
 
 
 # --- Behaviour -----------------------------------------------------------
