@@ -32,6 +32,19 @@ _UNSET = object()
 # Default directories required inside every catchment directory.
 PER_CATCHMENT_FOLDERS = const.PER_CATCHMENT_FOLDERS
 
+# Section folders whose data is written per run (event + ensemble) or per
+# event in the multi-event layout. The plotting/read helpers use these to
+# resolve a path at the right scope when a RunContext is supplied; without a
+# context they fall back to catchment scope (the pre-multi-event behaviour).
+RUN_SCOPED_SECTIONS = frozenset({
+    const.RESULTS_FOLDER_NAME,
+    const.RESULTS_BASELINE_FOLDER_NAME,
+    'DebrisFlow',
+    })
+EVENT_SCOPED_SECTIONS = frozenset({
+    const.FIRE_SEVERITY_FOLDER_NAME,
+    })
+
 STATS = const.STATS
 APPROX_KM_PER_DEGREE = const.APPROX_KM_PER_DEGREE
 
@@ -1144,10 +1157,46 @@ class FireImpactsProject(object):
     # --- Plotting -----------------------------------------------------------
 
     ###########################################################################
+    def scoped_path(self, catchment, section, *rest, ctx=None):
+        """
+        Resolve a data path, honouring the event/run scope of the
+        multi-event layout when a RunContext is supplied.
+
+        Parameters:
+        - catchment: Name of the catchment.
+        - section: The section subfolder (e.g. 'FireSeverity', 'Results',
+          'DebrisFlow'), or None to address the catchment root.
+        - rest: Further path components below the section.
+        - ctx: Optional RunContext. When given, run-scoped sections
+          (Results, Results_baseline, DebrisFlow) resolve under
+          Runs/<event>/<ensemble>/ and event-scoped sections (FireSeverity)
+          under Events/<event>/. Without a context (or for catchment-scoped
+          sections) the path resolves at catchment scope, preserving the
+          pre-multi-event behaviour.
+
+        Returns:
+        - Full path string at the appropriate scope.
+        """
+        if ctx is not None and section is not None:
+            if section in RUN_SCOPED_SECTIONS and ctx.ensemble is not None:
+                return self.run_path(
+                    catchment, section, *rest,
+                    event=ctx.event, ensemble=ctx.ensemble,
+                    )
+            if section in EVENT_SCOPED_SECTIONS and ctx.event is not None:
+                return self.event_path(
+                    catchment, section, *rest, event=ctx.event,
+                    )
+        if section is None:
+            return self.catchment_path(catchment)
+        return self.catchment_path(catchment, section, *rest)
+
+    ###########################################################################
     def plot_catchment_raster(
         self,
         *args,
         catchment=None,
+        ctx=None,
         existing_figure=None,
         axes_index=None,
         new_subplot: bool = True,
@@ -1157,9 +1206,15 @@ class FireImpactsProject(object):
 
         Parameters:
         - args: Path components identifying the raster within the
-          catchment folder.
+          catchment folder (e.g. 'FireSeverity', 'dNBR' or 'Results',
+          'RUSLE_sum_total').
         - catchment: Name of the catchment to plot. If None, one
-          subplot per catchment is created.
+          subplot per catchment is created. Ignored when ctx is given
+          (the context's catchment is used).
+        - ctx: Optional RunContext. Pass it to plot rasters that live at
+          event scope (FireSeverity) or run scope (Results,
+          Results_baseline, DebrisFlow) under the multi-event layout.
+          Without it, the raster is read from catchment scope as before.
         - existing_figure: matplotlib figure to plot onto. A new one
           is created if not provided.
         - axes_index: Index of the axes within the figure to draw on.
@@ -1168,6 +1223,10 @@ class FireImpactsProject(object):
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
+        # A context pins the catchment (and the event/run scope).
+        if ctx is not None and catchment is None:
+            catchment = ctx.catchment
+
         # Set up the figure, creating one if not provided. Track which
         # axes index to draw onto:
         if existing_figure is None:
@@ -1201,6 +1260,7 @@ class FireImpactsProject(object):
                 lambda c: self.plot_catchment_raster(
                     *args,
                     catchment=c,
+                    ctx=ctx,
                     existing_figure=figure,
                     axes_index=self.catchments.index(c),
                     new_subplot=False,
@@ -1220,8 +1280,9 @@ class FireImpactsProject(object):
         import os
         import numpy as np
 
-        # Resolve the raster path and look up visualisation params:
-        raster_path = self.catchment_path(catchment, *args)
+        # Resolve the raster path (at event/run scope when a context is
+        # given) and look up visualisation params:
+        raster_path = self.scoped_path(catchment, *args, ctx=ctx)
         if not raster_path.endswith('.tif'):
             raster_path += '.tif'
 
@@ -1343,6 +1404,7 @@ class FireImpactsProject(object):
         colour_col: str | None = None,
         table: pd.DataFrame | None = None,
         data_type: str = '',
+        ctx=None,
         existing_figure=None,
         existing_axes=None,
         ):
@@ -1357,6 +1419,10 @@ class FireImpactsProject(object):
           if provided.
         - data_type: Output type subfolder name, typically
           'DebrisFlow' (or '' for soil/slope summary).
+        - ctx: Optional RunContext. Pass it to colour headwaters by a
+          run-scoped table (e.g. DebrisFlow results) under the
+          multi-event layout; otherwise the table is read from
+          catchment scope.
         - existing_figure: matplotlib figure to plot onto.
         - existing_axes: matplotlib axes to plot onto.
         ----------------------------------------------------------------
@@ -1383,6 +1449,7 @@ class FireImpactsProject(object):
                 catchment=catchment,
                 allow_basic=False,
                 table=table,
+                ctx=ctx,
                 )
 
         if (non_geo_data is not None
@@ -1429,6 +1496,7 @@ class FireImpactsProject(object):
         data_type: str | None = None,
         data_file: str | None = None,
         table: pd.DataFrame | None = None,
+        ctx=None,
         existing_figure=None,
         existing_axes=None,
         ):
@@ -1446,6 +1514,9 @@ class FireImpactsProject(object):
           Auto-detected from colour_col if not given.
         - table: Optional pre-loaded data table. Skips file loading
           if provided.
+        - ctx: Optional RunContext. Pass it to colour subcatchments by a
+          run-scoped table (Results, DebrisFlow) under the multi-event
+          layout; otherwise the table is read from catchment scope.
         - existing_figure: matplotlib figure to plot onto.
         - existing_axes: matplotlib axes to plot onto.
         ----------------------------------------------------------------
@@ -1506,6 +1577,7 @@ class FireImpactsProject(object):
             catchment=catchment,
             allow_basic=True,
             table=table,
+            ctx=ctx,
             )
 
         # Resolve shorthand column names before looking up the data:
@@ -1632,6 +1704,7 @@ class FireImpactsProject(object):
         type: str | None,
         name: str,
         format: str = 'csv',
+        ctx=None,
         ) -> pd.DataFrame:
         """
         Read a file saved within a catchment's folder structure.
@@ -1642,16 +1715,16 @@ class FireImpactsProject(object):
           from the catchment root.
         - name: File name without extension.
         - format: File extension (default 'csv').
+        - ctx: Optional RunContext. When given, run/event-scoped sections
+          (Results, DebrisFlow, FireSeverity) are read from the
+          corresponding Runs/Events folder; otherwise catchment scope.
 
         Returns:
         - DataFrame read from the specified file.
         ----------------------------------------------------------------
         ----------------------------------------------------------------
         """
-        if type is None:
-            data_table_loc = self.catchment_path(catchment)
-        else:
-            data_table_loc = self.catchment_path(catchment, type)
+        data_table_loc = self.scoped_path(catchment, type, ctx=ctx)
         data_table_path = (
             os.path.join(data_table_loc, name) + '.' + format
             )
@@ -1667,6 +1740,7 @@ class FireImpactsProject(object):
         catchment: str,
         allow_basic: bool,
         table: pd.DataFrame | None = None,
+        ctx=None,
         ):
         """
         Load a non-spatial table with basic sanity checks for polygon
@@ -1695,6 +1769,7 @@ class FireImpactsProject(object):
                     catchment=catchment,
                     type=data_type,
                     name=data_file,
+                    ctx=ctx,
                     )
             except FileNotFoundError:
                 if allow_basic:

@@ -217,7 +217,7 @@ headwaters = topography.extract_headwaters(prep_ctx)
 proj.plot_headwaters(example_catchment_name)
 
 # See a snapshot of what they look like in tabular form:
-headwaters[example_catchment_name].head()
+headwaters.head()
 
 # %% [markdown]
 # ### Slope
@@ -274,12 +274,14 @@ severity.calculate_fire_severity(
 
 
 # %%
-# Visualise the dNBR raster:
-proj.plot_catchment_raster('FireSeverity', 'dNBR')
+# Visualise the dNBR raster. Fire-severity rasters live under the event
+# (Events/<event>/FireSeverity/), so pass the event context ctx so the
+# plotter reads from the right place.
+proj.plot_catchment_raster('FireSeverity', 'dNBR', ctx=ctx)
 
 # %%
 # Visualise the masked dNBR raster, which is the version of dNBR that is used in the modelling (it is masked to the headwater areas):
-proj.plot_catchment_raster('FireSeverity','masked_dNBR')
+proj.plot_catchment_raster('FireSeverity', 'masked_dNBR', ctx=ctx)
 
 # %% [markdown]
 # ## Soils
@@ -363,4 +365,4 @@ summary.head()
 # ...and also in a map, where we can see the same headwaters now coloured differently based on the severity of the fire in that area:
 
 # %%
-proj.plot_headwaters(example_catchment_name, colour_col='dNBR_mean', table=summary[example_catchment_name])
+proj.plot_headwaters(example_catchment_name, colour_col='dNBR_mean', table=summary)
