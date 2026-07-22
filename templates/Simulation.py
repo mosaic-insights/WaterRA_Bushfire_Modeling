@@ -26,6 +26,7 @@ logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(leveln
 from fire_impacts.sim import rusle, aggregate_rainfall_data, debris_flow
 from fire_impacts.stochastic.rainfall import get_rainfall_replicates
 from fire_impacts import FireImpactsProject
+from fire_impacts.context import RunContext
 
 import matplotlib.pyplot as plt
 
@@ -45,7 +46,15 @@ proj.catchments
 
 # %%
 catchment_name = proj.catchments[0]
-catchment_name
+
+# A simulation binds to one (catchment, event, ensemble) combination
+# via a RunContext. The event must match a directory produced by
+# PrepareData; the ensemble names this climate realisation. Outputs
+# land under Catchments/<c>/Runs/<event>/<ensemble>/.
+ctx = RunContext.solo_run(
+    proj, event='2019_fire', ensemble='historical',
+)
+ctx
 # %%
 subcatch_path = '..\\test_data\\Subcatchments_EgSmall_7899.shp'
 #proj.add_subcatchments(catchment_name, subcatch_path)
@@ -160,12 +169,8 @@ recorders = recorder_factory(proj, rain_seq.index[0], rain_seq.index[-1])
 # run_usle_simulation runs the whole rainfall period continuously, applying
 # the recovery windows internally (the fire-adjusted C/K/SDR layers switch at
 # each window boundary). Recovery is not an output dimension — results are a
-# single continuous set per catchment.
-results = rusle.run_usle_simulation(
-    proj,
-    rain_seq,
-    recorders=recorders,
-)
+# single continuous set for this run.
+results = rusle.run_usle_simulation(ctx, rain_seq, recorders=recorders)
 
 # %% [markdown]
 # ### Baseline (no-fire) simulation
@@ -186,8 +191,7 @@ results = rusle.run_usle_simulation(
 baseline_recorders = recorder_factory(
     proj, rain_seq.index[0], rain_seq.index[-1])
 baseline_results = rusle.run_usle_simulation(
-    proj,
-    rain_seq,
+    ctx, rain_seq,
     recorders=baseline_recorders,
     use_fire_adjusted=False,
 )
@@ -198,9 +202,7 @@ baseline_results = rusle.run_usle_simulation(
 # One easy, intuitive way to view the rsults is as a daily timeseries of total mass eroded each day. This is embedded within the `results` object created above
 
 # %%
-# results is keyed {catchment: recorder-results}.
-catchment_results = results[catchment_name]
-catchment_results['erosion_daily_time_series']
+results['erosion_daily_time_series']
 
 # %% [markdown]
 # You can also visualise the various outputs.
@@ -274,7 +276,7 @@ rain_intensity_seq
 # ### Run the simulation
 
 # %%
-df_results = debris_flow(proj,rain_intensity_seq)
+df_results = debris_flow(ctx, rain_intensity_seq)
 
 # %% [markdown]
 # ### Viewing debris flow simulation results

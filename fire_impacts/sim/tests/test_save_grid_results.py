@@ -18,12 +18,24 @@ TS = pd.Timestamp
 META = {'width': 3, 'height': 2}
 
 
+class FakeCtx:
+    """Minimal RunContext stand-in: _save_grid_results only reads project,
+    catchment and run_path off it."""
+
+    project = object()
+    catchment = 'Catchment'
+
+    def run_path(self, *args):
+        return '/'.join(str(a) for a in args)
+
+
 @pytest.fixture()
 def writes(monkeypatch):
     """Capture save_catchment_raster calls instead of writing rasters."""
     calls = []
 
-    def fake_save(project, catchment_name, file_name, section, data, meta):
+    def fake_save(project, catchment, file_name, section, data, meta,
+                  out_path=None):
         calls.append({'name': file_name, 'section': section, 'data': data})
 
     monkeypatch.setattr(rusle, 'save_catchment_raster', fake_save)
@@ -45,7 +57,7 @@ def da_3d(times, value=1.0):
 
 
 def save(results, writes=None):
-    return _save_grid_results(None, 'Catchment', 'Results', results, META)
+    return _save_grid_results(FakeCtx(), 'Results', results, META)
 
 
 class TestDispatch:

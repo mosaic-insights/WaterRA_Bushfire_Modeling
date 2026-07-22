@@ -22,12 +22,13 @@ import rioxarray as rxr
 import xarray as xr
 from shapely.geometry import box
 
+from ..context import RunContext  # noqa: F401  (used in type-only annotation)
+
 import rasterio as rio
 from rasterio.io import MemoryFile
 from rasterio.mask import mask as rio_mask
 
 # ---------- local ----------
-from .project import FireImpactsProject
 from .data_sources import DEA_LANDCOVER
 
 logger = logging.getLogger(__name__)
@@ -225,8 +226,7 @@ def _clip_raster_to_geom_in_memory(
 # ---------------------------------------------------------------------------
 
 def mask_dnbr(
-    project: FireImpactsProject,
-    catchment: Optional[str] = None,
+    ctx: 'RunContext',
     dea_level: str = DEFAULT_DEA_LEVEL,
     dea_start_year: Optional[int] = None,
     dea_lookback: int = 6,
@@ -242,9 +242,7 @@ def mask_dnbr(
     pixels to NaN.
 
     Parameters:
-    - project: FireImpactsProject instance defining catchment paths.
-    - catchment: catchment name to process; if None, processes all
-      catchments in the project.
+    - ctx: event-level RunContext identifying the catchment + event.
     - dea_level: DEA Land Cover level string (default 'level3').
     - dea_start_year: most recent year to try for the DEA mosaic;
       defaults to current year minus 1.
@@ -254,30 +252,19 @@ def mask_dnbr(
     - quiet: if True, suppress INFO-level log output.
 
     Returns:
-    - None.  Writes masked_dNBR.tif and DEA_LC_<year>.tif into each
-      catchment's FireSeverity folder.
+    - None.  Writes masked_dNBR.tif and DEA_LC_<year>.tif into the
+      event's FireSeverity folder under Events/<event>/FireSeverity/.
     """
     if quiet:
         logger.setLevel(logging.WARNING)
 
-    # If no catchment is specified, run for each catchment in the project.
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c: mask_dnbr(
-                project=project,
-                catchment=c,
-                dea_level=dea_level,
-                dea_start_year=dea_start_year,
-                dea_lookback=dea_lookback,
-                natural_code=natural_code,
-                quiet=quiet,
-            )
-        )
+    ctx.validate(require_event_dir=False)
+    catchment = ctx.catchment
 
     # -------------------------------
     # Locate inputs
     # -------------------------------
-    sev_folder = project.catchment_path(catchment, "FireSeverity")
+    sev_folder = ctx.event_path("FireSeverity")
     os.makedirs(sev_folder, exist_ok=True)
 
     dnbr_path = os.path.join(sev_folder, "dNBR.tif")

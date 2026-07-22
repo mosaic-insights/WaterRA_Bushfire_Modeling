@@ -35,6 +35,7 @@ logging.basicConfig(
 import matplotlib.pyplot as plt
 
 from fire_impacts import FireImpactsProject
+from fire_impacts.context import RunContext
 from fire_impacts.sim import (
     aggregate_rainfall_data,
     convert_rainfall_depth_to_intensity,
@@ -70,6 +71,15 @@ proj.catchments
 CATCHMENT = proj.catchments[0]
 CATCHMENT
 
+# A run binds to one (catchment, event, ensemble) combination via a
+# RunContext. The event must match a directory produced by PrepareData;
+# the ensemble names this climate realisation. CATCHMENT is still kept
+# as a separate variable for the plotting helpers.
+ctx = RunContext.solo_run(
+    proj, event='2019_fire', ensemble='historical',
+    catchment=CATCHMENT,
+)
+
 # %% [markdown]
 # ## Rainfall data
 #
@@ -90,9 +100,9 @@ CATCHMENT
 
 # %%
 # The simulation period spans the recovery windows recorded in the
-# run-context (fire end date -> end of the last window), so it isn't
-# hard-coded here.
-rain_data_start, rain_data_end = proj.get_simulation_period(CATCHMENT)
+# event definition (fire end date -> end of the last window), so it
+# isn't hard-coded here.
+rain_data_start, rain_data_end = ctx.simulation_period()
 
 N_REPLICATES = 10
 
@@ -101,8 +111,7 @@ N_REPLICATES = 10
 # year spanned).  Uncomment the climate kwargs to override the
 # backend-estimated values.
 replicates = get_rainfall_replicates(
-    proj,
-    catchment=CATCHMENT,
+    ctx,
     start=rain_data_start,
     end=rain_data_end,
     num_replicates=N_REPLICATES,
@@ -152,7 +161,7 @@ recorder_factory = default_rusle_recorders(
 # by run_usle_simulation, so the result is the standard
 # {replicate: {catchment: recorder-results}}.
 rusle_results = run_rusle_all_replicates(
-    proj,
+    ctx,
     rainfall_30min,
     n_workers=min(N_REPLICATES, 10),
     recorder_factory=recorder_factory,
@@ -169,7 +178,7 @@ rusle_results = run_rusle_all_replicates(
 
 # %%
 baseline_results = run_rusle_all_replicates(
-    proj,
+    ctx,
     rainfall_30min,
     n_workers=min(N_REPLICATES, 10),
     recorder_factory=recorder_factory,
@@ -252,7 +261,7 @@ plt.show()
 
 # %%
 debris_results = run_debris_flow_all_replicates(
-    proj,
+    ctx,
     rainfall_12min,
     n_workers=min(N_REPLICATES, 10),
 )
@@ -271,7 +280,7 @@ debris_mass_per_replicate = {
 
 # %%
 debris_post = postprocess_debris_flow(
-    proj, CATCHMENT, debris_mass_per_replicate, save=False,
+    ctx, debris_mass_per_replicate, save=False,
 )
 sc_debris_12min = debris_post['aggregated']
 
@@ -400,23 +409,20 @@ plt.show()
 # ## Save the ensemble run for downstream modelling
 #
 # The combined loads and the driving rainfall are the two inputs a
-# broader sediment-transport model needs.  `save_ensemble_run` writes
-# both (plus optional debris-flow raw outputs) into a library-managed
-# directory under the project::
+# broader sediment-transport model needs.  `save_ensemble_run` writes:
 #
-#     Catchments/<catchment>/Events/<event>/Ensemble/<ensemble>/
+# * rainfall to ``Catchments/<c>/Ensembles/<ensemble>/`` (climate-only,
+#   shareable across events), and
+# * everything else to ``Catchments/<c>/Runs/<event>/<ensemble>/``.
 #
-# `event` and `ensemble` both default to ``'default'``.  Use distinct
-# ensemble names to compare scenarios against the same fire event —
-# e.g. ``ensemble='current_climate'`` vs
-# ``ensemble='future_climate_2050'``.
+#
+# The same RunContext used for the simulation drives the save —
+# rainfall lands under Ensembles/<ensemble>/ (climate-only, shareable
+# across events) while run outputs land under Runs/<event>/<ensemble>/.
 
 # %%
-EVENT = 'default'
-ENSEMBLE = 'default'
-
 save_ensemble_run(
-    proj, CATCHMENT,
+    ctx,
     rainfall_ds=rainfall_ds,
     rusle_results=rusle_results,
     debris_results=debris_results,
@@ -425,8 +431,6 @@ save_ensemble_run(
         'YS':    combined_annual,
         'D':     combined_daily,
     },
-    event=EVENT,
-    ensemble=ENSEMBLE,
     include_rusle_grids=False,   # opt in when you need raw grids
     include_raw_debris=True,
     # extra_manifest={                       # add any custom metadata

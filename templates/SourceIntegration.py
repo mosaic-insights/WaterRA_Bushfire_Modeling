@@ -62,9 +62,11 @@ from pathlib import Path
 import pandas as pd
 
 from fire_impacts import FireImpactsProject
+from fire_impacts.context import RunContext
 from fire_impacts.sim import (
     list_events,
     list_ensembles,
+    list_runs,
     load_ensemble_combined,
     load_ensemble_rainfall,
 )
@@ -95,11 +97,21 @@ CATCHMENT
 list_events(proj, CATCHMENT)
 
 # %%
-EVENT = 'default'
-list_ensembles(proj, CATCHMENT, event=EVENT)
+# Ensembles are siblings of events (the same rainfall realisation can
+# drive multiple fires), so list_ensembles takes no event argument.
+list_ensembles(proj, CATCHMENT)
 
 # %%
-ENSEMBLE = 'default'
+# list_runs returns the (event, ensemble) tuples that have already
+# been executed and have outputs on disk.
+list_runs(proj, CATCHMENT)
+
+# %%
+# Pick one combination and build a run-level RunContext.
+ctx = RunContext.solo_run(
+    proj, event='2019_fire', ensemble='historical',
+    catchment=CATCHMENT,
+)
 
 # %% [markdown]
 # ## Load ensemble outputs
@@ -113,9 +125,7 @@ ENSEMBLE = 'default'
 # when generating the ensemble).
 
 # %%
-combined_daily = load_ensemble_combined(
-    proj, CATCHMENT, freq='D', event=EVENT, ensemble=ENSEMBLE,
-)
+combined_daily = load_ensemble_combined(ctx, freq='D')
 list(combined_daily)[:5], next(iter(combined_daily.values())).shape
 
 # %% [markdown]
@@ -124,9 +134,7 @@ list(combined_daily)[:5], next(iter(combined_daily.values())).shape
 # aggregate to daily totals in mm so it matches the daily loads.
 
 # %%
-rainfall_ds = load_ensemble_rainfall(
-    proj, CATCHMENT, event=EVENT, ensemble=ENSEMBLE,
-)
+rainfall_ds = load_ensemble_rainfall(ctx)
 rainfall_ds
 
 # %%
@@ -242,9 +250,7 @@ save_model(v, f'{CATCHMENT}_with_fire_inputs_rep{REPLICATE:02d}.rsproj')
 # scenario inputs.
 
 # %%
-source_inputs_dir = Path(proj.ensemble_path(
-    CATCHMENT, event=EVENT, ensemble=ENSEMBLE,
-)) / 'source_inputs'
+source_inputs_dir = Path(ctx.ensemble_path()) / 'source_inputs'
 source_inputs_dir.mkdir(parents=True, exist_ok=True)
 
 tss_csv = source_inputs_dir / 'fire_tss.csv'

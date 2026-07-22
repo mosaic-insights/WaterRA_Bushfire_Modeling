@@ -2,6 +2,7 @@ from .util import *
 import rasterio as rio
 from fire_impacts import const
 from fire_impacts.pre import topography
+from fire_impacts.context import RunContext
 
 def get_raster_array(fn):
   with rio.open(fn) as src:
@@ -19,12 +20,13 @@ def get_threshold_cells(fn):
 
 def test_headwater_delineation(get_project,get_file):
   proj = get_project()
+  ctx = RunContext.solo_catchment(proj)
 
-  topography.extract_catchment_dems(proj, get_file(DEM_FILE))
+  topography.extract_catchment_dems(ctx, get_file(DEM_FILE))
   fn = proj.catchment_path(CATCHMENT,'Topography','DEM.tif')
   assert Path(fn).exists(), 'DEM not extracted'
 
-  topography.extract_headwaters(proj, CATCHMENT)
+  topography.extract_headwaters(ctx)
   headwater_fn = proj.catchment_path(CATCHMENT,'Topography','Headwaters.tif')
   assert Path(headwater_fn).exists(), 'Headwaters not extracted'
 

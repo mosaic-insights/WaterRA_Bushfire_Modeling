@@ -11,6 +11,7 @@ import rasterio.mask
 import os
 import logging
 from .project import FireImpactsProject
+from ..context import RunContext
 from .util import (
     clip_and_reproject_raster,
     reproject_raster,
@@ -75,8 +76,7 @@ SOIL_DEPTHS = ["000_005", "005_015"]
 # ---------------------------------------------------------------------------
 
 def download_soil_data_wcs(
-    project: FireImpactsProject,
-    catchment: str = None,
+    ctx: RunContext,
     wcs_urls=None,
     resx=DEFAULT_RESOLUTION,
     resy=DEFAULT_RESOLUTION,
@@ -90,45 +90,34 @@ def download_soil_data_wcs(
     available; prefer download_soil_data_stac where possible.
 
     Parameters:
-    - project: FireImpactsProject instance defining catchment paths.
-    - catchment: catchment name to process; if None, processes all
-      catchments in the project.
+    - ctx: catchment-only RunContext.
     - wcs_urls: dict mapping layer names (SILT, CLAY, SAND,
       BULK_DENSITY) to WCS URLs; defaults to the ASRIS WCS server.
     - resx: x resolution for the coverage request.
     - resy: y resolution for the coverage request.
 
     Returns:
-    - None.  Writes GeoTIFFs to each catchment's Soils/<layer> folder.
+    - None.  Writes GeoTIFFs to the catchment's Soils/<layer> folder.
     """
-    if catchment is None:
-        project.for_each_catchment(
-            lambda c: download_soil_data_wcs(
-                project, c, wcs_urls, resx, resy
-            )
-        )
-        return
-
     if wcs_urls is None:
         wcs_urls = {
             key: Template(DEFAULT_WCS).substitute(LAYER=value)
             for key, value in LAYER_NAMES.items()
         }
 
+    catchment = ctx.catchment
     # Only download soil data for the top two depth intervals
     filter_layers = SOIL_DEPTHS
-    bbox = project.catchment_bounds(catchment, 10.0)
+    bbox = ctx.project.catchment_bounds(catchment, 10.0)
     bbox = [float(f) for f in list(bbox)]
-    crs = project.catchment_crs(catchment)
+    crs = ctx.project.catchment_crs(catchment)
     logger.info(
         "Processing catchment: %s with bounding box %s", catchment, bbox
     )
 
     # Iterate through each dataset type (SILT, CLAY, SAND, BULK DENSITY)
     for data_type, wcs_url in wcs_urls.items():
-        dataset_folder = project.catchment_path(
-            catchment, "Soils", data_type
-        )
+        dataset_folder = ctx.catchment_path("Soils", data_type)
 
         try:
             retrieve_grid_from_wcs_for_bounds(
@@ -150,37 +139,25 @@ def download_soil_data_wcs(
 # ---------------------------------------------------------------------------
 
 def extract_aridity_data(
-    project: FireImpactsProject,
+    ctx: RunContext,
     aridity_raster: str = None,
-    catchment=None,
 ):
     """
-    Extract aridity data for a catchment and save the clipped raster.
+    Extract aridity data for the context's catchment.
 
     Parameters:
-    - project: FireImpactsProject instance defining catchment paths.
+    - ctx: catchment-only RunContext.
     - aridity_raster: path or URL to the aridity raster; defaults to
       ARIDITY_GRID_COARSE.
-    - catchment: catchment name to process; if None, processes all
-      catchments in the project.
 
     Returns:
     - None.  Writes Aridity.tif to the catchment's Soils folder.
     """
-    if catchment is None:
-        project.for_each_catchment(
-            lambda c: extract_aridity_data(project, aridity_raster, c)
-        )
-        return
-
-    # Extract the catchment boundary from the project
-    shapefile = project.boundary_files[catchment]
+    shapefile = ctx.project.boundary_files[ctx.catchment]
 
     if aridity_raster is None:
         aridity_raster = ARIDITY_GRID_COARSE
-    output_path = project.catchment_path(
-        catchment, "Soils", "Aridity.tif"
-    )
+    output_path = ctx.catchment_path("Soils", "Aridity.tif")
 
     clip_and_reproject_raster(aridity_raster, shapefile, output_path)
 
@@ -322,8 +299,7 @@ def gdal_api_key(key):
 # ---------------------------------------------------------------------------
 
 def download_soil_data_stac(
-    project: FireImpactsProject,
-    catchment: str = None,
+    ctx: RunContext,
     api_key: str = None,
     base_stac_catalog=TERN_SLGA_STAC,
     version="v2",
@@ -341,9 +317,7 @@ def download_soil_data_stac(
     (obtain from https://account.tern.org.au/).
 
     Parameters:
-    - project: FireImpactsProject instance defining catchment paths.
-    - catchment: catchment name to process; if None, processes all
-      catchments in the project.
+    - ctx: catchment-only RunContext.
     - api_key: TERN API key (required).
     - base_stac_catalog: URI to the SLGA STAC root catalog.
     - version: STAC version string to use (default 'v2').
@@ -357,21 +331,10 @@ def download_soil_data_stac(
       low_speed_limit before GDAL aborts it (default 60).
 
     Returns:
-    - None.  Writes reprojected GeoTIFFs to each catchment's
+    - None.  Writes reprojected GeoTIFFs to the catchment's
       Soils/<variable> folder.
     """
-    if catchment is None:
-        project.for_each_catchment(
-            lambda c: download_soil_data_stac(
-                project, c, api_key, base_stac_catalog, version,
-                connect_timeout=connect_timeout,
-                request_timeout=request_timeout,
-                low_speed_limit=low_speed_limit,
-                low_speed_time=low_speed_time,
-            )
-        )
-        return
-
+    catchment = ctx.catchment
     if api_key is None:
         logger.error("API key is required for STAC access.")
         raise ValueError("API key is required for STAC access.")
@@ -396,11 +359,11 @@ def download_soil_data_stac(
     with gdal_api_key(api_key), rasterio.Env(**gdal_timeouts):
         for var, fn, url in grids:
             logger.info("Downloading %s", fn)
-            dest_dir = project.catchment_path(catchment, "Soils", var)
+            dest_dir = ctx.catchment_path("Soils", var)
             os.makedirs(dest_dir, exist_ok=True)
             dest_fn = os.path.join(dest_dir, fn + ".tif")
             clip_and_reproject_raster(
                 url,
-                project.boundary_files[catchment],
+                ctx.project.boundary_files[catchment],
                 dest_fn,
             )

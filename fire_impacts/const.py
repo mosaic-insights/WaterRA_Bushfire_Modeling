@@ -72,8 +72,8 @@ DEFAULT_RECOVERY_BREAKPOINTS = [0, 0.5, 1, 1.5, 2, 2.5, 3]
 DEFAULT_RECOVERY_TIMES = DEFAULT_RECOVERY_BREAKPOINTS[:-1]
 DEFAULT_RECOVERY_INTERVAL_YEARS = 0.5
 
-# Per-catchment (per-event, in the multi-event model) run-context file.
-RUN_CONTEXT_NAME = 'RunContext.json'
+# Per-event definition file, written at Events/<event>/event.json.
+EVENT_DEFINITION_NAME = 'event.json'
 
 
 def recovery_time_suffix(recovery_time: float) -> str:

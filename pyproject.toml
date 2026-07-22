@@ -31,17 +31,6 @@ Homepage = "https://github.com/mosaic-insights/WaterRA_Bushfire_Modeling"
 [project.optional-dependencies]
 test = ["pytest"]
 
-[tool.setuptools.packages.find]
-
-[tools.setuptools]
-include-package-data = true
-zip-safe = true
-packages = ["fire_impacts"]
-py_modules=['fire_impacts']
-
-[project.scripts]
-fire-impacts = "fire_impacts.cli:app"
-
 [tool.pytest.ini_options]
 testpaths = ["fire_impacts"]
 markers = [
@@ -52,3 +41,14 @@ markers = [
 # Network and Veneer tests can't run in CI or on Linux - opt in with
 # eg `pytest -m network` or `pytest -m 'network or not network'`.
 addopts = "-m 'not network and not veneer'"
+
+[tool.setuptools.packages.find]
+
+[tools.setuptools]
+include-package-data = true
+zip-safe = true
+packages = ["fire_impacts"]
+py_modules=['fire_impacts']
+
+[project.scripts]
+fire-impacts = "fire_impacts.cli:app"

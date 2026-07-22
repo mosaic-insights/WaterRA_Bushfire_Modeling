@@ -97,6 +97,7 @@ import os
 # %%
 from fire_impacts import FireImpactsProject
 from fire_impacts import const
+from fire_impacts.context import RunContext
 from fire_impacts.pre import project, topography, severity, soil, rusle
 
 # %% [markdown]
@@ -187,11 +188,16 @@ proj.catchments
 #
 
 # %%
-# If you have a specific DEM you want to use, point python to it. 
+# If you have a specific DEM you want to use, point python to it.
 #We have a DEM for the example catchment included in the test date for this package.
 optional_DEM_filename = '..\\test_data\\example_dem.tif'
+
+# Static catchment-level preprocessing (DEM, soil, headwaters) doesn't
+# depend on a fire event — use a catchment-only RunContext.
+prep_ctx = RunContext.solo_catchment(proj)
+
 # Get a DEM. To use your own DEM, replace None with the filename path:
-topography.extract_catchment_dems(proj,None)
+topography.extract_catchment_dems(prep_ctx, None)
 # Visualise the processed DEM:
 proj.plot_catchment_raster('Topography','DEM.tif')
 
@@ -201,7 +207,7 @@ proj.plot_catchment_raster('Topography','DEM.tif')
 
 # %%
 # Just call the extract_headwaters() method from the topography module:
-headwaters = topography.extract_headwaters(proj)
+headwaters = topography.extract_headwaters(prep_ctx)
 
 # %% [markdown]
 # Headwaters can be visualised straightaway as a map using `FireImpactsProject.plot_headwaters()`. You can also view a quick summary of the headwaters in table form using the built-in `.head()` method.
@@ -252,12 +258,16 @@ proj.plot_catchment_raster('Topography','Flow_accumulation')
 # %%
 fire_start_date = '2019-01-15'  # Set fire start date (the date that fire started)
 fire_end_date = '2019-03-07'    # Set fire end date (the date that fire ended)
+# Each fire is identified by an event name. Every fire-dependent
+# operation binds to a RunContext combining the catchment and event;
+# RunContext.solo_event resolves the catchment when there is exactly
+# one in the project.
+ctx = RunContext.solo_event(proj, event='2019_fire')
 
 # %%
 # This method may take a few minutes to download and process data.
 severity.calculate_fire_severity(
-    project=proj,
-    catchment=None,
+    ctx,
     fire_start_date=fire_start_date,
     fire_end_date=fire_end_date,
 )
@@ -292,12 +302,12 @@ proj.plot_catchment_raster('FireSeverity','masked_dNBR')
 # Tell python where your API key is:
 API_KEY = os.environ.get('TERN_API_KEY')
 # Download the relevant data from TERN:
-soil.download_soil_data_stac(proj, api_key=API_KEY)
+soil.download_soil_data_stac(prep_ctx, api_key=API_KEY)
 
 # Existing aridity raster location:
 ARIDITY=r'..\\test_data\\AridityPT_EgSmallCatchment_7899.tif'
 # Extract aridity data for each catchment:
-soil.extract_aridity_data(proj, aridity_raster=ARIDITY)
+soil.extract_aridity_data(prep_ctx, aridity_raster=ARIDITY)
 
 # %%
 # Visualise the processed aridity raster:
@@ -320,7 +330,7 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 # Recovery is specified as a single array of BREAKPOINTS in years after the
 # fire end date: n+1 breakpoints define n contiguous recovery windows, and
 # window i is modelled at recovery time b_i (the window start). The
-# breakpoints are stored in the project's run-context, so the Simulation
+# breakpoints are stored in the event's event.json, so the Simulation
 # notebook reads them back automatically — you don't re-specify them there.
 #
 # If omitted, the package default is used. Shown here for reference:
@@ -330,8 +340,7 @@ print("Default recovery breakpoints:", const.DEFAULT_RECOVERY_BREAKPOINTS)
 #   [0, 1, 2, 3]             -> yearly windows
 #   [0, 0.25, 0.5, 0.75, 1]  -> quarterly windows
 rusle.compute_adjusted_k_c(
-    proj,
-    catchment=example_catchment_name,
+    ctx,
     # recovery_breakpoints=[0, 1, 2, 3],
 )
 
@@ -342,13 +351,13 @@ rusle.compute_adjusted_k_c(
 # This may take a few minutes while aggregations are computed for each headwater.
 
 # %%
-summary = project.summary_stats(proj)
+summary = project.summary_stats(ctx)
 
 # %% [markdown]
 # The *summary stats* table shows these inputs for each headwater. You can view them in table form easily...
 
 # %%
-summary[example_catchment_name].head()
+summary.head()
 
 # %% [markdown]
 # ...and also in a map, where we can see the same headwaters now coloured differently based on the severity of the fire in that area:

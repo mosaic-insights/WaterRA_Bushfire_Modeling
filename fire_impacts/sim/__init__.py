@@ -24,4 +24,4 @@ from .results import save_ensemble_run, load_ensemble_manifest, \
                      load_ensemble_rainfall, load_ensemble_combined, \
                      load_ensemble_rusle_timeseries, \
                      load_ensemble_debris_raw, \
-                     list_events, list_ensembles
+                     list_events, list_ensembles, list_runs

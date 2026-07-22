@@ -110,7 +110,7 @@ def exceedance_probability(
     Parameters:
     - ensemble_results: Output of run_rusle_all_replicates() (dict keyed
       by replicate index) or a plain list of per-replicate result dicts.
-      Each replicate has the form {catchment_name: {result_key: grid}}.
+      Each replicate has the form {catchment: {result_key: grid}}.
     - result_key: Key identifying the gridded result to analyse, e.g.
       'RUSLE_sum_yearly'.
     - threshold: Value to test exceedance against, in the same units as
