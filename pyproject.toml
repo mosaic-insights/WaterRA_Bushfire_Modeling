@@ -29,7 +29,7 @@ classifiers = [
 Homepage = "https://github.com/mosaic-insights/WaterRA_Bushfire_Modeling"
 
 [project.optional-dependencies]
-test = []
+test = ["pytest"]
 
 [tool.pytest.ini_options]
 testpaths = ["fire_impacts"]

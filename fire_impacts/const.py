@@ -80,15 +80,27 @@ def recovery_time_suffix(recovery_time: float) -> str:
     """
     Convert a recovery time value into a safe filename suffix.
 
+    Whole numbers normalise to their integer form, so that a breakpoint
+    list of ints and one of floats name the same files. The layers are
+    written from the breakpoints passed to compute_adjusted_k_c but read
+    back from the persisted run-context, and without this a 0 vs 0.0
+    mismatch between the two looks like a missing layer.
+
+    Numpy scalars are accepted and normalise the same way.
+
     Examples
     --------
     0    -> t0
+    0.0  -> t0
     0.5  -> t0_5
     1    -> t1
     1.5  -> t1_5
     2.5  -> t2_5
     """
-    return f"t{str(recovery_time).replace('.', '_')}"
+    value = float(recovery_time)
+    if value.is_integer():
+        value = int(value)
+    return f"t{str(value).replace('.', '_')}"
 
 
 def recovery_windows(breakpoints):
