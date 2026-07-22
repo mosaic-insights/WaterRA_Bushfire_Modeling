@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 MANIFEST_NAME = 'manifest.json'
-RAINFALL_NAME = 'rainfall.nc'
+RAINFALL_NAME = c.RAINFALL_NAME
 REPLICATES_DIR = 'replicates'
 
 # ---------------------------------------------------------------------------

@@ -111,7 +111,7 @@ list_runs(proj, CATCHMENT)
 # %%
 # Pick one combination and build a run-level RunContext.
 ctx = RunContext.solo_run(
-    proj, event='2019_fire', ensemble='historical',
+    proj, event='2019_fire', ensemble='stochastic',
     catchment=CATCHMENT,
 )
 

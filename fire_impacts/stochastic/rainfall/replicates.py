@@ -14,6 +14,7 @@ from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.context import RunContext
 from fire_impacts.pre.util import read_raster
 import xarray as xr
+from ... import const as c
 from ...pre.data_sources import STOCHASTIC_RAINFALL_API
 
 logger = logging.getLogger(__name__)
@@ -213,6 +214,7 @@ def get_rainfall_replicates(
     mean_annual_rainfall=None,
     average_temperature=None,
     num_years=None,
+    regenerate: bool = False,
 ):
     """
     Get stochastic rainfall replicates for the context's catchment.
@@ -222,9 +224,18 @@ def get_rainfall_replicates(
     number of years so the API output aligns with the requested
     calendar window.
 
+    When the context names an ensemble, the generated rainfall is cached
+    at ``Ensembles/<ensemble>/rainfall.nc`` and reused on later calls, so
+    repeat simulations do not re-hit the (slow) pyraingen API and are
+    driven by identical rainfall. Pass ``regenerate=True`` to force a
+    fresh request and overwrite the cache. A cached dataset is reused only
+    when it covers the requested window and replicate count; otherwise it
+    is regenerated. Catchment-only or event-level contexts (no ensemble)
+    are never cached.
+
     Parameters:
-    - ctx: catchment-only RunContext (or any context — only
-      ctx.catchment is used; event/ensemble are ignored).
+    - ctx: a RunContext. ``ctx.catchment`` locates the catchment; when
+      ``ctx.ensemble`` is set it also keys the on-disk rainfall cache.
     - start: Start of the requested calendar window (str or
       pd.Timestamp).  When supplied with end, num_years is inferred.
     - end: End of the requested calendar window.  The result is sliced
@@ -239,6 +250,8 @@ def get_rainfall_replicates(
       Required when start/end are not both supplied.  When supplied
       alongside start+end it overrides the inferred length (must still
       be large enough to cover the requested span).
+    - regenerate: When True, ignore any cached rainfall and request a
+      fresh set from the API (overwriting the cache). Default False.
 
     Returns:
     - xarray.Dataset of rainfall replicates with the time axis shifted
@@ -254,6 +267,8 @@ def get_rainfall_replicates(
     - A one-year buffer is added to the API request to ensure the
       front edge of the requested window is not accidentally truncated
       after the shift-and-slice step.
+    - The cache stores the full shifted series (before the window slice)
+      so one ensemble's rainfall can serve any window it spans.
     ------------------------------------------------------------------------
     """
     catchment = ctx.catchment
@@ -263,6 +278,29 @@ def get_rainfall_replicates(
 
     start_ts = pd.Timestamp(start) if start is not None else None
     end_ts = pd.Timestamp(end) if end is not None else None
+
+    # Reuse cached rainfall for this ensemble when it covers the request.
+    cache_path = (
+        os.path.join(ctx.ensemble_path(), c.RAINFALL_NAME)
+        if ctx.ensemble is not None else None
+    )
+    if cache_path is not None and not regenerate and os.path.exists(cache_path):
+        # Read inside a context manager and load the result into memory so
+        # the file handle is released — otherwise a later regenerate can't
+        # overwrite the cache on Windows / NFS.
+        with xr.open_dataset(cache_path) as cached:
+            if _cache_covers(cached, start_ts, end_ts, num_replicates):
+                logger.info(
+                    "Reusing cached rainfall for ensemble '%s' from %s "
+                    "(pass regenerate=True to regenerate).",
+                    ctx.ensemble, cache_path,
+                )
+                return _restrict(
+                    cached, start_ts, end_ts, num_replicates).load()
+        logger.info(
+            "Cached rainfall for ensemble '%s' does not cover the requested "
+            "window or replicate count; regenerating.", ctx.ensemble,
+        )
 
     # Work out how many years of API data to request.  We add one year
     # of buffer because pyraingen labels its first interval at ~Dec 31
@@ -331,8 +369,47 @@ def get_rainfall_replicates(
             )
             rep = rep.assign_coords(time=new_index)
 
-    # Slice to the user's calendar window when both endpoints are given
-    if start_ts is not None and end_ts is not None:
-        rep = rep.sel(time=slice(start_ts, end_ts))
+    # Persist the full shifted series so repeat runs reuse identical
+    # rainfall without re-hitting the API. Cache before the window slice so
+    # one ensemble can serve any window it spans.
+    if cache_path is not None:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        rep.to_netcdf(cache_path)
+        logger.info(
+            "Saved stochastic rainfall for ensemble '%s' to %s "
+            "(reused on repeat runs unless regenerate=True).",
+            ctx.ensemble, cache_path,
+        )
 
-    return rep
+    # Slice to the user's calendar window when both endpoints are given
+    return _restrict(rep, start_ts, end_ts, num_replicates)
+
+
+def _cache_covers(cached, start_ts, end_ts, num_replicates):
+    """
+    Return True if a cached rainfall dataset can satisfy the request —
+    i.e. it holds at least num_replicates replicates and its time axis
+    spans the requested [start, end] window.
+    """
+    if 'replicate' in cached.sizes and cached.sizes['replicate'] < num_replicates:
+        return False
+    if start_ts is not None or end_ts is not None:
+        times = cached['time'].to_index()
+        if start_ts is not None and times.min() > start_ts:
+            return False
+        if end_ts is not None and times.max() < end_ts:
+            return False
+    return True
+
+
+def _restrict(ds, start_ts, end_ts, num_replicates):
+    """
+    Trim a rainfall dataset to the requested replicate count and calendar
+    window, so a reused (or freshly generated) dataset matches what the
+    caller asked for.
+    """
+    if 'replicate' in ds.sizes and ds.sizes['replicate'] > num_replicates:
+        ds = ds.isel(replicate=slice(0, num_replicates))
+    if start_ts is not None and end_ts is not None:
+        ds = ds.sel(time=slice(start_ts, end_ts))
+    return ds

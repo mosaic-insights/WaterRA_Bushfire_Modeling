@@ -52,7 +52,7 @@ catchment_name = proj.catchments[0]
 # PrepareData; the ensemble names this climate realisation. Outputs
 # land under Catchments/<c>/Runs/<event>/<ensemble>/.
 ctx = RunContext.solo_run(
-    proj, event='2019_fire', ensemble='historical',
+    proj, event='2019_fire', ensemble='stochastic',
 )
 ctx
 # %%
@@ -80,6 +80,9 @@ rain_data_start, rain_data_end = ctx.simulation_period()
 # optional — if omitted, the backend service estimates them from the
 # catchment's lat/lon.  Override them here when you have site-specific
 # climate statistics.
+# The generated rainfall is cached under Ensembles/<ensemble>/ and reused
+# on repeat runs — identical rainfall, no repeat API call. Pass
+# regenerate=True to force a fresh draw.
 replicates = get_rainfall_replicates(
     ctx,
     start=rain_data_start,

@@ -222,6 +222,11 @@ RUSLE_SC_SUMMARY_NAME = 'rusle_subcatchment_summary'
 DEBRIS_SC_SUMMARY_NAME = 'DebrisFlowData_subcatchments'
 # Rainfall:
 RAIN_DAILY_DEPTH_TIMESERIES_NAME = 'rain_depth_daily_time_series'
+# Persisted stochastic rainfall for an ensemble, written under
+# Ensembles/<ensemble>/. get_rainfall_replicates caches its output here and
+# reuses it on repeat runs; save_ensemble_run / load_ensemble_rainfall use
+# the same file.
+RAINFALL_NAME = 'rainfall.nc'
 
 # ------- Directory folder names: -------------------------------------
 TOPOGRAPHY_FOLDER_NAME = 'Topography'

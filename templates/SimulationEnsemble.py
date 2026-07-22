@@ -76,7 +76,7 @@ CATCHMENT
 # the ensemble names this climate realisation. CATCHMENT is still kept
 # as a separate variable for the plotting helpers.
 ctx = RunContext.solo_run(
-    proj, event='2019_fire', ensemble='historical',
+    proj, event='2019_fire', ensemble='stochastic',
     catchment=CATCHMENT,
 )
 
@@ -110,6 +110,9 @@ N_REPLICATES = 10
 # `num_years` is inferred from start/end (one API year per calendar
 # year spanned).  Uncomment the climate kwargs to override the
 # backend-estimated values.
+# The generated rainfall is cached under Ensembles/<ensemble>/ and reused
+# on repeat runs — identical rainfall, no repeat API call. Pass
+# regenerate=True to force a fresh draw.
 replicates = get_rainfall_replicates(
     ctx,
     start=rain_data_start,
