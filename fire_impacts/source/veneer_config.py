@@ -92,7 +92,11 @@ def _detect_parameter(
     ------------------------------------------------------------------------
     """
     try:
-        available_options = set(getter_func())
+        # Deduplicate but keep the order Source reported the options in:
+        # both the substring scan and the fallback below are documented
+        # as returning the *first* match, and a set would make that
+        # depend on string hashing (ie vary between runs).
+        available_options = list(dict.fromkeys(getter_func()))
         logger.debug(
             f"Available {param_name} in model: {available_options}"
         )

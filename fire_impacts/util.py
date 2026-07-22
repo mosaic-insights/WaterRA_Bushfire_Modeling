@@ -350,7 +350,7 @@ def fit_multi_figs(fig):
 
 ###############################################################################
 def make_axes_title(
-    catchment_name: str,
+    catchment: str,
     area_type: str,
     var_name: str,
     colour_column_name: str,
@@ -360,7 +360,7 @@ def make_axes_title(
     information.
 
     Parameters:
-    - catchment_name: Name of the catchment (underscores and EPSG
+    - catchment: Name of the catchment (underscores and EPSG
       codes are cleaned up automatically).
     - area_type: Spatial unit type, e.g. 'Headwaters'.
     - var_name: Variable or measure name to include in the title.
@@ -372,7 +372,7 @@ def make_axes_title(
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    catch_title = clean_chart_title(catchment_name)
+    catch_title = clean_chart_title(catchment)
     area_title = area_type.title().strip()
 
     # Extract the aggregation type from the column name if present.
@@ -826,9 +826,6 @@ def plot_spatial_vector(
             shapes, symbol_data, on=id_col_name
             )
         colour_col = data_col_name
-        geom_with_data.to_csv(
-            '\\zz_TempDump\\geom_with_data.csv', index=False
-            )
 
         # Build a normaliser, honouring any fixed vmin/vmax from
         # vis_params so callers can lock the colour range:

@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.19.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -35,6 +35,7 @@ logging.basicConfig(
 import matplotlib.pyplot as plt
 
 from fire_impacts import FireImpactsProject
+from fire_impacts.context import RunContext
 from fire_impacts.sim import (
     aggregate_rainfall_data,
     convert_rainfall_depth_to_intensity,
@@ -70,6 +71,15 @@ proj.catchments
 CATCHMENT = proj.catchments[0]
 CATCHMENT
 
+# A run binds to one (catchment, event, ensemble) combination via a
+# RunContext. The event must match a directory produced by PrepareData;
+# the ensemble names this climate realisation. CATCHMENT is still kept
+# as a separate variable for the plotting helpers.
+ctx = RunContext.solo_run(
+    proj, event='2019_fire', ensemble='stochastic',
+    catchment=CATCHMENT,
+)
+
 # %% [markdown]
 # ## Rainfall data
 #
@@ -89,10 +99,10 @@ CATCHMENT
 # The same set of replicates feeds both simulations.
 
 # %%
-START_YEAR = 2015
-YEARS = 2
-rain_data_start = f'{START_YEAR}-04-01'
-rain_data_end = f'{START_YEAR + YEARS}-03-31'
+# The simulation period spans the recovery windows recorded in the
+# event definition (fire end date -> end of the last window), so it
+# isn't hard-coded here.
+rain_data_start, rain_data_end = ctx.simulation_period()
 
 N_REPLICATES = 10
 
@@ -100,9 +110,11 @@ N_REPLICATES = 10
 # `num_years` is inferred from start/end (one API year per calendar
 # year spanned).  Uncomment the climate kwargs to override the
 # backend-estimated values.
+# The generated rainfall is cached under Ensembles/<ensemble>/ and reused
+# on repeat runs — identical rainfall, no repeat API call. Pass
+# regenerate=True to force a fresh draw.
 replicates = get_rainfall_replicates(
-    proj,
-    catchment=CATCHMENT,
+    ctx,
     start=rain_data_start,
     end=rain_data_end,
     num_replicates=N_REPLICATES,
@@ -132,20 +144,27 @@ rainfall_12min
 # %% [markdown]
 # ## Erosion — ensemble RUSLE simulation
 #
-# `default_rusle_recorders()` builds a factory that records:
+# `run_rusle_all_replicates` runs every replicate in parallel. Recovery
+# windows are applied internally by run_usle_simulation, so each replicate
+# yields a single continuous result. The grid recorders use
+# `grid_timesteps=('total',)` — one whole-period grid:
 #
-# * Yearly total erosion grids (`RUSLE_sum_yearly`)
-# * Yearly peak 30-min erosion grids (`RUSLE_max_yearly`)
+# * Total erosion grid over the window (`RUSLE_sum_total`)
+# * Peak 30-min erosion grid over the window (`RUSLE_max_total`)
 # * Daily subcatchment-level erosion timeseries (`erosion_daily_time_series`)
-#
-# `run_rusle_all_replicates` then runs every replicate in parallel.
 
 # %%
-recorder_factory = default_rusle_recorders(include_timeseries=True)
+recorder_factory = default_rusle_recorders(
+    include_timeseries=True,
+    grid_timesteps=('total',),
+)
 
 # %%
+# Run every replicate in parallel. Recovery windows are applied internally
+# by run_usle_simulation, so the result is the standard
+# {replicate: {catchment: recorder-results}}.
 rusle_results = run_rusle_all_replicates(
-    proj,
+    ctx,
     rainfall_30min,
     n_workers=min(N_REPLICATES, 10),
     recorder_factory=recorder_factory,
@@ -162,7 +181,7 @@ rusle_results = run_rusle_all_replicates(
 
 # %%
 baseline_results = run_rusle_all_replicates(
-    proj,
+    ctx,
     rainfall_30min,
     n_workers=min(N_REPLICATES, 10),
     recorder_factory=recorder_factory,
@@ -172,21 +191,20 @@ baseline_results = run_rusle_all_replicates(
 # %% [markdown]
 # ### Ensemble statistics (median / P90 / IQR)
 #
-# Publication-quality three-panel map of year-1 total erosion with a
-# shared colour scale clipped to the 99th percentile to avoid extreme
-# outliers dominating.
+# Publication-quality three-panel map of the selected recovery window's
+# total erosion, with a shared colour scale clipped to the 99th percentile
+# to avoid extreme outliers dominating.
 
 # %%
 CELL_AREA_HA = 30 * 30 / 10_000  # nominal 30 m cell
 plot_ensemble_statistics_panel(
     rusle_results,
-    'RUSLE_sum_yearly',
+    'RUSLE_sum_total',
     catchment=CATCHMENT,
-    time=0,
+    time=None,
     project=proj,
     cell_area_ha=CELL_AREA_HA,
     units='t / ha',
-    suptitle='Year 1 total erosion — ensemble statistics',
 )
 plt.show()
 
@@ -200,17 +218,15 @@ plt.show()
 THRESHOLD_T_HA = 0.5
 THRESHOLD_PER_CELL = THRESHOLD_T_HA * CELL_AREA_HA
 
-for t in range(YEARS):
-    prob = exceedance_probability(
-        rusle_results, 'RUSLE_sum_yearly', THRESHOLD_PER_CELL,
-        catchment=CATCHMENT, time=t,
-    )
-    ax = plot_exceedance(prob, project=proj, catchment=CATCHMENT)
-    ax.set_title(
-        f'P(Year {t+1} erosion > {THRESHOLD_T_HA} t/ha)  '
-        f'(n={N_REPLICATES} replicates)'
-    )
-    plt.show()
+prob = exceedance_probability(
+    rusle_results, 'RUSLE_sum_total', THRESHOLD_PER_CELL,
+    catchment=CATCHMENT, time=None,
+)
+ax = plot_exceedance(prob, project=proj, catchment=CATCHMENT)
+ax.set_title(
+    f'P(erosion > {THRESHOLD_T_HA} t/ha)  (n={N_REPLICATES} replicates)'
+)
+plt.show()
 
 # %% [markdown]
 # ### Catchment-lumped exceedance curve (AEP)
@@ -218,12 +234,11 @@ for t in range(YEARS):
 # %%
 plot_catchment_exceedance_curve(
     rusle_results,
-    'RUSLE_sum_yearly',
+    'RUSLE_sum_total',
     catchment=CATCHMENT,
-    time=0,
+    time=None,
     scale=1e-3,
     value_units='thousand tonnes',
-    title='Exceedance curve — Year 1 total catchment erosion',
 )
 plt.show()
 
@@ -249,7 +264,7 @@ plt.show()
 
 # %%
 debris_results = run_debris_flow_all_replicates(
-    proj,
+    ctx,
     rainfall_12min,
     n_workers=min(N_REPLICATES, 10),
 )
@@ -268,7 +283,7 @@ debris_mass_per_replicate = {
 
 # %%
 debris_post = postprocess_debris_flow(
-    proj, CATCHMENT, debris_mass_per_replicate, save=False,
+    ctx, debris_mass_per_replicate, save=False,
 )
 sc_debris_12min = debris_post['aggregated']
 
@@ -397,23 +412,20 @@ plt.show()
 # ## Save the ensemble run for downstream modelling
 #
 # The combined loads and the driving rainfall are the two inputs a
-# broader sediment-transport model needs.  `save_ensemble_run` writes
-# both (plus optional debris-flow raw outputs) into a library-managed
-# directory under the project::
+# broader sediment-transport model needs.  `save_ensemble_run` writes:
 #
-#     Catchments/<catchment>/Events/<event>/Ensemble/<ensemble>/
+# * rainfall to ``Catchments/<c>/Ensembles/<ensemble>/`` (climate-only,
+#   shareable across events), and
+# * everything else to ``Catchments/<c>/Runs/<event>/<ensemble>/``.
 #
-# `event` and `ensemble` both default to ``'default'``.  Use distinct
-# ensemble names to compare scenarios against the same fire event —
-# e.g. ``ensemble='current_climate'`` vs
-# ``ensemble='future_climate_2050'``.
+#
+# The same RunContext used for the simulation drives the save —
+# rainfall lands under Ensembles/<ensemble>/ (climate-only, shareable
+# across events) while run outputs land under Runs/<event>/<ensemble>/.
 
 # %%
-EVENT = 'default'
-ENSEMBLE = 'default'
-
 save_ensemble_run(
-    proj, CATCHMENT,
+    ctx,
     rainfall_ds=rainfall_ds,
     rusle_results=rusle_results,
     debris_results=debris_results,
@@ -422,8 +434,6 @@ save_ensemble_run(
         'YS':    combined_annual,
         'D':     combined_daily,
     },
-    event=EVENT,
-    ensemble=ENSEMBLE,
     include_rusle_grids=False,   # opt in when you need raw grids
     include_raw_debris=True,
     # extra_manifest={                       # add any custom metadata

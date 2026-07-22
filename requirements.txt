@@ -2,8 +2,12 @@ pytest
 pystac-client
 odc-stac
 dea-tools # requires pg_config to build from source!
-seaborn
-elevation
+
+# seaborn  # no longer needed?
+matplotlib_scalebar
+
+# elevation # no longer needed?
+
 pysheds
 dask[distributed]
 boto3

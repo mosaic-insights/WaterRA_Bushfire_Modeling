@@ -22,12 +22,13 @@ import rioxarray as rxr
 import xarray as xr
 from shapely.geometry import box
 
+from ..context import RunContext  # noqa: F401  (used in type-only annotation)
+
 import rasterio as rio
-from rasterio.io import MemoryFile
-from rasterio.mask import mask as rio_mask
+
+from .util import clip_raster_in_memory
 
 # ---------- local ----------
-from .project import FireImpactsProject
 from .data_sources import DEA_LANDCOVER
 
 logger = logging.getLogger(__name__)
@@ -164,60 +165,12 @@ def _clip_raster_to_geom_in_memory(
     """
     Clip a raster to a geometry and return the result as a DataArray.
 
-    Uses rasterio.mask to crop the raster, builds an in-memory GeoTIFF
-    so that rioxarray gets the correct CRS and transform, then returns
-    the result without writing anything to disk.
-
-    Parameters:
-    - raster_path: path or GDAL-readable URL to the source raster.
-    - geom_gdf: GeoDataFrame whose geometry defines the clip extent.
-    - fallback_nodata: nodata value to use if the source has none.
-
-    Returns:
-    - rioxarray DataArray clipped to geom_gdf (squeeze separately if
-      needed to remove the band dimension).
+    Thin wrapper around pre.util.clip_raster_in_memory that supplies the
+    DEA Land Cover fallback nodata value.
     """
-    with rio.open(raster_path) as src:
-        # Reproject the clipping geometry to the raster CRS
-        geom_in = geom_gdf.to_crs(src.crs)
-
-        geoms = [
-            g for g in geom_in.geometry
-            if g is not None and not g.is_empty
-        ]
-        if not geoms:
-            raise RuntimeError("No valid geometry to clip against.")
-
-        nd = src.nodata if src.nodata is not None else fallback_nodata
-
-        img, tr = rio_mask(
-            src,
-            geoms,
-            crop=True,
-            nodata=nd,
-            filled=True,
-        )
-
-        # Build an in-memory GeoTIFF so rioxarray can open it with a
-        # valid CRS and transform (rioxarray needs an open rasterio src).
-        meta = src.meta.copy()
-        meta.update(
-            {
-                "height": img.shape[1],
-                "width": img.shape[2],
-                "transform": tr,
-                "nodata": nd,
-            }
-        )
-
-        with MemoryFile() as memfile:
-            with memfile.open(**meta) as dst:
-                dst.write(img)
-            # Re-open with rioxarray from the in-memory bytes
-            with memfile.open() as memsrc:
-                da = rxr.open_rasterio(memsrc, masked=True)
-
-    return da
+    return clip_raster_in_memory(
+        raster_path, geom_gdf, fallback_nodata=fallback_nodata,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -225,8 +178,7 @@ def _clip_raster_to_geom_in_memory(
 # ---------------------------------------------------------------------------
 
 def mask_dnbr(
-    project: FireImpactsProject,
-    catchment: Optional[str] = None,
+    ctx: 'RunContext',
     dea_level: str = DEFAULT_DEA_LEVEL,
     dea_start_year: Optional[int] = None,
     dea_lookback: int = 6,
@@ -242,9 +194,7 @@ def mask_dnbr(
     pixels to NaN.
 
     Parameters:
-    - project: FireImpactsProject instance defining catchment paths.
-    - catchment: catchment name to process; if None, processes all
-      catchments in the project.
+    - ctx: event-level RunContext identifying the catchment + event.
     - dea_level: DEA Land Cover level string (default 'level3').
     - dea_start_year: most recent year to try for the DEA mosaic;
       defaults to current year minus 1.
@@ -254,30 +204,19 @@ def mask_dnbr(
     - quiet: if True, suppress INFO-level log output.
 
     Returns:
-    - None.  Writes masked_dNBR.tif and DEA_LC_<year>.tif into each
-      catchment's FireSeverity folder.
+    - None.  Writes masked_dNBR.tif and DEA_LC_<year>.tif into the
+      event's FireSeverity folder under Events/<event>/FireSeverity/.
     """
     if quiet:
         logger.setLevel(logging.WARNING)
 
-    # If no catchment is specified, run for each catchment in the project.
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c: mask_dnbr(
-                project=project,
-                catchment=c,
-                dea_level=dea_level,
-                dea_start_year=dea_start_year,
-                dea_lookback=dea_lookback,
-                natural_code=natural_code,
-                quiet=quiet,
-            )
-        )
+    ctx.validate(require_event_dir=False)
+    catchment = ctx.catchment
 
     # -------------------------------
     # Locate inputs
     # -------------------------------
-    sev_folder = project.catchment_path(catchment, "FireSeverity")
+    sev_folder = ctx.event_path("FireSeverity")
     os.makedirs(sev_folder, exist_ok=True)
 
     dnbr_path = os.path.join(sev_folder, "dNBR.tif")

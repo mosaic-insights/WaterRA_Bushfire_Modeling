@@ -41,6 +41,7 @@ from rasterio.warp import reproject, Resampling
 import os
 import logging
 import time
+import warnings
 from fire_impacts import const as c
 from fire_impacts.const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS
 from fire_impacts.pre.util import read_aligned, read_raster
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 
 from fire_impacts.pre import FireImpactsProject
 from fire_impacts.pre.project import save_catchment_raster
+from fire_impacts.context import RunContext
 
 DNBR_SEVERITY_THRESHOLD = 400
 EMPIRICAL_COEFFICIENT = 0.082
@@ -59,8 +61,7 @@ LOG_INTERVAL_SECONDS = 15.0
 # ---------------------------------------------------------------------------
 
 def compute_klscp_layer(
-    proj: FireImpactsProject,
-    catchment: str,
+    ctx: RunContext,
     support_practice_factor: float = 1.0,
     use_fire_adjusted: bool = True,
     recovery_time: float = None,
@@ -73,11 +74,15 @@ def compute_klscp_layer(
     fire-impacted result.
 
     Parameters:
-    - proj: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to process.
+    - ctx: event-level (or run-level) RunContext.
     - support_practice_factor: RUSLE P factor (support practice).
       Default is 1.0 (no conservation practice applied).
-    - use_fire_adjusted: If True, use the fire-adjusted C and K rasters.
+    - use_fire_adjusted: If True, use the fire-adjusted C and K rasters
+      from Events/<event>/Erodibility/; otherwise the base catchment-
+      level rasters are used.
+    - recovery_time: Years since the fire for the recovery window being
+      modelled; selects the C/K_factor_adjusted_<suffix>.tif pair.
+      Required when use_fire_adjusted is True.
 
     Returns:
     - Tuple of (klscp_array, metadata_dict) where klscp_array is a
@@ -89,18 +94,16 @@ def compute_klscp_layer(
             raise ValueError(
                 "recovery_time must be provided when use_fire_adjusted=True."
             )
+        # The fire-adjusted layers are per-event and per-recovery-time.
         suffix = c.recovery_time_suffix(recovery_time)
-        c_name = f'C_factor_adjusted_{suffix}.tif'
-        k_name = f'K_factor_adjusted_{suffix}.tif'
+        c_factor_path = ctx.event_path(
+            'Erodibility', f'C_factor_adjusted_{suffix}.tif')
+        k_factor_path = ctx.event_path(
+            'Erodibility', f'K_factor_adjusted_{suffix}.tif')
     else:
-        c_name = 'C_factor.tif'
-        k_name = 'K_factor.tif'
-
-    c_factor_path = proj.catchment_path(catchment, 'Erodibility', c_name)
-    k_factor_path = proj.catchment_path(catchment, 'Erodibility', k_name)
-    ls_factor_path = proj.catchment_path(
-        catchment, 'Erodibility', 'LS_factor.tif'
-    )
+        c_factor_path = ctx.catchment_path('Erodibility', 'C_factor.tif')
+        k_factor_path = ctx.catchment_path('Erodibility', 'K_factor.tif')
+    ls_factor_path = ctx.catchment_path('Erodibility', 'LS_factor.tif')
 
     # LS is always at DEM resolution. Align C and K to it — the
     # unadjusted rasters are stored at their native (coarse) source
@@ -125,8 +128,7 @@ def compute_klscp_layer(
 
 
 def _rusle_parameter_grids(
-    project: FireImpactsProject,
-    catchment: str,
+    ctx: RunContext,
     use_fire_adjusted: bool = True,
     recovery_time: float = None,
 ):
@@ -135,9 +137,10 @@ def _rusle_parameter_grids(
     catchment, ready for use in RUSLE calculations.
 
     Parameters:
-    - project: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to get the grids for.
+    - ctx: event-level (or run-level) RunContext.
     - use_fire_adjusted: If True, use fire-adjusted C and K factors.
+    - recovery_time: Years since the fire for the recovery window being
+      modelled. Required when use_fire_adjusted is True.
 
     Returns:
     - Tuple of (klscp, sdr, dnbr, cell_area_ha, transform) where all
@@ -145,44 +148,39 @@ def _rusle_parameter_grids(
       area in hectares, and transform is the rasterio Affine transform
       shared by all three arrays.
     """
-    cell_area_m2 = project.cell_area(catchment)
+    cell_area_m2 = ctx.project.cell_area(ctx.catchment)
     cell_area_ha = cell_area_m2 * M2_TO_HA  # Convert to hectares
 
     # Compute KLSCP layer in memory
     klscp, klscp_meta = compute_klscp_layer(
-        project, catchment, use_fire_adjusted=use_fire_adjusted, recovery_time=recovery_time,
+        ctx,
+        use_fire_adjusted=use_fire_adjusted,
+        recovery_time=recovery_time,
     )
 
     transform = klscp_meta['transform']
     crs = klscp_meta['crs']
 
-    # Get the Sediment Delivery Ratio (SDR) raster, which is generated
-    # ultimately by the calculate_lumped_rusle() function in this module
+    # The per-recovery SDRs are per-event; the baseline SDR is derived
+    # from the base C factor and lives at catchment scope.
     if use_fire_adjusted:
         if recovery_time is None:
             raise ValueError(
                 "recovery_time must be provided when reading T-specific SDR."
             )
         suffix = c.recovery_time_suffix(recovery_time)
-        sdr_name = f'SDR_{suffix}.tif'
+        sdr_path = ctx.event_path('Delivery', f'SDR_{suffix}.tif')
     else:
-        sdr_name = 'SDR_baseline.tif'
+        sdr_path = ctx.catchment_path('Delivery', 'SDR_baseline.tif')
 
-    sdr, _ = read_raster(
-        project.catchment_path(catchment, 'Delivery', sdr_name)
-    )
+    sdr, _ = read_raster(sdr_path)
 
     # Get the delta Normalised Burn Ratio (dNBR) raster generated by
     # severity.calculate_fire_severity(). Use read_aligned to ensure it
     # is in the same CRS and at the same resolution as the RUSLE layers.
-    # Do we need to do this? Why don't we do it for SDR too?
     dnbr = read_aligned(
-        project.catchment_path(
-            catchment, 'FireSeverity', 'masked_dNBR.tif'
-        ),
-        transform,
-        crs,
-        klscp.shape,
+        ctx.event_path('FireSeverity', 'masked_dNBR.tif'),
+        transform, crs, klscp.shape,
     )
     return klscp, sdr, dnbr, cell_area_ha, transform
 
@@ -192,9 +190,8 @@ def _rusle_parameter_grids(
 # ---------------------------------------------------------------------------
 
 def lumped_daily_rusle(
-    project: FireImpactsProject,
+    ctx: RunContext,
     rainfall,
-    catchment=None,
     recovery_time: float = None,
 ):
     """
@@ -202,19 +199,16 @@ def lumped_daily_rusle(
     rainfall and return a per-sub-catchment daily summary DataFrame.
 
     Parameters:
-    - project: FireImpactsProject instance for the current project.
+    - ctx: event-level RunContext.
     - rainfall: Series-like with 30-minute rainfall depth values in mm.
-    - catchment: Name of the catchment to process. If None, all
-      catchments in the project are processed.
+    - recovery_time: Years since the fire for the recovery window being
+      modelled; selects the fire-adjusted layers to read.
 
     Returns:
     - DataFrame summarising RUSLE and sediment delivery results, one
       row per sub-catchment per day.
     """
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c: lumped_daily_rusle(project, rainfall, c)
-        )
+    ctx.validate()
 
     if 'units' not in rainfall.attrs:
         logger.warning(
@@ -231,9 +225,9 @@ def lumped_daily_rusle(
             % rainfall.attrs['units']
         )
     RUSLE_df = calculate_lumped_rusle(
-        project.get_subcatchments(catchment),
+        ctx.project.get_subcatchments(ctx.catchment),
         rainfall,
-        *_rusle_parameter_grids(project, catchment, recovery_time=recovery_time,),
+        *_rusle_parameter_grids(ctx, recovery_time=recovery_time),
     )
 
     logger.info('Done')
@@ -244,71 +238,8 @@ def lumped_daily_rusle(
 # Recorder closures
 # ---------------------------------------------------------------------------
 
-def record_summary_grid(
-    variable,
-    fn='sum',
-    start_time=None,
-    end_time=None,
-):
-    """
-    Build a RUSLE recorder that summarises a grid variable over time.
-
-    Parameters:
-    - variable: Name of the variable to summarise (key in the timestep
-      data dict).
-    - fn: Summary function to apply: 'sum', 'mean', or 'max'.
-      Default is 'sum'.
-    - start_time: Optional start of the summary window. Timesteps
-      before this are ignored.
-    - end_time: Optional end of the summary window. Timesteps after
-      this are ignored.
-
-    Returns:
-    - A recorder closure compatible with run_usle_simulation, with
-      .reset() and .finalize() methods attached.
-    """
-    result = None
-    count = 0
-
-    def grid_recorder(timestep, **kwargs):
-        nonlocal result, count
-        count += 1
-        if start_time is not None and timestep < start_time:
-            return result
-        if end_time is not None and timestep > end_time:
-            return result
-
-        data = kwargs[variable]
-        if result is None:
-            result = data
-        elif fn == 'max':
-            result = np.maximum(result, data)
-        else:  # sum or mean
-            result += data
-        if fn == 'mean':
-            return result / count
-
-        return result
-
-    def reset():
-        nonlocal result, count
-        result = None
-        count = 0
-
-    def finalize():
-        nonlocal result, count
-        if fn == 'mean':
-            return result / count
-        return result
-
-    grid_recorder.reset = reset
-    grid_recorder.finalize = finalize
-
-    return grid_recorder
-
-
 def record_subcatchment_timeseries(
-    proj: FireImpactsProject,
+    ctx: RunContext,
     variable_name: str,
     fn="sum",
     label_field=None,
@@ -319,7 +250,8 @@ def record_subcatchment_timeseries(
     subcatchments and accumulates a spatial time series.
 
     Parameters:
-    - proj: FireImpactsProject instance for the current project.
+    - ctx: RunContext identifying the catchment whose subcatchments
+      are aggregated.
     - variable_name: Name of the raster variable to summarise (key in
       the timestep data dict).
     - fn: Spatial aggregation function: 'sum', 'mean', or 'max'.
@@ -382,12 +314,14 @@ def record_subcatchment_timeseries(
         # subcatchments have been registered.
         if zones is None:
             try:
-                boundaries_v = proj.get_subcatchments(catchment)
+                boundaries_v = ctx.project.get_subcatchments(ctx.catchment)
             except FileNotFoundError:
-                boundaries_v = proj.catchment_boundary(catchment)
+                boundaries_v = ctx.project.catchment_boundary(ctx.catchment)
             resolved_label = label_field
             if resolved_label is None:
-                resolved_label = proj.subcatchment_label_field(catchment)
+                resolved_label = ctx.project.subcatchment_label_field(
+                    ctx.catchment,
+                )
             # Rasterise each subcatchment polygon separately to produce
             # one binary mask per zone
             zones = [
@@ -410,7 +344,7 @@ def record_subcatchment_timeseries(
                     "FireImpactsProject.add_subcatchments(..., "
                     "label_field='%s') to rewrite the shapefile with "
                     "the label column retained.",
-                    resolved_label, catchment,
+                    resolved_label, ctx.catchment,
                     list(boundaries_v.columns), resolved_label,
                 )
                 zone_names = boundaries_v.index.values
@@ -520,19 +454,23 @@ def record_grid_transform():
 # ---------------------------------------------------------------------------
 
 def aggregate_rusle_to_subcatchments(
-    project: FireImpactsProject,
-    catchment: str,
+    ctx: RunContext,
     results_section: str = c.RESULTS_FOLDER_NAME,
+    raster_names=None,
 ) -> 'pd.DataFrame | None':
     """
     Compute zonal statistics for each saved RUSLE output raster and
     write a per-subcatchment summary CSV to the Results folder.
 
     Parameters:
-    - project: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to process.
-    - results_section: Project sub-folder where output rasters are
-      stored. Defaults to the standard results folder name.
+    - ctx: run-level RunContext (event + ensemble both required).
+      Rasters are read from
+      Runs/<event>/<ensemble>/<results_section>/.
+    - results_section: Sub-folder name within the run directory where
+      output rasters are stored. Defaults to the standard results
+      folder name.
+    - raster_names: Base names of the rasters to aggregate. When None,
+      the standard RUSLE output rasters are used.
 
     Returns:
     - DataFrame with one row per subcatchment containing aggregated
@@ -553,30 +491,34 @@ def aggregate_rusle_to_subcatchments(
     """
     # Skip gracefully if subcatchments have not been set up yet
     try:
-        subcatch_gdf = project.get_subcatchments(catchment)
+        subcatch_gdf = ctx.project.get_subcatchments(ctx.catchment)
     except FileNotFoundError:
         logger.info(
             'No subcatchments defined for %s — skipping RUSLE '
             'subcatchment aggregation.',
-            catchment,
+            ctx.catchment,
         )
         return None
 
-    sc_id_col = project.subcatchment_id
+    sc_id_col = ctx.project.subcatchment_id
     # Start the summary table with just the subcatchment ID
     summary = subcatch_gdf[[sc_id_col]].copy().reset_index(drop=True)
 
-    for raster_name in c.RUSLE_OUTPUT_RASTER_NAMES:
-        raster_path = project.catchment_path(
-            catchment,
-            results_section,
-            f'{raster_name}.tif',
-        )
+    names = (
+        raster_names if raster_names is not None
+        else c.RUSLE_OUTPUT_RASTER_NAMES
+    )
+    for raster_name in names:
+        raster_path = ctx.run_path(results_section, f'{raster_name}.tif')
         if not os.path.exists(raster_path):
             continue
 
-        # Choose aggregation stat based on raster type (see Notes)
-        stat = 'mean' if 'peak' in raster_name else 'sum'
+        # Choose aggregation stat based on raster type (see Notes): peak /
+        # max grids average across cells, totals sum.
+        stat = (
+            'mean' if ('peak' in raster_name or 'max' in raster_name)
+            else 'sum'
+        )
 
         zstats = get_zonal_stats(
             subcatch_gdf, raster_path, raster_name, stats=[stat]
@@ -585,10 +527,8 @@ def aggregate_rusle_to_subcatchments(
         col_name = f'{raster_name}_{stat}'
         summary[col_name] = [s[stat] for s in zstats]
 
-    out_path = project.catchment_path(
-        catchment,
-        results_section,
-        c.RUSLE_SC_SUMMARY_NAME + '.csv',
+    out_path = ctx.run_path(
+        results_section, c.RUSLE_SC_SUMMARY_NAME + '.csv',
     )
     summary.to_csv(out_path, index=False)
     logger.info('Saved RUSLE subcatchment summary to %s', out_path)
@@ -599,72 +539,153 @@ def aggregate_rusle_to_subcatchments(
 # ---------------------------------------------------------------------------
 # Simulation runners
 # ---------------------------------------------------------------------------
-def _split_rainfall_by_recovery_time(
-    rainfall,
-    fire_end_date,
-    recovery_times,
-    recovery_interval_years,
-):
-    if fire_end_date is None:
-        raise ValueError(
-            "fire_end_date must be provided when running multiple "
-            "recovery intervals."
-        )
+# A 3-D grid with more time slices than this is not written to disk (it
+# would be one raster per slice) — kept in memory only.
+_MAX_GRID_SLICES_TO_DISK = 500
 
-    fire_end_date = pd.Timestamp(fire_end_date)
-    rainfall_index = rainfall.index
 
-    chunks = {}
+def _save_grid_results(ctx: RunContext, section, results, template_meta):
+    """
+    Write grid-type recorder results to the run's results folder as
+    GeoTIFFs and return the saved base names.
 
-    for recovery_time in recovery_times:
-        start = fire_end_date + pd.DateOffset(
-            days=int(recovery_time * 365.25)
-        )
-        end = fire_end_date + pd.DateOffset(
-            days=int(
-                (recovery_time + recovery_interval_years) * 365.25
-            )
-        )
-
-        chunk = rainfall[
-            (rainfall_index >= start)
-            & (rainfall_index < end)
-        ]
-
-        if chunk.empty:
-            logger.warning(
-                "No rainfall data found for recovery time T=%s "
-                "between %s and %s",
-                recovery_time, start, end,
-            )
+    Handles both the low-level 2-D numpy grids (e.g. 'erosion_total') and
+    the factory's xarray.DataArray grids: a 2-D array saves as one raster
+    keyed by its recorder name; a 3-D (time, …) array saves one raster per
+    time slice, suffixed with the period label (e.g. 'RUSLE_sum_yearly_20190101').
+    Non-grid results (timeseries DataFrames, the transform, 'params') are
+    skipped.
+    """
+    saved = []
+    for key, data in results.items():
+        if key == 'params' or data is None:
             continue
 
-        chunks[recovery_time] = chunk
+        # xarray DataArray (2-D or 3-D)?
+        if hasattr(data, 'dims') and hasattr(data, 'values'):
+            if 'time' in tuple(data.dims):
+                times = list(data['time'].values)
+                if len(times) > _MAX_GRID_SLICES_TO_DISK:
+                    logger.warning(
+                        "Recorder '%s' has %d time slices; not writing "
+                        "rasters (kept in memory). Use a coarser "
+                        "grid_timestep to save it.",
+                        key, len(times),
+                    )
+                    continue
+                # Period grids are daily-or-coarser and label cleanly by
+                # date. record_timestep_grid is sub-daily though, so a
+                # date-only label would collide (48 slices/day at the
+                # 30 min model timestep) and each write would silently
+                # overwrite the last. Fall back to including the time
+                # only when the dates aren't unique, so existing
+                # period-grid file names are unchanged.
+                fmt = '%Y%m%d'
+                if len({pd.Timestamp(t).strftime(fmt) for t in times}) \
+                        < len(times):
+                    fmt = '%Y%m%d_%H%M'
+                for t in times:
+                    label = pd.Timestamp(t).strftime(fmt)
+                    name = f'{key}_{label}'
+                    save_catchment_raster(
+                        project=ctx.project, catchment=ctx.catchment,
+                        file_name=name, section=section,
+                        data=data.sel(time=t).values, meta=template_meta,
+                        out_path=ctx.run_path(section, f'{name}.tif'),
+                    )
+                    saved.append(name)
+            else:
+                save_catchment_raster(
+                    project=ctx.project, catchment=ctx.catchment,
+                    file_name=key, section=section,
+                    data=data.values, meta=template_meta,
+                    out_path=ctx.run_path(section, f'{key}.tif'),
+                )
+                saved.append(key)
+        elif isinstance(data, np.ndarray) and data.ndim == 2:
+            save_catchment_raster(
+                project=ctx.project, catchment=ctx.catchment,
+                file_name=key, section=section,
+                data=data, meta=template_meta,
+                out_path=ctx.run_path(section, f'{key}.tif'),
+            )
+            saved.append(key)
+        # else: DataFrame / transform / scalar — not a grid, skip.
+    return saved
 
-    return chunks
-    
+
+def _recovery_run_segments(ctx: RunContext, rainfall, use_fire_adjusted):
+    """
+    Split rainfall into the chronological (recovery_time, segment) pairs a
+    continuous run should process.
+
+    Fire-adjusted: one segment per recovery window in the event
+    definition, each carrying its window-start recovery_time so the
+    matching C/K/SDR layers are used; a missing layer raises. Baseline: a
+    single (None, rainfall) segment using the baseline layers over the
+    whole period.
+    """
+    if not use_fire_adjusted:
+        return [(None, rainfall)]
+
+    definition = ctx.event_definition()
+
+    index = rainfall.index
+    segments = []
+    for recovery_time, _ in definition.windows():
+        window_start, window_end = definition.absolute_window(recovery_time)
+        segment = rainfall[(index >= window_start) & (index < window_end)]
+        if segment.empty:
+            logger.warning(
+                'No rainfall for recovery window T=%s (%s to %s) in '
+                'catchment %s event %s; skipping.',
+                recovery_time, window_start.date(), window_end.date(),
+                ctx.catchment, ctx.event,
+            )
+            continue
+        suffix = c.recovery_time_suffix(recovery_time)
+        layer = ctx.event_path(
+            'Erodibility', f'C_factor_adjusted_{suffix}.tif')
+        if not os.path.exists(layer):
+            raise FileNotFoundError(
+                f"Missing fire-adjusted layer for recovery T={recovery_time} "
+                f"({layer}). Run compute_adjusted_k_c first."
+            )
+        segments.append((recovery_time, segment))
+
+    if not segments:
+        raise ValueError(
+            f'No rainfall overlaps any recovery window for catchment '
+            f'{ctx.catchment} event {ctx.event}. Check the rainfall '
+            f'period (see RunContext.simulation_period).'
+        )
+    return segments
+
+
 def run_usle_simulation(
-    project: FireImpactsProject,
+    ctx: RunContext,
     rainfall,
-    catchment=None,
     recorders=None,
     save_rasters: bool = True,
     save_timeseries: bool = True,
     use_fire_adjusted: bool = True,
     results_section: str = None,
-    recovery_time: float = None,
-    fire_end_date=None,
-    recovery_times=None,
-    recovery_interval_years=None,
 ):
     """
-    Run the USLE simulation for a catchment and record outputs.
+    Run the USLE simulation for the context and record outputs.
+
+    The whole rainfall period is run continuously. For fire-adjusted runs
+    the recovery windows in the project run-context are applied internally:
+    rainfall is processed in chronological segments, each using the C/K/SDR
+    layers for its recovery window, while the recorders accumulate across
+    the whole period (reset once, finalised once). The result is a single
+    set of outputs — recovery time is not an output dimension. Baseline
+    runs use the baseline layers over the whole period in one segment.
 
     Parameters:
-    - project: FireImpactsProject instance for the current project.
+    - ctx: run-level RunContext. Outputs are written under
+      Runs/<event>/<ensemble>/<results_section>/.
     - rainfall: Series-like with 30-minute rainfall depth values in mm.
-    - catchment: Name of the catchment to process. If None, all
-      catchments in the project are processed.
     - recorders: Dict of recorder closures to call at each timestep.
       If None, an empty dict is used and no outputs are recorded.
     - save_rasters: Whether to save output rasters as GeoTIFF files
@@ -672,9 +693,9 @@ def run_usle_simulation(
     - save_timeseries: Whether to save the daily time series as a CSV
       file to the catchment results folder.
     - use_fire_adjusted: If True, use fire-adjusted C and K rasters.
-    - results_section: Sub-folder name for outputs. If None, defaults
-      to the standard results folder (or the baseline folder when
-      use_fire_adjusted is False).
+    - results_section: Sub-folder name for outputs within the run
+      directory. If None, defaults to the standard results folder
+      (or the baseline folder when use_fire_adjusted is False).
 
     Returns:
     - Dict of finalised recorder outputs keyed by recorder name, with
@@ -689,181 +710,95 @@ def run_usle_simulation(
       'RUSLE', 'delivered', and related per-cell arrays.
     ------------------------------------------------------------------------
     """
-    if recovery_times is None:
-    recovery_times = c.DEFAULT_RECOVERY_TIMES
-
-    if recovery_interval_years is None:
-        recovery_interval_years = c.DEFAULT_RECOVERY_INTERVAL_YEARS
-
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda ctmt: run_usle_simulation(
-                project, rainfall, ctmt, recorders,
-                save_rasters, save_timeseries,
-                use_fire_adjusted=use_fire_adjusted,
-                results_section=results_section,
-                recovery_time=recovery_time,
-                fire_end_date=fire_end_date,
-                recovery_times=recovery_times,
-                recovery_interval_years=recovery_interval_years,
-            )
-        )
-
-    # Resolve the output folder. Baseline runs use a sibling folder so
-    # they don't overwrite fire-impacted results.
-    if recovery_time is None and fire_end_date is not None:
-        rainfall_chunks = _split_rainfall_by_recovery_time(
-            rainfall=rainfall,
-            fire_end_date=fire_end_date,
-            recovery_times=recovery_times,
-            recovery_interval_years=recovery_interval_years,
-        )
-
-        all_results = {}
-
-        for recovery_time, rainfall_chunk in rainfall_chunks.items():
-            suffix = c.recovery_time_suffix(recovery_time)
-
-            if use_fire_adjusted:
-                interval_results_section = f"{c.RESULTS_FOLDER_NAME}_{suffix}"
-            else:
-                interval_results_section = (
-                    f"{c.RESULTS_BASELINE_FOLDER_NAME}_{suffix}"
-                )
-
-            logger.info(
-                "Running RUSLE for T=%s years using rainfall interval %s to %s",
-                t,
-                rainfall_chunk.index.min(),
-                rainfall_chunk.index.max(),
-            )
-
-            result = run_usle_simulation(
-                project,
-                rainfall_chunk,
-                catchment=catchment,
-                recorders=recorders,
-                save_rasters=save_rasters,
-                save_timeseries=save_timeseries,
-                use_fire_adjusted=use_fire_adjusted,
-                results_section=interval_results_section,
-                recovery_time=recovery_time,
-                fire_end_date=fire_end_date,
-                recovery_times=recovery_times,
-                recovery_interval_years=recovery_interval_years,
-            )
-
-            all_results[t] = result
-
-        return all_results
+    ctx.validate()
 
     if results_section is None:
-        if use_fire_adjusted:
-            if recovery_time is None:
-                raise ValueError(
-                    "recovery_time must be provided for fire-adjusted RUSLE runs."
-                )
-            results_section = (f"{c.RESULTS_FOLDER_NAME}_{c.recovery_time_suffix(recovery_time)}")
-        else:
-            if recovery_time is None:
-                results_section = c.RESULTS_BASELINE_FOLDER_NAME
-            else:
-                results_section = (
-                    f"{c.RESULTS_BASELINE_FOLDER_NAME}_{c.recovery_time_suffix(recovery_time)}"
-                )
+        results_section = (
+            c.RESULTS_FOLDER_NAME if use_fire_adjusted
+            else c.RESULTS_BASELINE_FOLDER_NAME
+        )
 
     # If no recorders were passed, use an empty dict so the rest of
     # the code works consistently
     if recorders is None:
         recorders = dict()
 
-    # Reset each recorder so we're building fresh aggregations
+    # Build the chronological run segments (one per recovery window for
+    # fire-adjusted runs; a single whole-period segment for baseline).
+    segments = _recovery_run_segments(ctx, rainfall, use_fire_adjusted)
+
+    # Reset each recorder once so they accumulate across every segment.
     for recorder in recorders.values():
         recorder.reset()
 
-    # Load the relevant RUSLE parameter grids for this catchment
-    params = _rusle_parameter_grids(
-        project, catchment, use_fire_adjusted=use_fire_adjusted, recovery_time=recovery_time,
-    )
-    klscp, sdr, dnbr, cell_area_ha, transform = params
-
-    # Get the catchment boundary geometry in a form rasterio can use
-    catchment_boundary = project.catchment_boundary(catchment)
-    geometry = catchment_boundary.geometry.values
-
-    # Rasterise the catchment boundary: 1 inside, NaN outside
-    mask = rasterio.features.rasterize(
-        geometry,
-        transform=transform,
-        fill=np.nan,
-        dtype=np.float32,
-        out_shape=klscp.shape,
-    )
-
-    # Apply the mask so all cells outside the catchment become NaN
-    klscp_masked = klscp * mask
-    sdr_masked = sdr * mask
-    dnbr_masked = dnbr * mask
-
-    # Iterate over per-timestep (timestep, data_dict) tuples from the
-    # generate_rusle generator and pass each to all recorder closures
     results = dict()
-    for ts_data in generate_rusle(
-        rainfall,
-        klscp_masked,
-        sdr_masked,
-        dnbr_masked,
-        cell_area_ha,
-    ):
-        timestep, data = ts_data
-        for key, recorder in recorders.items():
-            results[key] = recorder(
-                timestep,
-                **data,
-                catchment=catchment,
-                transform=transform,
-            )
+    params = None
+    for recovery_time, segment_rain in segments:
+        # Load the RUSLE parameter grids for this segment's recovery window
+        params = _rusle_parameter_grids(
+            ctx,
+            use_fire_adjusted=use_fire_adjusted,
+            recovery_time=recovery_time,
+        )
+        klscp, sdr, dnbr, cell_area_ha, transform = params
 
-    # Finalise each recorder after all timesteps are processed
+        # Rasterise the catchment boundary: 1 inside, NaN outside
+        geometry = ctx.project.catchment_boundary(
+            ctx.catchment).geometry.values
+        mask = rasterio.features.rasterize(
+            geometry,
+            transform=transform,
+            fill=np.nan,
+            dtype=np.float32,
+            out_shape=klscp.shape,
+        )
+        klscp_masked = klscp * mask
+        sdr_masked = sdr * mask
+        dnbr_masked = dnbr * mask
+
+        # Feed every timestep of this segment into the (shared) recorders
+        for timestep, data in generate_rusle(
+            segment_rain,
+            klscp_masked,
+            sdr_masked,
+            dnbr_masked,
+            cell_area_ha,
+        ):
+            for recorder in recorders.values():
+                recorder(
+                    timestep,
+                    **data,
+                    catchment=ctx.catchment,
+                    transform=transform,
+                )
+
+    # Finalise each recorder after all segments are processed
     for key, recorder in recorders.items():
         results[key] = recorder.finalize()
 
+    run_results_dir = ctx.run_path(results_section)
     if save_rasters or save_timeseries:
-        # Baseline runs land in a non-standard folder that the project
-        # template doesn't pre-create. Make sure it exists.
-        os.makedirs(
-            project.catchment_path(catchment, results_section),
-            exist_ok=True,
-        )
+        os.makedirs(run_results_dir, exist_ok=True)
 
     if save_rasters:
-        template_raster = project.catchment_path(
-            catchment, 'Erodibility', 'LS_factor.tif'
+        template_raster = ctx.catchment_path(
+            'Erodibility', 'LS_factor.tif',
         )
         _, template_meta = read_raster(template_raster)
-        for output_raster in c.RUSLE_OUTPUT_RASTER_NAMES:
-            save_data = results.get(output_raster)
-            if save_data is None:
-                continue
-            save_catchment_raster(
-                project=project,
-                catchment_name=catchment,
-                file_name=output_raster,
-                section=results_section,
-                data=save_data,
-                meta=template_meta,
-            )
 
-        # Aggregate the saved rasters to subcatchments and write a
-        # summary CSV alongside them (skipped if no subcatchments exist)
+        # Write every grid recorder result (2-D numpy or xarray 2-D/3-D)
+        # to the run's results folder and aggregate those to subcatchments.
+        saved_names = _save_grid_results(
+            ctx, results_section, results, template_meta)
         aggregate_rusle_to_subcatchments(
-            project, catchment, results_section=results_section
+            ctx,
+            results_section=results_section,
+            raster_names=saved_names,
         )
 
-    if save_timeseries:
-        out_name = project.catchment_path(
-            catchment,
-            results_section,
+    if save_timeseries and c.RUSLE_OP_TIMESERIES_NAME in results:
+        out_name = os.path.join(
+            run_results_dir,
             c.RUSLE_OP_TIMESERIES_NAME + '.csv',
         )
         output = pd.DataFrame(data=results[c.RUSLE_OP_TIMESERIES_NAME])
@@ -884,40 +819,31 @@ def run_usle_simulation(
     "This function is deprecated and will be removed in a future version."
     " Please use run_usle_simulation() with appropriate recorders instead."
 )
-def gridded_total_rusle(
-    project: FireImpactsProject,
-    rainfall,
-    catchment=None,
-):
+def gridded_total_rusle(ctx: RunContext, rainfall):
     """
     Compute total RUSLE erosion and delivery grids over a simulation.
 
     Deprecated. Use run_usle_simulation() with appropriate recorders.
 
     Parameters:
-    - project: FireImpactsProject instance for the current project.
+    - ctx: event-level RunContext.
     - rainfall: Series-like with 30-minute rainfall depth values in mm.
-    - catchment: Name of the catchment to process. If None, all
-      catchments are processed.
 
     Returns:
     - Tuple of (total_eroded, total_delivered, transform) where the
       first two are float32 numpy arrays and the last is the Affine
       transform object from the RUSLE parameter grids.
     """
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c: lumped_daily_rusle(project, rainfall, c)
-        )
+    ctx.validate()
     result = None
     # Get the boundary geometry for the first subcatchment only
     subcatch_boundaries = (
-        project.get_subcatchments(catchment).iloc[0].geometry
+        ctx.project.get_subcatchments(ctx.catchment).iloc[0].geometry
     )
 
     total_eroded = None
     total_delivered = None
-    params = _rusle_parameter_grids(project, catchment)
+    params = _rusle_parameter_grids(ctx)
     for day_data in generate_rusle_for_feature(
         [subcatch_boundaries], rainfall, *params
     ):
@@ -1328,91 +1254,89 @@ def compute_particulates(rusle_df, constituents_df=None):
 # ---------------------------------------------------------------------------
 
 def run_rusle_replicate(
-    proj,
+    ctx: RunContext,
     rainfall_30min,
     replicate_idx,
     recorder_factory=None,
     use_fire_adjusted=True,
-    recovery_time: float = None,
-    fire_end_date=None,
-    recovery_times=None,
-    recovery_interval_years=None,
 ):
     """
     Run the RUSLE simulation for a single rainfall replicate.
 
+    For each catchment the full replicate rainfall is run through
+    run_usle_simulation, which applies the recovery windows internally, so
+    the result is a single continuous set of outputs per catchment.
+
     Parameters:
-    - proj: FireImpactsProject instance for the current project.
+    - ctx: run-level RunContext.
     - rainfall_30min: xarray.Dataset of rainfall replicates with a
       'replicate' dimension.
     - replicate_idx: Index of the replicate to run.
-    - recorder_factory: Callable (project, start, end) → dict of
-      recorders, as returned by default_rusle_recorders(). When None,
-      a default factory is used.
-    - use_fire_adjusted: If True, use fire-adjusted C and K rasters.
+    - recorder_factory: Callable (ctx, start, end) → dict of recorders,
+      as returned by default_rusle_recorders(). When None, a default
+      factory is used.
+    - use_fire_adjusted: If True, use the fire-adjusted layers; if False,
+      the baseline layers.
 
     Returns:
-    - Dict keyed by catchment name; values are the recorder results
-      dict for that catchment.
+    - Dict keyed by catchment name (single key for ctx.catchment);
+      value is the recorder results dict for this replicate. The
+      per-catchment wrapper matches the shape consumed by save_run /
+      ensemble.py helpers.
     """
     rain_seq = rainfall_30min.rainfall[:, replicate_idx].to_pandas()
+    start, end = rain_seq.index[0], rain_seq.index[-1]
 
     if recorder_factory is None:
         recorder_factory = default_rusle_recorders()
 
     start = rain_seq.index[0]
     end = rain_seq.index[-1]
-
-    replicate_results = {}
-    for c_name in proj.catchments:
-        recorders = recorder_factory(proj, start, end)
-        replicate_results[c_name] = run_usle_simulation(
-            proj,
-            rain_seq,
-            catchment=c_name,
-            recorders=recorders,
-            save_rasters=False,
-            save_timeseries=False,
-            use_fire_adjusted=use_fire_adjusted,
-            recovery_time=recovery_time,
-            fire_end_date=fire_end_date,
-            recovery_times=recovery_times,
-            recovery_interval_years=recovery_interval_years,
-        )
-
-    return replicate_results
+    recorders = recorder_factory(ctx, start, end)
+    results = run_usle_simulation(
+        ctx,
+        rain_seq,
+        recorders=recorders,
+        save_rasters=False,
+        save_timeseries=False,
+        use_fire_adjusted=use_fire_adjusted,
+    )
+    return {ctx.catchment: results}
 
 
 def run_rusle_all_replicates(
-    proj,
+    ctx: RunContext,
     rainfall_30min,
     n_workers=None,
     scheduler='threads',
     replicate_indices=None,
     recorder_factory=None,
     use_fire_adjusted=True,
-    fire_end_date=None,
-    recovery_times=None,
-    recovery_interval_years=None,
 ):
     """
-    Run RUSLE simulations for selected rainfall replicates in parallel.
+    Run RUSLE for all rainfall replicates in parallel.
+
+    Returns {replicate: {catchment: recorder-results}} — the standard shape
+    the ensemble aggregation/save helpers expect. Recovery windows are
+    applied internally by run_usle_simulation, so each replicate yields a
+    single continuous set of outputs (not split by recovery time).
 
     Parameters:
-    - proj: FireImpactsProject instance for the current project.
+    - ctx: run-level RunContext.
     - rainfall_30min: xarray.Dataset of rainfall replicates with a
       'replicate' dimension.
     - n_workers: Number of Dask workers. If None, Dask chooses.
     - scheduler: Dask scheduler to use, e.g. 'threads' or 'processes'.
     - replicate_indices: Iterable of replicate indices to run. If None,
       all replicates are run.
-    - recorder_factory: Callable (project, start, end) → dict of
-      recorders, as returned by default_rusle_recorders(). When None,
-      a default factory is used.
-    - use_fire_adjusted: If True, use fire-adjusted C and K rasters.
+    - recorder_factory: Callable (ctx, start, end) → dict of recorders,
+      as returned by default_rusle_recorders(). When None, a default
+      factory is used.
+    - use_fire_adjusted: If True, use the fire-adjusted layers; if False,
+      the baseline layers.
 
     Returns:
-    - Dict mapping replicate index (int) to simulation output dicts.
+    - Dict mapping replicate index (int) to {catchment: results} dicts.
     """
     import dask
 
@@ -1420,20 +1344,17 @@ def run_rusle_all_replicates(
         recorder_factory = default_rusle_recorders()
 
     if replicate_indices is None:
-        replicate_indices = list(range(rainfall_30min.dims['replicate']))
+        replicate_indices = list(range(rainfall_30min.sizes['replicate']))
     else:
         replicate_indices = list(replicate_indices)
 
     tasks = [
         dask.delayed(run_rusle_replicate)(
-            proj,
+            ctx,
             rainfall_30min,
             i,
             recorder_factory=recorder_factory,
             use_fire_adjusted=use_fire_adjusted,
-            fire_end_date=fire_end_date,
-            recovery_times=recovery_times,
-            recovery_interval_years=recovery_interval_years,
         )
         for i in replicate_indices
     ]
@@ -1450,42 +1371,82 @@ def run_rusle_all_replicates(
 
 _PERIOD_OFFSETS = {
     'yearly': pd.DateOffset(years=1),
+    'quarterly': pd.DateOffset(months=3),
     'monthly': pd.DateOffset(months=1),
+    'weekly': pd.DateOffset(weeks=1),
+    'daily': pd.DateOffset(days=1),
 }
 
 
-def _compute_periods(start, end, timestep_type):
+def _calendar_floor(ts, granularity):
+    """
+    Snap a timestamp down to the start of its calendar period.
+
+    yearly -> Jan 1; quarterly -> quarter start; monthly -> 1st;
+    weekly -> Monday; daily -> midnight.
+    """
+    ts = pd.Timestamp(ts)
+    if granularity == 'yearly':
+        return pd.Timestamp(year=ts.year, month=1, day=1)
+    if granularity == 'quarterly':
+        month = ((ts.month - 1) // 3) * 3 + 1
+        return pd.Timestamp(year=ts.year, month=month, day=1)
+    if granularity == 'monthly':
+        return pd.Timestamp(year=ts.year, month=ts.month, day=1)
+    if granularity == 'weekly':
+        return ts.normalize() - pd.Timedelta(days=ts.weekday())
+    if granularity == 'daily':
+        return ts.normalize()
+    raise ValueError(f"Cannot calendar-floor granularity '{granularity}'.")
+
+
+def _compute_periods(start, end, timestep_type, origin='calendar'):
     """
     Compute non-overlapping time-period boundaries for a simulation span.
 
     Parameters:
     - start: Start of the simulation period (pd.Timestamp).
     - end: End of the simulation period (pd.Timestamp).
-    - timestep_type: Granularity of the periods: 'total', 'yearly', or
-      'monthly'.
+    - timestep_type: Period granularity: 'total', 'yearly', 'quarterly',
+      'monthly', 'weekly', or 'daily'.
+    - origin: 'calendar' (default) snaps the first period to the calendar
+      boundary for the granularity (so bins are calendar-aligned; the
+      first bin may be partial); 'fire' starts the first period at
+      ``start`` and steps by the offset (e.g. year-since-fire).
 
     Returns:
-    - List of (period_start, period_end) tuples. For non-final periods
-      period_end is offset by -1 second so boundary timesteps are not
-      double-counted across adjacent periods.
+    - List of (period_start, period_end) tuples. The period_start is used
+      as the time coordinate label, so calendar bins are labelled by their
+      calendar boundary even when the first bin is partial. For non-final
+      periods period_end is offset by -1 second so boundary timesteps are
+      not double-counted across adjacent periods.
     """
+    start = pd.Timestamp(start)
+    end = pd.Timestamp(end)
+
     if timestep_type == 'total':
         return [(start, end)]
 
     offset = _PERIOD_OFFSETS.get(timestep_type)
     if offset is None:
         raise ValueError(
-            f"Unsupported grid_timestep '{timestep_type}'. "
-            "Use 'total', 'yearly', or 'monthly'."
+            f"Unsupported grid_timestep '{timestep_type}'. Use one of: "
+            f"'total', {', '.join(repr(k) for k in _PERIOD_OFFSETS)}."
+        )
+    if origin not in ('calendar', 'fire'):
+        raise ValueError(
+            f"origin must be 'calendar' or 'fire'; got {origin!r}."
         )
 
+    period_start = (
+        start if origin == 'fire'
+        else _calendar_floor(start, timestep_type)
+    )
+
     periods = []
-    period_start = start
     while period_start < end:
         period_end = period_start + offset
-        if period_end > end:
-            period_end = end
-        periods.append((period_start, period_end))
+        periods.append((period_start, min(period_end, end)))
         period_start = period_end
 
     # Offset non-final period ends by 1 s to avoid double-counting
@@ -1494,6 +1455,68 @@ def _compute_periods(start, end, timestep_type):
         if i < len(periods) - 1 else (ps, pe)
         for i, (ps, pe) in enumerate(periods)
     ]
+
+
+def _spatial_coords_from_transform(transform, shape):
+    """Build easting/northing coordinate arrays from an affine transform."""
+    if transform is None:
+        return {}
+    rows, cols = shape
+    easting = np.array(
+        [transform.c + (col + 0.5) * transform.a for col in range(cols)]
+    )
+    northing = np.array(
+        [transform.f + (row + 0.5) * transform.e for row in range(rows)]
+    )
+    return {'easting': easting, 'northing': northing}
+
+
+def record_timestep_grid(variable):
+    """
+    Build a recorder that captures a grid variable at every model timestep.
+
+    Finalises to a 3-D xarray.DataArray (time, northing, easting) whose time
+    coordinate holds the actual model timesteps. This keeps one grid slice
+    per 30-minute timestep, so it is memory-heavy — intended for short
+    windows or diagnostics.
+
+    Parameters:
+    - variable: Key to extract from the per-timestep data dict.
+
+    Returns:
+    - A recorder closure with .reset() and .finalize() methods.
+    """
+    grids = []
+    times = []
+    captured_transform = [None]
+
+    def recorder(timestep, **kwargs):
+        if captured_transform[0] is None and 'transform' in kwargs:
+            captured_transform[0] = kwargs['transform']
+        grids.append(kwargs[variable].copy())
+        times.append(pd.Timestamp(timestep))
+
+    def reset():
+        grids.clear()
+        times.clear()
+        captured_transform[0] = None
+
+    def finalize():
+        import xarray as xr
+        if not grids:
+            return None
+        spatial = _spatial_coords_from_transform(
+            captured_transform[0], grids[0].shape)
+        stacked = np.stack(grids, axis=0)
+        return xr.DataArray(
+            stacked,
+            dims=['time', 'northing', 'easting'],
+            coords={'time': times, **spatial},
+        )
+
+    recorder.reset = reset
+    recorder.finalize = finalize
+    return recorder
 
 
 def record_multi_period_grid(variable, fn, periods):
@@ -1541,20 +1564,6 @@ def record_multi_period_grid(variable, fn, periods):
             counts[i] = 0
         captured_transform[0] = None
 
-    def _build_spatial_coords(shape):
-        """Build easting/northing coordinate arrays from the transform."""
-        t = captured_transform[0]
-        if t is None:
-            return {}
-        rows, cols = shape
-        easting = np.array(
-            [t.c + (col + 0.5) * t.a for col in range(cols)]
-        )
-        northing = np.array(
-            [t.f + (row + 0.5) * t.e for row in range(rows)]
-        )
-        return {'easting': easting, 'northing': northing}
-
     def finalize():
         import xarray as xr
 
@@ -1576,7 +1585,7 @@ def record_multi_period_grid(variable, fn, periods):
                 g = g / counts[i]
             arrays.append(g)
 
-        spatial = _build_spatial_coords(shape)
+        spatial = _spatial_coords_from_transform(captured_transform[0], shape)
 
         if len(arrays) == 1:
             return xr.DataArray(
@@ -1608,6 +1617,7 @@ def default_rusle_recorders(
     grid_variables=('RUSLE',),
     grid_fns=('sum', 'max'),
     grid_timesteps=('yearly',),
+    grid_period_origin='calendar',
     include_timeseries=True,
     timeseries_variables=('RUSLE',),
     timeseries_fn='sum',
@@ -1657,12 +1667,12 @@ def default_rusle_recorders(
       Default True.
 
     Returns:
-    - factory: Callable (project, start, end) → dict of recorder
+    - factory: Callable (ctx, start, end) → dict of recorder
       closures ready for use with run_usle_simulation().
     ------------------------------------------------------------------------
     Notes:
     - Typical usage: make_recorders = default_rusle_recorders(), then
-      recorders = make_recorders(proj, '2020-01-01', '2021-12-31').
+      recorders = make_recorders(project, '2020-01-01', '2021-12-31').
     - For ensemble runs with Dask, use timeseries_mode='percentiles' to
       avoid storing full daily timeseries per replicate.
     - timeseries_mode='none' is equivalent to include_timeseries=False.
@@ -1675,23 +1685,45 @@ def default_rusle_recorders(
     ts_delta = pd.Timedelta(timeseries_timestep)
     agg_count = max(1, int(ts_delta / _MODEL_TIMESTEP))
 
-    def factory(project, start, end):
+    def factory(ctx, start, end):
         """Build and return a fresh dict of recorders for one simulation."""
         start = pd.Timestamp(start)
         end = pd.Timestamp(end)
 
         recorders = {}
 
-        # Grid recorders: Cartesian product of variables × fns × timesteps
+        # Grid recorders: Cartesian product of variables × fns × timesteps.
+        # A grid_timesteps entry is either a granularity string ('yearly')
+        # using grid_period_origin, or a (granularity, origin) tuple. The
+        # special granularity 'timestep' records every model timestep.
         if include_grids:
-            for ts_type in grid_timesteps:
-                periods = _compute_periods(start, end, ts_type)
+            for ts_entry in grid_timesteps:
+                if isinstance(ts_entry, (tuple, list)):
+                    ts_type, origin = ts_entry[0], ts_entry[1]
+                else:
+                    ts_type, origin = ts_entry, grid_period_origin
+
+                # Origin only qualifies periodic grids; suffix the key only
+                # when the origin differs from the default so common keys
+                # stay clean.
+                if ts_type in ('total', 'timestep') or origin == grid_period_origin:
+                    origin_suffix = ''
+                else:
+                    origin_suffix = f'_{origin}'
+
+                periods = (
+                    None if ts_type == 'timestep'
+                    else _compute_periods(start, end, ts_type, origin=origin)
+                )
                 for variable in grid_variables:
                     for fn in grid_fns:
-                        key = f'{variable}_{fn}_{ts_type}'
-                        recorders[key] = record_multi_period_grid(
-                            variable, fn, periods,
-                        )
+                        key = f'{variable}_{fn}_{ts_type}{origin_suffix}'
+                        if ts_type == 'timestep':
+                            recorders[key] = record_timestep_grid(variable)
+                        else:
+                            recorders[key] = record_multi_period_grid(
+                                variable, fn, periods,
+                            )
 
         # Transform recorder
         if include_transform:
@@ -1699,15 +1731,15 @@ def default_rusle_recorders(
 
         # Subcatchment timeseries recorders
         if include_timeseries:
-            _add_timeseries_recorders(project, recorders)
+            _add_timeseries_recorders(ctx, recorders)
 
         return recorders
 
-    def _add_timeseries_recorders(project, recorders):
+    def _add_timeseries_recorders(ctx, recorders):
         """Add subcatchment timeseries recorders to the recorders dict."""
         for ts_var in timeseries_variables:
             base_ts = record_subcatchment_timeseries(
-                project,
+                ctx,
                 ts_var,
                 fn=timeseries_fn,
                 label_field=timeseries_label_field,

@@ -79,30 +79,98 @@ A single `FireImpactsProject` can manage data associated with one or catchment a
 project.add_catchment('big-river-catchment-boundary-boundary.shp',name='Big-River')
 ```
 
-As you proceed through the data pre-processing and simulation steps, the `FireImpactsProject` will build a directory stucture containing the relevant, processed data:
+#### How a project is organised
+
+A single project can model **more than one fire** in a catchment, each driven by **more than one stochastic rainfall realisation**. To keep this tractable — and to avoid recomputing shared inputs — the `FireImpactsProject` organises data along three axes inside each catchment:
+
+- **Events** — individual fires. Each event has its own fire dates and recovery windows.
+- **Ensembles** — stochastic rainfall realisations (e.g. a historical climate, or a future scenario). The same ensemble can drive several fires.
+- **Runs** — the pairing of one event with one ensemble. A simulation happens *in a run*.
+
+Data is stored at the **narrowest scope it depends on**. Fire-independent work (the DEM, headwaters, soils, the base RUSLE factors) is computed once per **catchment** and shared by every fire. Fire-specific layers live under the **event**. Rainfall lives under the **ensemble**. Simulation outputs live under the **run**:
+
+```mermaid
+flowchart TD
+    P["my-project/"] --> C["Catchments/&lt;catchment&gt;/"]
+
+    C --> CAT["<b>catchment scope</b><br/>(fire-independent, computed once)<br/><br/>Topography · Soils · Subcatchments<br/>Erodibility: base C/K/LS factors<br/>Delivery: SDR_baseline"]
+    C --> EV["Events/&lt;event&gt;/"]
+    C --> EN["Ensembles/&lt;ensemble&gt;/"]
+    C --> RU["Runs/&lt;event&gt;/&lt;ensemble&gt;/"]
+
+    EV --> EVS["<b>event scope</b><br/>(per fire, per recovery window)<br/><br/>event.json (recovery breakpoints)<br/>FireSeverity: dNBR, masked_dNBR, FireMeta<br/>Erodibility: C/K_factor_adjusted_t*<br/>Delivery: SDR_t*"]
+    EN --> ENS["<b>ensemble scope</b><br/>(one climate realisation)<br/><br/>stochastic rainfall replicates"]
+    RU --> RUS["<b>run scope</b><br/>(one event × one ensemble)<br/><br/>Results · Results_baseline<br/>DebrisFlow · manifest.json"]
+```
+
+The same structure, as it appears on disk:
 
 ```
-my-project
-└── Catchments
-    └── Big-River
-        ├── Delivery
-        ├── Erodibility
-        ├── FireSeverity
-        ├── Soils
-        │   ├── BULK_DENSITY
-        │   ├── CLAY
-        │   ├── SAND
-        │   └── SILT
-        └── Topography
+my-project/
+├── settings.json
+└── Catchments/
+    └── Big-River/
+        ├── Topography/                     # catchment scope: DEM, slope,
+        ├── Soils/                          #   headwaters, aridity, soil props
+        ├── Erodibility/                    #   base C_factor, K_factor, LS_factor
+        ├── Delivery/                       #   SDR_baseline
+        ├── Subcatchments/
+        ├── Events/
+        │   └── 2019_fire/                  # event scope (one fire)
+        │       ├── event.json              #   recovery breakpoints
+        │       ├── FireSeverity/           #   dNBR, masked_dNBR, FireMeta.csv
+        │       ├── Erodibility/            #   C/K_factor_adjusted_t0, _t0_5, ...
+        │       └── Delivery/               #   SDR_t0, SDR_t0_5, ...
+        ├── Ensembles/
+        │   └── historical/                 # ensemble scope: rainfall replicates
+        └── Runs/
+            └── 2019_fire/
+                └── historical/             # run scope (event x ensemble)
+                    ├── Results/            #   RUSLE grids, timeseries, summaries
+                    ├── Results_baseline/   #   no-fire comparison
+                    ├── DebrisFlow/         #   debris-flow outputs
+                    └── manifest.json
 ```
 
-All pre-processing and simulation functions in the high level interface accept a `FireImpactsProject` as the first parameter. For example:
+#### Addressing data with a `RunContext`
+
+Because data lives at different scopes, the pre-processing and simulation functions do not take a bare `FireImpactsProject` — they take a **`RunContext`**, a small immutable object that binds a *project + catchment* and, optionally, an *event* and *ensemble*. There are three binding levels, each with a convenience constructor:
+
+| Binding level | Constructor | Used for |
+|---|---|---|
+| **Catchment-only** | `RunContext.solo_catchment(proj)` | fire-independent prep — DEM, headwaters, soils |
+| **Event-level** | `RunContext.solo_event(proj, event=...)` | per-fire prep — fire severity, fire-adjusted erodibility & SDR |
+| **Run-level** | `RunContext.solo_run(proj, event=..., ensemble=...)` | simulation and its outputs |
+
+```mermaid
+flowchart LR
+    S1["<b>Catchment-only context</b><br/>solo_catchment(proj)<br/><br/>extract_catchment_dems<br/>extract_headwaters<br/>download_soil_data · extract_aridity_data"]
+    S2["<b>Event context</b><br/>solo_event(proj, event=…)<br/><br/>calculate_fire_severity<br/>compute_adjusted_k_c"]
+    S3["<b>Run context</b><br/>solo_run(proj, event=…, ensemble=…)<br/><br/>run_usle_simulation · debris_flow<br/>run_*_all_replicates · save_ensemble_run"]
+    S1 -->|"bind a fire"| S2 -->|"bind a climate realisation"| S3
+```
+
+Each constructor resolves the catchment automatically when the project has exactly one; otherwise pass `catchment=`. The context then resolves the correct scope for you — for example `ctx.event_path('FireSeverity', 'dNBR.tif')` for an event context or `ctx.run_path('Results', 'RUSLE_sum_total.tif')` for a run context — so functions read and write to the right place without the caller managing paths:
 
 ``` python
-def extract_headwaters(project:FireImpactsProject,
-                       name:str=None,
-                       threshold_m2:float=DEFAULT_HW_THRESHOLD,
-                       crs_unit_to_metres:float=None):
+from fire_impacts.context import RunContext
+from fire_impacts.pre import topography, severity
+
+# Catchment-only work (no fire involved):
+prep = RunContext.solo_catchment(project)
+topography.extract_headwaters(prep)
+
+# Per-fire work binds an event:
+fire = RunContext.solo_event(project, event='2019_fire')
+severity.calculate_fire_severity(fire, fire_start_date='2019-01-15',
+                                 fire_end_date='2019-03-07')
+```
+
+To process every catchment, event or run already present on disk, use the matching enumerators, which yield one context per combination:
+
+``` python
+for ctx in RunContext.enumerate_events(project):   # every (catchment, event)
+    ...
 ```
 
 The high level interface automatically harmonises data wherever possible, bringing different imported datasets into a common coordinate reference system and resolution and clipping datasets to the relevant catchment boundaries.
@@ -145,12 +213,16 @@ The core library code is stored in `fire_impacts` directory. The code repository
 |-----------|----|
 | `<top-level>` | |
 | `├── data` | Common parameter files (eg concentrations of pollutants in ash and debris) |
-| `├── examples` | Worked example files |
+| `├── examples` | Worked example notebooks (jupytext `.py` + `.ipynb`) |
+| `├── templates` | Copyable starter notebooks for a new study (PrepareData, Simulation, SimulationEnsemble, SourceIntegration) |
 | `├── test_data` | Small spatial datasets to support examples and unit tests |
 | `└── fire_impacts` | Library code |
-| `    ├── pre` | Data pre-processing routines |
-| `    │   └── tests` | Unit tests for pre-processing|
-| `    └── sim` | Simulation routines |
+| `    ├── context.py` | `RunContext` + `EventDefinition` (project / catchment / event / ensemble addressing) |
+| `    ├── pre` | Data pre-processing (topography, severity, soils, RUSLE factors) |
+| `    ├── sim` | Simulation (RUSLE erosion, debris flow, ensembles, results I/O) |
+| `    ├── stochastic` | Stochastic rainfall replicate generation |
+| `    ├── source` | eWater Source integration (via Veneer) |
+| `    └── */tests` | Unit and integration tests, alongside each package |
 
 
 ## Funding, development and support

@@ -19,7 +19,8 @@ from rasterio.transform import from_origin, Affine, rowcol
 from fire_impacts.const import *
 from fire_impacts.pre import topography
 from fire_impacts.pre.project import FireImpactsProject
-from fire_impacts.pre.util import read_aligned, read_raster
+from fire_impacts.context import RunContext
+from fire_impacts.pre.util import read_aligned, read_raster, write_raster
 from fire_impacts.util import load_package_data, unique_file_matching
 from pysheds.grid import Grid
 import os
@@ -39,8 +40,7 @@ def get_flow_layers(
     dem_meta: dict,
     grid: Grid,
     dirmap: tuple,
-    project: FireImpactsProject,
-    catchment_name: str,
+    ctx: RunContext,
 ):
     """
     Return flow-direction and flow-accumulation rasters, loading from
@@ -52,7 +52,7 @@ def get_flow_layers(
     - grid: pysheds Grid object for hydrological operations.
     - dirmap: Tuple of D8 flow-direction cell values.
     - project: FireImpactsProject for directory management.
-    - catchment_name: Name of the catchment to load layers for.
+    - catchment: Name of the catchment to load layers for.
 
     Returns:
     - flow_dir_data: pysheds Raster of flow directions.
@@ -61,8 +61,8 @@ def get_flow_layers(
     - flow_acc_meta: Metadata dict for the flow-accumulation raster.
     """
     # Check whether a pre-computed flow direction raster is already saved
-    try_flowdir_path = project.catchment_path(
-        catchment_name, 'Topography', f'{FLOW_DIRECTION_FN}.tif'
+    try_flowdir_path = ctx.catchment_path(
+        'Topography', f'{FLOW_DIRECTION_FN}.tif',
     )
     try:
         flow_dir_array, flow_dir_meta = read_raster(try_flowdir_path)
@@ -82,15 +82,17 @@ def get_flow_layers(
             flow_dir_array, flow_dir_meta, try_flowdir_path
         )
 
-    # No saved raster — compute from the hydrologically enforced DEM
-    except FileNotFoundError:
+    # No saved raster — compute from the hydrologically enforced DEM.
+    # (rasterio raises its own RasterioIOError, not FileNotFoundError,
+    # for a missing path.)
+    except (FileNotFoundError, rasterio.errors.RasterioIOError):
         flow_dir_data, flow_dir_meta, grid = topography.compute_flow_dir(
-            hydro_dem, dem_meta, grid, dirmap, project, catchment_name
+            hydro_dem, dem_meta, grid, dirmap, ctx,
         )
 
     # Check whether a pre-computed flow accumulation raster is saved
-    try_flowacc_path = project.catchment_path(
-        catchment_name, 'Topography', f'{FLOW_ACCUMULATION_FN}.tif'
+    try_flowacc_path = ctx.catchment_path(
+        'Topography', f'{FLOW_ACCUMULATION_FN}.tif',
     )
     try:
         flow_acc_array, flow_acc_meta = read_raster(try_flowacc_path)
@@ -105,18 +107,16 @@ def get_flow_layers(
         )
 
     # No saved raster — compute from the flow direction raster
-    except FileNotFoundError:
+    except (FileNotFoundError, rasterio.errors.RasterioIOError):
         flow_acc_data, flow_acc_meta, _ = topography.compute_flow_accum(
-            flow_dir_data, flow_dir_meta, grid, dirmap,
-            project, catchment_name,
+            flow_dir_data, flow_dir_meta, grid, dirmap, ctx,
         )
 
     return flow_dir_data, flow_dir_meta, flow_acc_data, flow_acc_meta
 
 
 def get_clay_fraction(
-    proj: FireImpactsProject,
-    catchment: str,
+    ctx: RunContext,
     depth: str,
     transform,
     crs,
@@ -127,7 +127,7 @@ def get_clay_fraction(
     as a dimensionless fraction aligned to a target raster grid.
 
     Parameters:
-    - proj: FireImpactsProject for directory management.
+    - project: FireImpactsProject for directory management.
     - catchment: Name of the catchment being processed.
     - depth: Depth range string in the form 'xxx_yyy' (cm), e.g.
       '000_005' for 0–5 cm.
@@ -145,7 +145,7 @@ def get_clay_fraction(
     ------------------------------------------------------------------------
     """
     # Locate the clay raster directory and find the matching file
-    clay_directory = proj.catchment_path(catchment, 'Soils', 'CLY')
+    clay_directory = ctx.catchment_path('Soils', 'CLY')
     file_name = unique_file_matching(
         clay_directory, 'CLY', depth, 'EV', extension='.tif'
     )
@@ -162,8 +162,8 @@ def get_clay_fraction(
 # ---------------------------------------------------------------------------
 
 def prep_debris_flow_simulation(
-    proj: FireImpactsProject,
-    catchment: str,
+    ctx: RunContext,
+    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
 ):
     """
     Assemble all spatial inputs required to run the debris flow simulation.
@@ -173,8 +173,10 @@ def prep_debris_flow_simulation(
     to produce the per-headwater result table.
 
     Parameters:
-    - proj: FireImpactsProject instance.
-    - catchment: Catchment name.
+    - ctx: event-level RunContext.
+    - dnbr_threshold: Headwaters with a mean dNBR below this value are
+      excluded from the debris-flow analysis. Defaults to
+      const.DEFAULT_DEBRIS_DNBR_THRESHOLD.
 
     Returns:
     - DataFrame of per-headwater debris flow inputs and results, as
@@ -186,9 +188,12 @@ def prep_debris_flow_simulation(
       The inner join against the condition CSV enforces that filtering.
     ------------------------------------------------------------------------
     """
-    id_field = proj.headwater_id
+    ctx.validate()
+    project = ctx.project
+    catchment = ctx.catchment
+    id_field = project.headwater_id
     # Load the DEM and its metadata
-    dem_path = proj.catchment_path(catchment, 'Topography', 'DEM.tif')
+    dem_path = ctx.catchment_path('Topography', 'DEM.tif')
     dem_data, dem_meta = read_raster(dem_path)
 
     # Build the hydrologically enforced DEM and the pysheds grid object
@@ -196,9 +201,8 @@ def prep_debris_flow_simulation(
 
     # Compute slope from the hydro DEM as a rise/run ratio
     slope_h_ratio, slope_h_meta = topography.dem_to_slope(
-        proj,
+        ctx,
         (dem_data, dem_meta),
-        catchment,
         gradient=True,
         hydro=True,
         save=False,
@@ -206,8 +210,7 @@ def prep_debris_flow_simulation(
 
     # Load or compute flow direction and flow accumulation rasters
     flw_lyr_tuple = get_flow_layers(
-        hydro_dem, dem_meta, grid_obj, D8_FLOW_DIRECTIONS,
-        proj, catchment,
+        hydro_dem, dem_meta, grid_obj, D8_FLOW_DIRECTIONS, ctx,
     )
     flow_dir_data, flow_dir_meta, flow_acc_data, flow_acc_meta = (
         flw_lyr_tuple
@@ -222,9 +225,7 @@ def prep_debris_flow_simulation(
         np.where(
             np.isnan(slope_h_ratio),
             np.nan,
-            get_clay_fraction(
-                proj, catchment, depth, transform, crs, shape
-            ),
+            get_clay_fraction(ctx, depth, transform, crs, shape),
         )
         for depth in ['000_005', '005_015']
     ]
@@ -250,15 +251,14 @@ def prep_debris_flow_simulation(
     hf_lookup['I12_crit_mean'] = hf_lookup['I12_crit_mean'].round(1)
     debris_lookup = load_package_data('debris-constituents.csv')
 
-    # Create the DebrisFlow output directory if needed
-    out_path = proj.catchment_path(catchment, 'DebrisFlow')
+    # Create the per-event DebrisFlow prep directory if needed
+    out_path = ctx.event_path('DebrisFlow')
     os.makedirs(out_path, exist_ok=True)
 
     # Load the pre-computed soil/slope/aridity/dNBR condition summary
+    # (per-event because it depends on the fire's dNBR).
     condition_data = pd.read_csv(
-        proj.catchment_path(
-            catchment, 'Soil_Slope_Aridity_dNBR_headwaters.csv'
-        )
+        ctx.event_path('Soil_Slope_Aridity_dNBR_headwaters.csv'),
     )
 
     # Log any NaN columns in the condition data before filling
@@ -272,8 +272,6 @@ def prep_debris_flow_simulation(
         )
     condition_data = condition_data.fillna(0.0)
     # Remove headwaters where mean dNBR is below the debris-flow burn threshold.
-    dnbr_threshold = 100
-
     n_before = len(condition_data)
 
     condition_data = condition_data[
@@ -291,7 +289,7 @@ def prep_debris_flow_simulation(
 
     # Load the headwaters topographic summary
     topo_data = pd.read_csv(
-        proj.catchment_path(catchment, 'Topography', 'Headwaters.csv')
+        ctx.catchment_path('Topography', 'Headwaters.csv'),
     )
 
     # Inner-join condition and topographic data.  Log the row accounting
@@ -488,8 +486,10 @@ def accumulate_erosion(
     fn = tmp.name
     tmp.close()
     try:
-        with rasterio.open(fn, 'w', **rio_meta) as dest:
-            dest.write(erosion_values.astype('float32'), 1)
+        write_raster(
+            fn, erosion_values, rio_meta,
+            nodata=rio_meta.get('nodata'),
+        )
         grid = Grid.from_raster(fn)
         e_raster = grid.read_raster(fn)
         accum_raster = grid.accumulation(
@@ -500,13 +500,13 @@ def accumulate_erosion(
         if save_path is not None:
             if os.path.exists(save_path):
                 os.remove(save_path)
-            with rasterio.open(save_path, 'w', **rio_meta) as dest:
-                dest.write(
-                    accum_raster.astype(rasterio.float32), 1
-                )
-                logger.info(
-                    f'Saved cumulative erosion raster to {save_path}'
-                )
+            write_raster(
+                save_path, accum_raster, rio_meta,
+                nodata=rio_meta.get('nodata'),
+            )
+            logger.info(
+                f'Saved cumulative erosion raster to {save_path}'
+            )
         return accum_raster
     finally:
         if os.path.exists(fn):
@@ -609,8 +609,10 @@ def create_erosion_sense_check(
     E_all_mass_ha_path = os.path.join(
         save_loc, f"Erosion_{erosion_type}_mass_per_ha.tif"
     )
-    with rasterio.open(E_all_mass_ha_path, 'w', **rio_meta) as dest:
-        dest.write(E_all_mass_ha.astype('float32'), 1)
+    write_raster(
+        E_all_mass_ha_path, E_all_mass_ha, rio_meta,
+        nodata=rio_meta.get('nodata'),
+    )
 
     return E_all_mass_ha
 
@@ -959,7 +961,7 @@ def debris_flow_load(
 # ---------------------------------------------------------------------------
 
 def allocate_headwaters_to_subcatchments(
-    proj: FireImpactsProject,
+    project: FireImpactsProject,
     catchment: str,
     area_fraction_threshold: float = 0.1,
 ) -> pd.DataFrame:
@@ -971,7 +973,7 @@ def allocate_headwaters_to_subcatchments(
     threshold are dropped to handle minor boundary misalignments.
 
     Parameters:
-    - proj: FireImpactsProject instance.
+    - project: FireImpactsProject instance.
     - catchment: Catchment identifier.
     - area_fraction_threshold: Minimum overlap fraction for a valid
       allocation.  Default is 0.1 (10%).
@@ -980,8 +982,8 @@ def allocate_headwaters_to_subcatchments(
     - DataFrame with columns: SiteID, hw_ID, Area_m2,
       area_intersect, area_fraction.
     """
-    headwaters = proj.get_headwaters(catchment)
-    subcatchments = proj.get_subcatchments(catchment)
+    headwaters = project.get_headwaters(catchment)
+    subcatchments = project.get_subcatchments(catchment)
 
     # Spatial overlay to find headwater–subcatchment intersections
     hw_intersection = gpd.overlay(headwaters, subcatchments)
@@ -1131,8 +1133,7 @@ def resample_debris_timeseries(
 
 
 def postprocess_debris_flow(
-    proj: FireImpactsProject,
-    catchment: str,
+    ctx: RunContext,
     debris_timeseries,
     area_fraction_threshold: float = 0.1,
     resample_freq: str = None,
@@ -1145,8 +1146,8 @@ def postprocess_debris_flow(
     aggregates and optionally resamples each replicate's timeseries.
 
     Parameters:
-    - proj: FireImpactsProject instance.
-    - catchment: Catchment identifier.
+    - ctx: run-level RunContext. Saved outputs land under
+      Runs/<event>/<ensemble>/DebrisFlow/.
     - debris_timeseries: Either a single DataFrame (one replicate) or
       a dict keyed by replicate index where each value is a DataFrame.
       Each DataFrame has headwater IDs as columns, a datetime index,
@@ -1164,9 +1165,13 @@ def postprocess_debris_flow(
       DataFrame, aggregated and resampled are DataFrames.  When it is
       a dict of DataFrames, they are dicts keyed by replicate index.
     """
+    ctx.validate()
+    project = ctx.project
+    catchment = ctx.catchment
+
     # Compute the spatial allocation once, reused across all replicates
     hw_allocations = allocate_headwaters_to_subcatchments(
-        proj, catchment, area_fraction_threshold
+        project, catchment, area_fraction_threshold
     )
 
     # Normalise input to a dict so single- and multi-replicate paths
@@ -1190,9 +1195,9 @@ def postprocess_debris_flow(
 
     # Relabel sc_ID columns with the configured subcatchment label
     # field (typically 'SiteID') so outputs are human-readable
-    label_field = proj.subcatchment_label_field(catchment)
+    label_field = project.subcatchment_label_field(catchment)
     if label_field:
-        subs = proj.get_subcatchments(catchment)
+        subs = project.get_subcatchments(catchment)
         if label_field in subs.columns and SC_ID in subs.columns:
             label_map = dict(zip(subs[SC_ID], subs[label_field]))
             for rep_key in list(aggregated.keys()):
@@ -1213,7 +1218,7 @@ def postprocess_debris_flow(
             )
 
     if save:
-        out_path = proj.catchment_path(catchment, 'DebrisFlow')
+        out_path = ctx.run_path('DebrisFlow')
         os.makedirs(out_path, exist_ok=True)
 
         alloc_file = os.path.join(
@@ -1269,8 +1274,7 @@ def postprocess_debris_flow(
 
 
 def aggregate_debris_flow_summary_to_subcatchments(
-    proj: FireImpactsProject,
-    catchment: str,
+    ctx: RunContext,
     debris_flow_data: pd.DataFrame,
 ) -> 'pd.DataFrame | None':
     """
@@ -1278,8 +1282,7 @@ def aggregate_debris_flow_summary_to_subcatchments(
     subcatchments and save a CSV to the DebrisFlow folder.
 
     Parameters:
-    - proj: FireImpactsProject for directory management.
-    - catchment: Name of the catchment being processed.
+    - ctx: run-level RunContext.
     - debris_flow_data: Per-headwater summary DataFrame produced by
       debris_flow().
 
@@ -1299,13 +1302,13 @@ def aggregate_debris_flow_summary_to_subcatchments(
     """
     try:
         hw_alloc = allocate_headwaters_to_subcatchments(
-            proj, catchment
+            ctx.project, ctx.catchment,
         )
     except FileNotFoundError:
         logger.info(
             'No subcatchments defined for %s — skipping debris flow '
             'subcatchment aggregation.',
-            catchment,
+            ctx.catchment,
         )
         return None
 
@@ -1365,9 +1368,8 @@ def aggregate_debris_flow_summary_to_subcatchments(
             result, thresh_agg.reset_index(), on=SC_ID, how='left'
         )
 
-    out_path = proj.catchment_path(
-        catchment, 'DebrisFlow', DEBRIS_SC_SUMMARY_NAME + '.csv'
-    )
+    out_path = ctx.run_path('DebrisFlow', DEBRIS_SC_SUMMARY_NAME + '.csv')
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     result.to_csv(out_path, index=False)
     logger.info(
         'Saved debris flow subcatchment summary to %s', out_path
@@ -1380,32 +1382,34 @@ def aggregate_debris_flow_summary_to_subcatchments(
 # ---------------------------------------------------------------------------
 
 def debris_flow(
-    proj: FireImpactsProject,
+    ctx: RunContext,
     rainfall,
-    catchment: str = None,
     save: bool = True,
     save_daily_catchment_timeseries: bool = True,
     prepared=None,
+    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Run the debris flow simulation for a catchment or all catchments.
+    Run the debris flow simulation for the context.
 
     Iterates over rainfall timesteps to count events exceeding each
     headwater's I12 critical threshold for Year 1 and Year 2 post-fire.
 
     Parameters:
-    - proj: FireImpactsProject instance.
+    - ctx: run-level RunContext. Outputs land under
+      Runs/<event>/<ensemble>/DebrisFlow/.
     - rainfall: pd.Series of rainfall intensities (mm/h) with a
       datetime index at 12-minute resolution.
-    - catchment: Catchment name.  Pass None to run for all catchments.
     - save: If True, save per-headwater results to CSV.
     - save_daily_catchment_timeseries: If True, save a daily aggregate
       of total debris mass for the whole catchment.
-    - prepared: Pre-computed output of prep_debris_flow_simulation().
-      Pass a DataFrame for a single catchment, or a
-      {catchment: DataFrame} dict when running all catchments.  Reusing
-      prepared data is required when running multiple rainfall replicates
-      concurrently to avoid scratch-raster write races.
+    - prepared: Pre-computed output of prep_debris_flow_simulation()
+      for this context. Reusing prepared data is required when running
+      multiple rainfall replicates concurrently to avoid scratch-raster
+      write races.
+    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
+      excluded from the analysis. Only used when prepared is None (i.e.
+      when this call runs prep_debris_flow_simulation itself).
 
     Returns:
     - Tuple of (Debris_Flow_Data, event_ts) where Debris_Flow_Data is
@@ -1418,17 +1422,9 @@ def debris_flow(
       join in prep_debris_flow_simulation enforces that filtering.
     ------------------------------------------------------------------------
     """
-    if catchment is None:
-        prepared_map = prepared or {}
-        return proj.for_each_catchment(
-            lambda c: debris_flow(
-                proj, rainfall, c, save,
-                save_daily_catchment_timeseries,
-                prepared=prepared_map.get(c),
-            )
-        )
-
-    out_path = proj.catchment_path(catchment, 'DebrisFlow')
+    ctx.validate()
+    out_path = ctx.run_path('DebrisFlow')
+    os.makedirs(out_path, exist_ok=True)
 
     # Validate rainfall units
     if 'units' not in rainfall.attrs:
@@ -1448,7 +1444,7 @@ def debris_flow(
         working_deb_flow_data = prepared.copy(deep=True)
     else:
         working_deb_flow_data = prep_debris_flow_simulation(
-            proj, catchment
+            ctx, dnbr_threshold=dnbr_threshold
         )
 
     # --- Note: this section may be superseded by recorders ----------
@@ -1542,7 +1538,7 @@ def debris_flow(
         )
         # Aggregate summary stats to subcatchments (skipped if none)
         aggregate_debris_flow_summary_to_subcatchments(
-            proj, catchment, Debris_Flow_Data
+            ctx, Debris_Flow_Data,
         )
 
     if save_daily_catchment_timeseries:
@@ -1560,10 +1556,10 @@ def debris_flow(
         flow_mass = (
             flow_mass[[CATCH_TOTAL_DEBRIS_TONNES]].resample('D').sum()
         )
-        out_name = proj.catchment_path(
-            catchment, RESULTS_FOLDER_NAME,
-            DEBRIS_OP_TIMESERIES_NAME + '.csv',
+        out_name = ctx.run_path(
+            RESULTS_FOLDER_NAME, DEBRIS_OP_TIMESERIES_NAME + '.csv',
         )
+        os.makedirs(os.path.dirname(out_name), exist_ok=True)
         logger.info(
             'Saved daily catchment-level debris flow mass totals to '
             f'{out_path}'
@@ -1596,33 +1592,33 @@ def event_ts_to_mass(
     return event_ts * mass
 
 
-def _prepare_debris_flow_per_catchment(proj, catchments=None):
+def _prepare_debris_flow_per_catchment(
+    ctx: RunContext,
+    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+):
     """
-    Run prep_debris_flow_simulation() once per catchment.
+    Run prep_debris_flow_simulation() once for the context.
 
-    The preparation step writes several per-catchment rasters to the
-    DebrisFlow directory and is both expensive and rainfall-independent,
-    so it is run once up-front and the result is reused across every
+    The preparation step writes scratch rasters under the event's
+    DebrisFlow directory and is expensive but rainfall-independent, so
+    it is run once up-front and the result is reused across every
     rainfall replicate.
 
     Parameters:
-    - proj: FireImpactsProject instance.
-    - catchments: List of catchment names to prepare.  Defaults to all
-      catchments in the project.
+    - ctx: event-level RunContext.
+    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
+      excluded from the analysis.
 
     Returns:
-    - Dict keyed by catchment name, each value the DataFrame returned
-      by prep_debris_flow_simulation().
+    - The prepared DataFrame returned by prep_debris_flow_simulation();
+      pass straight through to debris_flow(prepared=...).
     """
-    if catchments is None:
-        catchments = proj.catchments
-    return {
-        c: prep_debris_flow_simulation(proj, c) for c in catchments
-    }
+    return prep_debris_flow_simulation(
+        ctx, dnbr_threshold=dnbr_threshold)
 
 
 def run_debris_flow_replicate(
-    proj: FireImpactsProject,
+    ctx: RunContext,
     rainfall_12min,
     replicate_idx: int,
     save: bool = False,
@@ -1633,20 +1629,22 @@ def run_debris_flow_replicate(
     Run the debris flow simulation for a single rainfall replicate.
 
     Parameters:
-    - proj: FireImpactsProject instance.
+    - ctx: run-level RunContext.
     - rainfall_12min: xarray.Dataset of 12-minute rainfall intensities
       with a 'replicate' dimension.
     - replicate_idx: Index of the replicate to run.
     - save: Whether to save per-headwater results to disk.
     - save_daily_catchment_timeseries: Whether to save daily totals.
-    - prepared: Optional {catchment: DataFrame} mapping of pre-computed
-      prep_debris_flow_simulation() outputs.  Required when running
-      concurrently across replicates — see run_debris_flow_all_replicates.
+    - prepared: Optional pre-computed prep_debris_flow_simulation()
+      DataFrame for this context. Required when running concurrently
+      across replicates — see run_debris_flow_all_replicates.
 
     Returns:
-    - Dict keyed by catchment name, each value a (summary_df, mass_ts)
-      tuple where mass_ts is the event-count timeseries converted to
-      kg via event_ts_to_mass().
+    - Dict keyed by catchment name (single key for ctx.catchment) with
+      a (summary_df, mass_ts) tuple. mass_ts is the event-count
+      timeseries converted to kg via event_ts_to_mass(). The per-
+      catchment wrapper matches the shape consumed by save_run /
+      ensemble.py helpers.
     """
     rain_seq = rainfall_12min.rainfall[:, replicate_idx].to_pandas()
     # Preserve units attribute if present on the dataset
@@ -1654,23 +1652,18 @@ def run_debris_flow_replicate(
     if units is not None:
         rain_seq.attrs['units'] = units
 
-    per_catchment = debris_flow(
-        proj, rain_seq,
-        catchment=None,
+    summary_df, event_ts = debris_flow(
+        ctx, rain_seq,
         save=save,
         save_daily_catchment_timeseries=save_daily_catchment_timeseries,
         prepared=prepared,
     )
-
-    results = {}
-    for c_name, (summary_df, event_ts) in per_catchment.items():
-        mass_ts = event_ts_to_mass(summary_df, event_ts)
-        results[c_name] = (summary_df, mass_ts)
-    return results
+    mass_ts = event_ts_to_mass(summary_df, event_ts)
+    return {ctx.catchment: (summary_df, mass_ts)}
 
 
 def run_debris_flow_all_replicates(
-    proj: FireImpactsProject,
+    ctx: RunContext,
     rainfall_12min,
     n_workers: int = None,
     scheduler: str = 'threads',
@@ -1678,16 +1671,17 @@ def run_debris_flow_all_replicates(
     save: bool = False,
     save_daily_catchment_timeseries: bool = False,
     prepared=None,
+    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
 ) -> dict:
     """
     Run the debris flow simulation across all replicates in parallel.
 
     The expensive, rainfall-independent preparation step is computed
-    once per catchment up-front and reused to avoid scratch-raster
-    write races when replicates run concurrently.
+    once up-front and reused to avoid scratch-raster write races when
+    replicates run concurrently.
 
     Parameters:
-    - proj: FireImpactsProject instance.
+    - ctx: run-level RunContext.
     - rainfall_12min: xarray.Dataset of 12-minute rainfall intensities
       with a 'replicate' dimension.
     - n_workers: Number of Dask workers.  None lets Dask decide.
@@ -1697,9 +1691,11 @@ def run_debris_flow_all_replicates(
     - save: Whether to save per-headwater results to disk per replicate.
     - save_daily_catchment_timeseries: Whether to save daily totals per
       replicate.
-    - prepared: Optional pre-computed {catchment: DataFrame} mapping.
-      When None, prep_debris_flow_simulation is invoked once per
-      catchment before dispatching replicates.
+    - prepared: Optional pre-computed DataFrame from
+      prep_debris_flow_simulation(). When None, the prep step is
+      invoked once before dispatching replicates.
+    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
+      excluded from the analysis. Only used when prepared is None.
 
     Returns:
     - Dict of {replicate_idx: {catchment: (summary_df, mass_ts)}}.
@@ -1715,14 +1711,15 @@ def run_debris_flow_all_replicates(
 
     if prepared is None:
         logger.info(
-            'Preparing debris-flow inputs once per catchment '
-            '(%d catchment(s)).', len(proj.catchments),
+            'Preparing debris-flow inputs for %s once before '
+            'dispatching replicates.', ctx.catchment,
         )
-        prepared = _prepare_debris_flow_per_catchment(proj)
+        prepared = _prepare_debris_flow_per_catchment(
+            ctx, dnbr_threshold=dnbr_threshold)
 
     tasks = [
         dask.delayed(run_debris_flow_replicate)(
-            proj, rainfall_12min, i,
+            ctx, rainfall_12min, i,
             save=save,
             save_daily_catchment_timeseries=(
                 save_daily_catchment_timeseries
@@ -1738,20 +1735,17 @@ def run_debris_flow_all_replicates(
 
 
 def run_debris_flow_sim(
-    project: FireImpactsProject,
+    ctx: RunContext,
     rainfall: pd.DataFrame,
-    catchment=None,
     recorders=None,
 ):
     """
     Run the debris flow simulation and record results as specified.
 
     Parameters:
-    - project: FireImpactsProject instance.
+    - ctx: run-level RunContext.
     - rainfall: 12-minute rainfall intensity data (mm/h) as a Series
       or DataFrame with a datetime index.
-    - catchment: Name of the catchment to process.  Pass None to
-      process all catchments.
     - recorders: Optional dict of recorder functions to accumulate
       results during the simulation.
 
@@ -1759,19 +1753,12 @@ def run_debris_flow_sim(
     - None (results are accumulated via the recorder objects).
     ------------------------------------------------------------------------
     Notes:
-    - This function handles the catchment iteration and recorder
-      management; the core simulation logic is in debris_flow().
+    - The core simulation logic is in debris_flow().
     ------------------------------------------------------------------------
     """
-    # Recurse over all catchments if none was specified
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c: run_debris_flow_sim(
-                project, rainfall, c, recorders
-            )
-        )
+    ctx.validate()
     # Trim rainfall to start from the fire end date
-    fire_end_dt = project.get_fire_end_date(catchment)
+    fire_end_dt = ctx.fire_end_date
     rainfall_trimmed = rainfall.loc[fire_end_dt:]
 
     # Check if timeseries covers a full 2 years since fire
@@ -1917,7 +1904,7 @@ def generate_debris_flow(
 
 
 def record_headwaters_timeseries(
-    proj: FireImpactsProject,
+    project: FireImpactsProject,
     variable_name: str,
     agg_type: str = 'sum',
     label_field=None,
@@ -1928,7 +1915,7 @@ def record_headwaters_timeseries(
     headwater.
 
     Parameters:
-    - proj: FireImpactsProject instance.
+    - project: FireImpactsProject instance.
     - variable_name: Name of the variable to record.
     - agg_type: Aggregation type to apply (e.g. 'sum', 'mean').
     - label_field: Optional field to use as the headwater label.

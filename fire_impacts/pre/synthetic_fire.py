@@ -18,6 +18,7 @@ import os
 
 from . import data_sources
 from .project import FireImpactsProject, save_catchment_raster
+from ..context import RunContext  # noqa: F401
 from .util import read_raster
 from .. import const as c
 
@@ -144,19 +145,18 @@ def load_reference_dnbr(url_or_path):
 # ---------------------------------------------------------------------------
 
 def generate_synthetic_fire(
-    project,
-    catchment=None,
+    ctx: 'RunContext',
     severity='medium',
     random_seed=None,
     reference_url=None,
 ):
     """
-    Generate a synthetic dNBR map for a catchment and save it.
+    Generate a synthetic dNBR map and save it under the context's event.
 
     Fetches a pre-clipped reference dNBR raster for the requested
     severity, extracts its empirical distribution, samples onto the
-    catchment's DEM grid, and saves the result as masked_dNBR.tif
-    in the catchment's FireSeverity folder.
+    catchment's DEM grid, and saves the result as masked_dNBR.tif in
+    the event's FireSeverity folder.
 
     This is the synthetic-fire equivalent of the real-fire pipeline
     (severity.calculate_fire_severity + mask_dnbr.mask_dnbr). The
@@ -164,10 +164,7 @@ def generate_synthetic_fire(
     simulation modules.
 
     Parameters:
-    - project: FireImpactsProject instance with at least the DEM
-      already extracted.
-    - catchment: catchment name to process; if None, processes all
-      catchments in the project.
+    - ctx: event-level RunContext identifying the catchment + event.
     - severity: fire severity template to use: 'medium' or 'high'
       (also accepts 'med', 'm', 'hi', 'h').
     - random_seed: integer seed for reproducible output, or None.
@@ -175,15 +172,11 @@ def generate_synthetic_fire(
       given severity.  Useful for custom or locally-hosted fires.
 
     Returns:
-    - The generated synthetic dNBR array (for the last catchment
-      processed).
+    - The generated synthetic dNBR array.
     """
-    if catchment is None:
-        return project.for_each_catchment(
-            lambda c_name: generate_synthetic_fire(
-                project, c_name, severity, random_seed, reference_url,
-            )
-        )
+    ctx.validate(require_event_dir=False)
+    project = ctx.project
+    catchment = ctx.catchment
 
     # --- Resolve severity ---
     sev_key = _SEVERITY_ALIASES.get(severity.strip().lower())
@@ -198,7 +191,7 @@ def generate_synthetic_fire(
     distribution, _ = load_reference_dnbr(url)
 
     # --- Read DEM to get the target grid parameters ---
-    dem_path = project.catchment_path(catchment, 'Topography', 'DEM.tif')
+    dem_path = ctx.catchment_path('Topography', 'DEM.tif')
     dem_data, dem_meta = read_raster(dem_path)
     transform = dem_meta['transform']
     crs = dem_meta['crs']
@@ -216,14 +209,17 @@ def generate_synthetic_fire(
         distribution, boundary, transform, shape, random_seed,
     )
 
-    # --- Save as masked_dNBR.tif ---
+    # --- Save as masked_dNBR.tif in the event's FireSeverity folder ---
+    out_path = ctx.event_path(c.FIRE_SEVERITY_FOLDER_NAME, 'masked_dNBR.tif')
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     save_catchment_raster(
         project=project,
-        catchment_name=catchment,
+        catchment=catchment,
         file_name='masked_dNBR',
         section=c.FIRE_SEVERITY_FOLDER_NAME,
         data=dnbr,
         meta=dem_meta,
+        out_path=out_path,
     )
     logger.info("Saved synthetic masked_dNBR.tif for %s", catchment)
 

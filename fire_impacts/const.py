@@ -54,24 +54,90 @@ CHANNEL_PARAMETERS = dict(
     )
 NUM_SIM_YEARS = 2
 
+# Headwaters with a mean dNBR below this value are excluded from the
+# debris-flow analysis (they are considered insufficiently burnt).
+DEFAULT_DEBRIS_DNBR_THRESHOLD = 100
+
 # ------- Fire recovery time and intervals: ---------------------------------------------
-DEFAULT_RECOVERY_TIMES = [0, 0.5, 1, 1.5, 2, 2.5]
+# Recovery is specified as a single monotonic array of *breakpoints* in
+# years since the fire end date. n+1 breakpoints define n contiguous
+# recovery windows: window i spans [b_i, b_{i+1}) and is modelled at
+# recovery time b_i (the window start). This replaces the old
+# (recovery_times + interval) pair, which was redundant for contiguous
+# windows and could silently leave gaps/overlaps.
+DEFAULT_RECOVERY_BREAKPOINTS = [0, 0.5, 1, 1.5, 2, 2.5, 3]
+
+# Deprecated: retained for one release, derived from the breakpoints.
+# Prefer DEFAULT_RECOVERY_BREAKPOINTS.
+DEFAULT_RECOVERY_TIMES = DEFAULT_RECOVERY_BREAKPOINTS[:-1]
 DEFAULT_RECOVERY_INTERVAL_YEARS = 0.5
+
+# Per-event definition file, written at Events/<event>/event.json.
+EVENT_DEFINITION_NAME = 'event.json'
 
 
 def recovery_time_suffix(recovery_time: float) -> str:
     """
     Convert a recovery time value into a safe filename suffix.
 
+    Whole numbers normalise to their integer form, so that a breakpoint
+    list of ints and one of floats name the same files. The layers are
+    written from the breakpoints passed to compute_adjusted_k_c but read
+    back from the persisted run-context, and without this a 0 vs 0.0
+    mismatch between the two looks like a missing layer.
+
+    Numpy scalars are accepted and normalise the same way.
+
     Examples
     --------
     0    -> t0
+    0.0  -> t0
     0.5  -> t0_5
     1    -> t1
     1.5  -> t1_5
     2.5  -> t2_5
     """
-    return f"t{str(recovery_time).replace('.', '_')}"
+    value = float(recovery_time)
+    if value.is_integer():
+        value = int(value)
+    return f"t{str(value).replace('.', '_')}"
+
+
+def recovery_windows(breakpoints):
+    """
+    Convert recovery breakpoints into (start, end) window pairs in years.
+
+    n+1 monotonically increasing breakpoints yield n contiguous windows;
+    window i is [breakpoints[i], breakpoints[i+1]) and is modelled at
+    recovery time breakpoints[i].
+
+    Raises ValueError if fewer than two breakpoints are given or they are
+    not strictly increasing.
+    """
+    bps = list(breakpoints)
+    if len(bps) < 2:
+        raise ValueError(
+            "recovery breakpoints need at least two values (one window); "
+            f"got {bps!r}."
+        )
+    if any(b <= a for a, b in zip(bps, bps[1:])):
+        raise ValueError(
+            f"recovery breakpoints must be strictly increasing; got {bps!r}."
+        )
+    return list(zip(bps[:-1], bps[1:]))
+
+
+def breakpoints_from_times_and_interval(recovery_times, interval):
+    """
+    Convert the deprecated (recovery_times, interval) pair into breakpoints.
+
+    Appends a trailing boundary (last start + interval) to close the final
+    window. Used to keep deprecated call sites working.
+    """
+    times = list(recovery_times)
+    if not times:
+        raise ValueError("recovery_times is empty.")
+    return times + [times[-1] + interval]
 
 # ------- Dtype standards: ---------------------------------------------
 
@@ -156,6 +222,11 @@ RUSLE_SC_SUMMARY_NAME = 'rusle_subcatchment_summary'
 DEBRIS_SC_SUMMARY_NAME = 'DebrisFlowData_subcatchments'
 # Rainfall:
 RAIN_DAILY_DEPTH_TIMESERIES_NAME = 'rain_depth_daily_time_series'
+# Persisted stochastic rainfall for an ensemble, written under
+# Ensembles/<ensemble>/. get_rainfall_replicates caches its output here and
+# reuses it on repeat runs; save_ensemble_run / load_ensemble_rainfall use
+# the same file.
+RAINFALL_NAME = 'rainfall.nc'
 
 # ------- Directory folder names: -------------------------------------
 TOPOGRAPHY_FOLDER_NAME = 'Topography'
@@ -166,12 +237,16 @@ DELIVERY_FOLDER_NAME = 'Delivery'
 SUBCATCHMENTS_FOLDER_NAME = 'Subcatchments'
 RESULTS_FOLDER_NAME = 'Results'
 RESULTS_BASELINE_FOLDER_NAME = 'Results_baseline'
+# Standard subfolders created inside every catchment directory. These hold
+# fire-independent, catchment-scope data. FireSeverity is not included here:
+# it is per-event and created under Events/<event>/ by calculate_fire_severity.
+# Results (and Results_baseline, DebrisFlow) are per-run and created under
+# Runs/<event>/<ensemble>/ by the simulation, so they are not pre-created at
+# catchment scope either.
 PER_CATCHMENT_FOLDERS = [
     TOPOGRAPHY_FOLDER_NAME,
-    FIRE_SEVERITY_FOLDER_NAME,
     SOILS_FOLDER_NAME,
     ERODIBILITY_FOLDER_NAME,
     DELIVERY_FOLDER_NAME,
     SUBCATCHMENTS_FOLDER_NAME,
-    RESULTS_FOLDER_NAME
     ]
