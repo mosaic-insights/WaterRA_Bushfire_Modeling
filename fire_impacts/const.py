@@ -237,12 +237,16 @@ DELIVERY_FOLDER_NAME = 'Delivery'
 SUBCATCHMENTS_FOLDER_NAME = 'Subcatchments'
 RESULTS_FOLDER_NAME = 'Results'
 RESULTS_BASELINE_FOLDER_NAME = 'Results_baseline'
+# Standard subfolders created inside every catchment directory. These hold
+# fire-independent, catchment-scope data. FireSeverity is not included here:
+# it is per-event and created under Events/<event>/ by calculate_fire_severity.
+# Results (and Results_baseline, DebrisFlow) are per-run and created under
+# Runs/<event>/<ensemble>/ by the simulation, so they are not pre-created at
+# catchment scope either.
 PER_CATCHMENT_FOLDERS = [
     TOPOGRAPHY_FOLDER_NAME,
-    FIRE_SEVERITY_FOLDER_NAME,
     SOILS_FOLDER_NAME,
     ERODIBILITY_FOLDER_NAME,
     DELIVERY_FOLDER_NAME,
     SUBCATCHMENTS_FOLDER_NAME,
-    RESULTS_FOLDER_NAME
     ]
