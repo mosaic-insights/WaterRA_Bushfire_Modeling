@@ -6,6 +6,8 @@ reprojecting, and reading rasters — used by the higher-level
 pre-processing modules.
 """
 
+from dataclasses import dataclass
+
 import geopandas as gpd
 from .project import APPROX_KM_PER_DEGREE
 from owslib.wcs import WebCoverageService
@@ -21,6 +23,66 @@ import os
 import tempfile
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# In-memory raster container
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, eq=False)
+class RasterGrid:
+    """
+    A single-band raster in memory: data plus the spatial metadata needed
+    to interpret or re-save it.
+
+    Produced by read_raster_masked(), where nodata cells have already been
+    replaced with NaN in `data`. `nodata_mask` records which cells matched
+    the source's declared nodata value (all-False when the source declared
+    none, or declared NaN — NaN never compares equal to itself, matching
+    the long-standing `data == nodata` behaviour of the call sites this
+    consolidates).
+    """
+    data: np.ndarray
+    transform: object   # affine.Affine
+    crs: object         # rasterio CRS
+    nodata_mask: np.ndarray
+
+    @property
+    def shape(self):
+        return self.data.shape
+
+    @property
+    def xres(self):
+        """East-west pixel width in CRS units."""
+        return self.transform[0]
+
+    @property
+    def yres(self):
+        """North-south pixel height in CRS units (positive)."""
+        return abs(self.transform[4])
+
+    @property
+    def pixel_area(self):
+        return self.xres * self.yres
+
+    def meta(self, dtype='float32', nodata=np.nan, **updates):
+        """
+        Build a rasterio metadata dict for writing a single-band GeoTIFF
+        on this grid. Defaults describe the library's standard output
+        profile (float32, NaN nodata).
+        """
+        out = {
+            'driver': 'GTiff',
+            'height': self.shape[0],
+            'width': self.shape[1],
+            'count': 1,
+            'dtype': dtype,
+            'crs': self.crs,
+            'transform': self.transform,
+            'nodata': nodata,
+        }
+        out.update(updates)
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +138,13 @@ def clip_raster(
             "nodata": np.nan,
         })
 
-    # Write the clipped raster to a temporary file
-    temp_file = "clipped_temp.tif"
+    # Write the clipped raster to a unique temporary file so concurrent
+    # runs (e.g. parallel catchments) don't clobber each other.
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="clipped_", suffix=".tif", delete=False,
+    )
+    temp_file = tmp.name
+    tmp.close()
     with rio.open(temp_file, "w", **out_meta) as dest:
         dest.write(out_image)
 
@@ -275,6 +342,262 @@ def read_aligned(
                 data = src.read(1, masked=True)
                 data[data.mask] = np.nan
                 return data
+
+
+def read_raster_masked(path_to_file: str) -> RasterGrid:
+    """
+    Read a single-band raster with nodata replaced by NaN.
+
+    Consolidates the open/read/`np.where(data == nodata, nan, data)`
+    preamble repeated across the preprocessing modules. Sources whose
+    declared nodata is already NaN come back unchanged (their nodata
+    cells are already NaN in the data).
+
+    Parameters:
+    - path_to_file: path to the raster file.
+
+    Returns:
+    - RasterGrid with `data` (nodata as NaN), `transform`, `crs`, and
+      `nodata_mask` (True where the raw data equalled the declared
+      nodata value).
+    """
+    data, meta = read_raster(path_to_file)
+    nodata = meta.get('nodata')
+    if nodata is None:
+        nodata_mask = np.zeros(data.shape, dtype=bool)
+    else:
+        nodata_mask = data == nodata
+        data = np.where(nodata_mask, np.nan, data)
+    return RasterGrid(
+        data=data,
+        transform=meta['transform'],
+        crs=meta['crs'],
+        nodata_mask=nodata_mask,
+    )
+
+
+def read_aligned_like(
+    raster_fn: str,
+    like: RasterGrid,
+    resampling=Resampling.nearest,
+):
+    """
+    Read a raster reprojected onto the grid of an existing RasterGrid.
+
+    Convenience wrapper for read_aligned() that takes the target grid
+    from `like` instead of a (transform, crs, shape) triple.
+    """
+    return read_aligned(
+        raster_fn, like.transform, like.crs, like.shape,
+        resampling=resampling,
+    )
+
+
+def write_raster(
+    path: str,
+    data,
+    meta: dict,
+    *,
+    dtype='float32',
+    nodata=np.nan,
+    compress='lzw',
+    **meta_updates,
+):
+    """
+    Write a single-band GeoTIFF with the library's standard profile.
+
+    Consolidates the repeated `meta.update(...)` + `rio.open(path, 'w')`
+    blocks. The base metadata supplies the georeferencing (transform,
+    crs, height, width); dtype, nodata, and compression are standardised
+    here, and the data is cast to the output dtype on write.
+
+    Parameters:
+    - path: output GeoTIFF path (parent directory is created if needed).
+    - data: 2-D array to write.
+    - meta: base rasterio metadata dict (e.g. from the template raster,
+      or RasterGrid.meta()).
+    - dtype: output dtype (default float32).
+    - nodata: output nodata value (default NaN).
+    - compress: compression (default 'lzw'; pass None for uncompressed).
+    - meta_updates: any further metadata overrides.
+
+    Returns:
+    - None. Writes the raster to path.
+    """
+    out_meta = dict(meta)
+    out_meta.update({
+        'driver': 'GTiff',
+        'count': 1,
+        'dtype': dtype,
+        'nodata': nodata,
+    })
+    if compress is not None:
+        out_meta['compress'] = compress
+    out_meta.update(meta_updates)
+
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    # Masked arrays (e.g. from read_aligned) must be filled with the
+    # output nodata value, matching what rasterio's write() does with a
+    # masked array. np.asarray alone would silently drop the mask and
+    # expose whatever values sit under it.
+    if np.ma.isMaskedArray(data):
+        fill = out_meta['nodata']
+        if fill is None:
+            fill = data.fill_value
+        data = data.filled(fill)
+
+    with rio.open(path, 'w', **out_meta) as dst:
+        dst.write(np.asarray(data).astype(out_meta['dtype']), 1)
+    logger.debug('Wrote raster to %s', path)
+
+
+def clip_raster_in_memory(
+    raster_path: str,
+    geom_gdf: gpd.GeoDataFrame,
+    fallback_nodata=None,
+):
+    """
+    Clip a raster to a geometry and return the result as a rioxarray
+    DataArray, without writing anything to disk.
+
+    Uses rasterio.mask to crop the raster, builds an in-memory GeoTIFF
+    so that rioxarray gets the correct CRS and transform, then returns
+    the result.
+
+    Parameters:
+    - raster_path: path or GDAL-readable URL to the source raster.
+    - geom_gdf: GeoDataFrame whose geometry defines the clip extent
+      (reprojected to the raster CRS internally).
+    - fallback_nodata: nodata value to use if the source declares none.
+
+    Returns:
+    - rioxarray DataArray clipped to geom_gdf (squeeze separately if
+      needed to remove the band dimension).
+    """
+    import rioxarray as rxr
+
+    with rio.open(raster_path) as src:
+        # Reproject the clipping geometry to the raster CRS
+        geom_in = geom_gdf.to_crs(src.crs)
+
+        geoms = [
+            g for g in geom_in.geometry
+            if g is not None and not g.is_empty
+        ]
+        if not geoms:
+            raise RuntimeError("No valid geometry to clip against.")
+
+        nd = src.nodata if src.nodata is not None else fallback_nodata
+
+        img, tr = mask(
+            src,
+            geoms,
+            crop=True,
+            nodata=nd,
+            filled=True,
+        )
+
+        # Build an in-memory GeoTIFF so rioxarray can open it with a
+        # valid CRS and transform (rioxarray needs an open rasterio src).
+        out_meta = src.meta.copy()
+        out_meta.update({
+            "height": img.shape[1],
+            "width": img.shape[2],
+            "transform": tr,
+            "nodata": nd,
+        })
+
+        with rio.MemoryFile() as memfile:
+            with memfile.open(**out_meta) as dst:
+                dst.write(img)
+            # Re-open with rioxarray from the in-memory bytes
+            with memfile.open() as memsrc:
+                da = rxr.open_rasterio(memsrc, masked=True)
+
+    return da
+
+
+# ---------------------------------------------------------------------------
+# Terrain and flow-routing helpers
+# ---------------------------------------------------------------------------
+
+def slope_from_dem(dem_data: np.ndarray, xres: float, yres: float):
+    """
+    Compute terrain slope from a DEM array via central differences.
+
+    The single implementation of the gradient -> slope-ratio math that
+    was previously repeated in topography.dem_to_slope, rusle.compute_lsi
+    and rusle.compute_sediment_delivery_ratio.
+
+    Parameters:
+    - dem_data: 2-D DEM array (nodata as NaN), in metres.
+    - xres: east-west pixel size in metres.
+    - yres: north-south pixel size in metres.
+
+    Returns:
+    - slope_ratio: rise/run slope (dimensionless).
+    - dz_dx, dz_dy: the two np.gradient components (for aspect
+      calculations).
+    """
+    dz_dx, dz_dy = np.gradient(dem_data, xres, yres)
+    slope_ratio = np.sqrt(dz_dx ** 2 + dz_dy ** 2)
+    return slope_ratio, dz_dx, dz_dy
+
+
+def condition_dem(dem_path: str):
+    """
+    Hydrologically condition a DEM: fill pits, fill depressions, and
+    resolve flats.
+
+    The single pysheds conditioning chain, used by
+    topography.hydro_force_dem and dem_flow_layers.
+
+    Parameters:
+    - dem_path: path to the DEM raster.
+
+    Returns:
+    - inflated_dem: pysheds Raster with pits, depressions, and flats
+      resolved.
+    - grid: pysheds Grid object for subsequent routing operations.
+    """
+    from pysheds.grid import Grid as _PyshedsGrid
+
+    grid = _PyshedsGrid.from_raster(dem_path)
+    dem = grid.read_raster(dem_path)
+    logger.info("Filling pits")
+    fill_dem = grid.fill_pits(dem)
+    logger.info("Filling depressions")
+    flooded_dem = grid.fill_depressions(fill_dem)
+    logger.info("Resolving flats")
+    inflated_dem = grid.resolve_flats(flooded_dem)
+    return inflated_dem, grid
+
+
+def dem_flow_layers(
+    dem_path: str,
+    dirmap: tuple = c.D8_FLOW_DIRECTIONS,
+    routing: str = c.FLOW_ROUTING_TYPE,
+):
+    """
+    Condition a DEM and compute D8 flow direction and accumulation.
+
+    Parameters:
+    - dem_path: path to the DEM raster.
+    - dirmap: D8 flow direction mapping tuple.
+    - routing: pysheds routing method (default 'd8').
+
+    Returns:
+    - grid: pysheds Grid initialised from the DEM.
+    - fdir: flow direction raster.
+    - acc: flow accumulation raster.
+    """
+    inflated_dem, grid = condition_dem(dem_path)
+    fdir = grid.flowdir(inflated_dem, dirmap=dirmap, routing=routing)
+    acc = grid.accumulation(fdir, dirmap=dirmap, routing=routing)
+    return grid, fdir, acc
 
 
 # ---------------------------------------------------------------------------

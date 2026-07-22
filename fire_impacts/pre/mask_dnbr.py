@@ -25,8 +25,8 @@ from shapely.geometry import box
 from ..context import RunContext  # noqa: F401  (used in type-only annotation)
 
 import rasterio as rio
-from rasterio.io import MemoryFile
-from rasterio.mask import mask as rio_mask
+
+from .util import clip_raster_in_memory
 
 # ---------- local ----------
 from .data_sources import DEA_LANDCOVER
@@ -165,60 +165,12 @@ def _clip_raster_to_geom_in_memory(
     """
     Clip a raster to a geometry and return the result as a DataArray.
 
-    Uses rasterio.mask to crop the raster, builds an in-memory GeoTIFF
-    so that rioxarray gets the correct CRS and transform, then returns
-    the result without writing anything to disk.
-
-    Parameters:
-    - raster_path: path or GDAL-readable URL to the source raster.
-    - geom_gdf: GeoDataFrame whose geometry defines the clip extent.
-    - fallback_nodata: nodata value to use if the source has none.
-
-    Returns:
-    - rioxarray DataArray clipped to geom_gdf (squeeze separately if
-      needed to remove the band dimension).
+    Thin wrapper around pre.util.clip_raster_in_memory that supplies the
+    DEA Land Cover fallback nodata value.
     """
-    with rio.open(raster_path) as src:
-        # Reproject the clipping geometry to the raster CRS
-        geom_in = geom_gdf.to_crs(src.crs)
-
-        geoms = [
-            g for g in geom_in.geometry
-            if g is not None and not g.is_empty
-        ]
-        if not geoms:
-            raise RuntimeError("No valid geometry to clip against.")
-
-        nd = src.nodata if src.nodata is not None else fallback_nodata
-
-        img, tr = rio_mask(
-            src,
-            geoms,
-            crop=True,
-            nodata=nd,
-            filled=True,
-        )
-
-        # Build an in-memory GeoTIFF so rioxarray can open it with a
-        # valid CRS and transform (rioxarray needs an open rasterio src).
-        meta = src.meta.copy()
-        meta.update(
-            {
-                "height": img.shape[1],
-                "width": img.shape[2],
-                "transform": tr,
-                "nodata": nd,
-            }
-        )
-
-        with MemoryFile() as memfile:
-            with memfile.open(**meta) as dst:
-                dst.write(img)
-            # Re-open with rioxarray from the in-memory bytes
-            with memfile.open() as memsrc:
-                da = rxr.open_rasterio(memsrc, masked=True)
-
-    return da
+    return clip_raster_in_memory(
+        raster_path, geom_gdf, fallback_nodata=fallback_nodata,
+    )
 
 
 # ---------------------------------------------------------------------------

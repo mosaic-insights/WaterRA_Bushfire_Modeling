@@ -8,6 +8,7 @@ FireSeverity folder.
 """
 
 import os
+import shutil
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -485,8 +486,10 @@ def write_raster_xarray(
     else:
         final_path = tmp_path
 
-    # Rename the raster to the final output name
-    os.rename(final_path, out_path)
+    # Move the raster to the final output name (shutil.move rather than
+    # os.rename: the clipped temp file may live on a different
+    # filesystem, where a bare rename raises EXDEV)
+    shutil.move(final_path, out_path)
 
 
 # ---------------------------------------------------------------------------

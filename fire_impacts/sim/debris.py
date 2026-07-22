@@ -20,7 +20,7 @@ from fire_impacts.const import *
 from fire_impacts.pre import topography
 from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.context import RunContext
-from fire_impacts.pre.util import read_aligned, read_raster
+from fire_impacts.pre.util import read_aligned, read_raster, write_raster
 from fire_impacts.util import load_package_data, unique_file_matching
 from pysheds.grid import Grid
 import os
@@ -82,11 +82,12 @@ def get_flow_layers(
             flow_dir_array, flow_dir_meta, try_flowdir_path
         )
 
-    # No saved raster — compute from the hydrologically enforced DEM
-    except FileNotFoundError:
+    # No saved raster — compute from the hydrologically enforced DEM.
+    # (rasterio raises its own RasterioIOError, not FileNotFoundError,
+    # for a missing path.)
+    except (FileNotFoundError, rasterio.errors.RasterioIOError):
         flow_dir_data, flow_dir_meta, grid = topography.compute_flow_dir(
-            hydro_dem, dem_meta, grid, dirmap,
-            ctx.project, ctx.catchment,
+            hydro_dem, dem_meta, grid, dirmap, ctx,
         )
 
     # Check whether a pre-computed flow accumulation raster is saved
@@ -106,10 +107,9 @@ def get_flow_layers(
         )
 
     # No saved raster — compute from the flow direction raster
-    except FileNotFoundError:
+    except (FileNotFoundError, rasterio.errors.RasterioIOError):
         flow_acc_data, flow_acc_meta, _ = topography.compute_flow_accum(
-            flow_dir_data, flow_dir_meta, grid, dirmap,
-            ctx.project, ctx.catchment,
+            flow_dir_data, flow_dir_meta, grid, dirmap, ctx,
         )
 
     return flow_dir_data, flow_dir_meta, flow_acc_data, flow_acc_meta
@@ -201,9 +201,8 @@ def prep_debris_flow_simulation(
 
     # Compute slope from the hydro DEM as a rise/run ratio
     slope_h_ratio, slope_h_meta = topography.dem_to_slope(
-        project,
+        ctx,
         (dem_data, dem_meta),
-        catchment,
         gradient=True,
         hydro=True,
         save=False,
@@ -487,8 +486,10 @@ def accumulate_erosion(
     fn = tmp.name
     tmp.close()
     try:
-        with rasterio.open(fn, 'w', **rio_meta) as dest:
-            dest.write(erosion_values.astype('float32'), 1)
+        write_raster(
+            fn, erosion_values, rio_meta,
+            nodata=rio_meta.get('nodata'),
+        )
         grid = Grid.from_raster(fn)
         e_raster = grid.read_raster(fn)
         accum_raster = grid.accumulation(
@@ -499,13 +500,13 @@ def accumulate_erosion(
         if save_path is not None:
             if os.path.exists(save_path):
                 os.remove(save_path)
-            with rasterio.open(save_path, 'w', **rio_meta) as dest:
-                dest.write(
-                    accum_raster.astype(rasterio.float32), 1
-                )
-                logger.info(
-                    f'Saved cumulative erosion raster to {save_path}'
-                )
+            write_raster(
+                save_path, accum_raster, rio_meta,
+                nodata=rio_meta.get('nodata'),
+            )
+            logger.info(
+                f'Saved cumulative erosion raster to {save_path}'
+            )
         return accum_raster
     finally:
         if os.path.exists(fn):
@@ -608,8 +609,10 @@ def create_erosion_sense_check(
     E_all_mass_ha_path = os.path.join(
         save_loc, f"Erosion_{erosion_type}_mass_per_ha.tif"
     )
-    with rasterio.open(E_all_mass_ha_path, 'w', **rio_meta) as dest:
-        dest.write(E_all_mass_ha.astype('float32'), 1)
+    write_raster(
+        E_all_mass_ha_path, E_all_mass_ha, rio_meta,
+        nodata=rio_meta.get('nodata'),
+    )
 
     return E_all_mass_ha
 

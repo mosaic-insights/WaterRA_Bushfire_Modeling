@@ -285,11 +285,10 @@ def dem_to_slope(
         pix_width *= crs_unit_to_metres
         pix_height *= crs_unit_to_metres
 
-    # Horizontal and vertical gradients along each cell axis
-    horiz_grad, vert_grad = np.gradient(
+    # Slope from central differences (shared implementation in pre.util)
+    terrain_grad, _, _ = slope_from_dem(
         data_present, pix_width, pix_height
     )
-    terrain_grad = np.sqrt(horiz_grad ** 2 + vert_grad ** 2)
 
     # Convert to degrees unless the caller wants raw gradient
     terr_slope_rad = np.arctan(terrain_grad)
@@ -337,21 +336,11 @@ def hydro_force_dem(dem_path: str):
       resolved.
     - grid: pysheds Grid object used for subsequent routing operations.
     """
-    grid = Grid.from_raster(dem_path)
     logger.info(
         "Creating hydrologically-enforced DEM from %s", dem_path
     )
-    dem = grid.read_raster(dem_path)
-
-    # Apply hydrological fixes using pysheds
-    logger.info("Filling pits")
-    fill_dem = grid.fill_pits(dem)
-    logger.info("Filling depressions")
-    flooded_dem = grid.fill_depressions(fill_dem)
-    logger.info("Resolving flats")
-    inflated_dem = grid.resolve_flats(flooded_dem)
-
-    return inflated_dem, grid
+    # Apply hydrological fixes using the shared pysheds chain in pre.util
+    return condition_dem(dem_path)
 
 
 # ---------------------------------------------------------------------------
@@ -608,12 +597,6 @@ def extract_headwaters(
     stream_network_file = ctx.catchment_path(
         "Topography", "Stream_Network.tif",
     )
-    stream_meta = meta.copy()
-    stream_meta.update({
-        "dtype": "int32",
-        "count": 1,
-        "nodata": NODATA_VAL_INT,
-    })
 
     stream_network_array = (
         np.ones_like(flow_acc_data, dtype=np.int32) * -9999
@@ -630,8 +613,10 @@ def extract_headwaters(
             ):
                 stream_network_array[row, col] = 1
 
-    with rio.open(stream_network_file, "w", **stream_meta) as dst:
-        dst.write(stream_network_array, 1)
+    write_raster(
+        stream_network_file, stream_network_array, meta,
+        dtype="int32", nodata=NODATA_VAL_INT,
+    )
     logger.info("Saved Stream Network to: %s", stream_network_file)
 
     # Build a spatial index for quick branch lookups
@@ -752,17 +737,11 @@ def extract_headwaters(
 
     # Save the subcatchment raster
     subcatchment_raster[subcatchment_raster == 0] = -9999
-    meta.update({
-        "driver": "GTiff",
-        "height": subcatchment_raster.shape[0],
-        "width": subcatchment_raster.shape[1],
-        "transform": transform,
-        "crs": crs,
-        "nodata": -9999,
-    })
     output_raster_path = ctx.catchment_path("Topography", "Headwaters.tif")
-    with rio.open(output_raster_path, "w", **meta) as dst:
-        dst.write(subcatchment_raster, 1)
+    write_raster(
+        output_raster_path, subcatchment_raster, meta,
+        dtype=meta["dtype"], nodata=-9999,
+    )
 
     # Save the headwater summary CSV
     hw_data = pd.DataFrame.from_records(records)

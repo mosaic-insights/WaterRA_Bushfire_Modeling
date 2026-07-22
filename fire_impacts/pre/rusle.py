@@ -9,15 +9,14 @@ folders.
 """
 
 from fire_impacts.pre.util import (
-    clip_and_reproject_raster, read_raster, read_aligned
+    clip_and_reproject_raster, read_raster_masked, read_aligned_like,
+    write_raster, slope_from_dem, dem_flow_layers
 )
 from fire_impacts import const as c
-import rasterio as rio
 from .project import FireImpactsProject
 from ..context import RunContext
 from .topography import D8_FLOW_DIRECTIONS
 from .data_sources import CSIRO_C_FACTOR_GRID, CSIRO_K_FACTOR_GRID
-from pysheds.grid import Grid
 import numpy as np
 import os
 import logging
@@ -68,6 +67,9 @@ def compute_adjusted_k_c(
 
     shp = project.boundary_files[catchment]
 
+    dem_fn = ctx.catchment_path('Topography', 'DEM.tif')
+    dem_grid = read_raster_masked(dem_fn)
+
     # Base C and K factors are static (do not depend on the fire) and
     # live at the catchment level.
     os.makedirs(ctx.catchment_path('Erodibility'), exist_ok=True)
@@ -75,26 +77,9 @@ def compute_adjusted_k_c(
 
     if c_factor_fn is None:
         # Create a constant C-factor layer of 0.01 over valid DEM cells.
-        dem_fn = ctx.catchment_path('Topography', 'DEM.tif')
-
-        with rio.open(dem_fn) as dem_src:
-            dem_data = dem_src.read(1)
-            dem_meta = dem_src.meta.copy()
-            dem_nodata = dem_src.nodata
-
-        C_default = np.full(dem_data.shape, 0.01, dtype=np.float32)
-
-        if dem_nodata is not None:
-            C_default = np.where(dem_data == dem_nodata, np.nan, C_default)
-
-        dem_meta.update({
-            "dtype": "float32",
-            "nodata": np.nan,
-            "compress": "lzw"
-        })
-
-        with rio.open(c_factor_out, "w", **dem_meta) as dest:
-            dest.write(C_default, 1)
+        C_default = np.full(dem_grid.shape, 0.01, dtype=np.float32)
+        C_default = np.where(dem_grid.nodata_mask, np.nan, C_default)
+        write_raster(c_factor_out, C_default, dem_grid.meta())
 
     else:
         # A user-supplied C-factor raster is clipped to the catchment.
@@ -107,26 +92,18 @@ def compute_adjusted_k_c(
         ctx.catchment_path('Erodibility', 'K_factor.tif'),
     )
 
-    dem_fn = ctx.catchment_path('Topography', 'DEM.tif')
-    dem, dem_meta = read_raster(dem_fn)
-    dem_transform = dem_meta['transform']
-    dem_crs = dem_meta['crs']
     # dNBR is fire-event-specific.
-    dNBR = read_aligned(
-        ctx.event_path('FireSeverity', 'masked_dNBR.tif'),
-        dem_transform, dem_crs, dem.shape,
+    dNBR = read_aligned_like(
+        ctx.event_path('FireSeverity', 'masked_dNBR.tif'), dem_grid,
     )
-    Cbase = read_aligned(
-        ctx.catchment_path('Erodibility', 'C_factor.tif'),
-        dem_transform, dem_crs, dem.shape,
+    Cbase = read_aligned_like(
+        ctx.catchment_path('Erodibility', 'C_factor.tif'), dem_grid,
     )
-    Kbase = read_aligned(
-        ctx.catchment_path('Erodibility', 'K_factor.tif'),
-        dem_transform, dem_crs, dem.shape,
+    Kbase = read_aligned_like(
+        ctx.catchment_path('Erodibility', 'K_factor.tif'), dem_grid,
     )
-    AI = read_aligned(
-        ctx.catchment_path('Soils', 'Aridity.tif'),
-        dem_transform, dem_crs, dem.shape,
+    AI = read_aligned_like(
+        ctx.catchment_path('Soils', 'Aridity.tif'), dem_grid,
     )
 
     # Model parameters
@@ -165,26 +142,24 @@ def compute_adjusted_k_c(
     )
     CdNBR[CdNBR > 400] = Cpeak
 
+    # Flow direction/accumulation are needed by both the LS factor and
+    # every SDR below. Condition the DEM once and share the result rather
+    # than recomputing it per output (previously it was recomputed for
+    # the LS factor and again for every per-recovery and baseline SDR).
+    topo = None
+    if compute_lsi_factor or compute_sdr:
+        topo = dem_flow_layers(dem_fn)
+
     # LS factor is static (independent of both the fire and the recovery
     # time) — written once at the catchment level.
     if compute_lsi_factor:
-        compute_lsi(ctx)
+        compute_lsi(ctx, topo=topo)
 
     # The fire-adjusted layers are per-event and per-recovery-time.
     event_erod_dir = ctx.event_path('Erodibility')
     os.makedirs(event_erod_dir, exist_ok=True)
 
-    out_meta = {
-        'driver': 'GTiff',
-        'height': dem.shape[0],
-        'width': dem.shape[1],
-        'count': 1,
-        'dtype': 'float32',
-        'crs': dem_crs,
-        'transform': dem_transform,
-        'compress': 'lzw',
-        'nodata': np.nan
-    }
+    out_meta = dem_grid.meta()
 
     for recovery_time in recovery_start_times:
         suffix = c.recovery_time_suffix(recovery_time)
@@ -208,19 +183,18 @@ def compute_adjusted_k_c(
 
         c_out = os.path.join(
             event_erod_dir, f'C_factor_adjusted_{suffix}.tif')
-        with rio.open(c_out, 'w', **out_meta) as dest:
-            dest.write(C.astype(np.float32), 1)
+        write_raster(c_out, C, out_meta)
 
         k_out = os.path.join(
             event_erod_dir, f'K_factor_adjusted_{suffix}.tif')
-        with rio.open(k_out, 'w', **out_meta) as dest:
-            dest.write(K.astype(np.float32), 1)
+        write_raster(k_out, K, out_meta)
 
         if compute_sdr:
             compute_sediment_delivery_ratio(
                 ctx,
                 c_factor_path=c_out,
                 output_suffix=suffix,
+                topo=topo,
             )
 
     # Also compute the baseline (no-fire) SDR from the unadjusted C factor,
@@ -229,7 +203,9 @@ def compute_adjusted_k_c(
     # fire-independent: written at catchment scope (see
     # compute_sediment_delivery_ratio).
     if compute_sdr:
-        compute_sediment_delivery_ratio(ctx, output_suffix='baseline')
+        compute_sediment_delivery_ratio(
+            ctx, output_suffix='baseline', topo=topo,
+        )
 
     # Persist the recovery breakpoints into the event definition so the
     # simulation step can read them back instead of re-specifying them.
@@ -249,27 +225,25 @@ def _topographic_indices(ctx: RunContext):
     - acc: Flow accumulation raster.
     """
     dem_path = ctx.catchment_path('Topography', 'DEM.tif')
-    grid = Grid.from_raster(dem_path)
-    dem_grid = grid.read_raster(dem_path)
-    dem_filled = grid.fill_pits(dem_grid)
-    dem_filled = grid.fill_depressions(dem_filled)
-    inflated_dem = grid.resolve_flats(dem_filled)
-    # Calculate flow direction and accumulation
-    fdir = grid.flowdir(inflated_dem, dirmap=D8_FLOW_DIRECTIONS)
-    acc = grid.accumulation(fdir, dirmap=D8_FLOW_DIRECTIONS)
-    return grid, fdir, acc
+    return dem_flow_layers(dem_path, dirmap=D8_FLOW_DIRECTIONS)
 
 
 # ---------------------------------------------------------------------------
 # LSI factor computation
 # ---------------------------------------------------------------------------
 
-def compute_lsi(ctx: RunContext):
+def compute_lsi(ctx: RunContext, topo=None):
     """
     Calculate the LSi (slope length-gradient) factor from a DEM.
 
     LS factor is static (does not depend on the fire), so only
     ctx.catchment is used; the event/ensemble fields are ignored.
+
+    Parameters:
+    - ctx: catchment-only RunContext.
+    - topo: optional precomputed (grid, fdir, acc) tuple from
+      dem_flow_layers() for the catchment DEM, to avoid reconditioning
+      the DEM when the caller already has one.
 
     Returns:
     - slope_degrees: Slope in degrees for each pixel.
@@ -284,23 +258,17 @@ def compute_lsi(ctx: RunContext):
     logger.info('Computing LSI factor for catchment: %s', catchment)
     dem_path = ctx.catchment_path('Topography', 'DEM.tif')
 
-    # Open the DEM raster and extract the elevation data
-    with rio.open(dem_path) as src:
-        dem_data = src.read(1)
-        transform = src.transform
-        nodata = src.nodata
+    # Open the DEM raster (nodata comes back as NaN)
+    dem_grid = read_raster_masked(dem_path)
+    dem_data = dem_grid.data
 
     # Get pixel resolution (grid cell size)
-    xres = transform[0]       # east-west pixel width
-    yres = abs(transform[4])  # north-south pixel height
-    pixel_area = xres * yres
-
-    # Replace NoData values with NaN for numerical operations
-    dem_data = np.where(dem_data == nodata, np.nan, dem_data)
+    xres = dem_grid.xres
+    yres = dem_grid.yres
+    pixel_area = dem_grid.pixel_area
 
     # Calculate slope from elevation gradients
-    dz_dx, dz_dy = np.gradient(dem_data, xres, yres)
-    slope_ratio = np.sqrt(dz_dx**2 + dz_dy**2)
+    slope_ratio, dz_dx, dz_dy = slope_from_dem(dem_data, xres, yres)
     slope_radians = np.arctan(slope_ratio)
     slope_degrees = np.degrees(slope_radians)
     slope_percent = slope_ratio * 100
@@ -316,8 +284,10 @@ def compute_lsi(ctx: RunContext):
         aspect_radians
     )
 
-    # Compute flow accumulation via pysheds
-    _, _, acc = _topographic_indices(ctx)
+    # Compute flow accumulation via pysheds (or reuse the caller's)
+    if topo is None:
+        topo = _topographic_indices(ctx)
+    _, _, acc = topo
     acc_data = np.array(acc, dtype=np.float32)
 
     # Estimate specific catchment area (Ai_in) in metres
@@ -371,14 +341,10 @@ def compute_lsi(ctx: RunContext):
 
     # Write output raster, replacing NaN with the nodata value
     nodata_value = 0.0
-    with rio.open(dem_path) as src:
-        dem_meta = src.meta.copy()
-    dem_meta.update({'dtype': rio.float32, 'nodata': nodata_value})
     LSi = np.where(np.isnan(LSi), nodata_value, LSi)
 
     lsi_path = ctx.catchment_path('Erodibility', 'LS_factor.tif')
-    with rio.open(lsi_path, 'w', **dem_meta) as out_dst:
-        out_dst.write(LSi.astype(np.float32), 1)
+    write_raster(lsi_path, LSi, dem_grid.meta(nodata=nodata_value))
 
     logger.info('LS factor computed for catchment: %s', catchment)
 
@@ -401,6 +367,7 @@ def compute_sediment_delivery_ratio(
     k=DEFAULT_K,
     c_factor_path=None,
     output_suffix=None,
+    topo=None,
 ):
     """
     Calculate the Sediment Delivery Ratio (SDR) for the context's event.
@@ -423,6 +390,9 @@ def compute_sediment_delivery_ratio(
       rasters, e.g. 't0' -> SDR_t0.tif. Defaults to 'baseline' when
       no c_factor_path is supplied so the output matches the layer the
       baseline simulation reads (SDR_baseline.tif).
+    - topo: optional precomputed (grid, fdir, acc) tuple from
+      dem_flow_layers() for the catchment DEM. compute_adjusted_k_c
+      passes this so the DEM is conditioned once rather than per SDR.
 
     Returns:
     - slope_ratio: Slope as a dimensionless ratio.
@@ -466,23 +436,20 @@ def compute_sediment_delivery_ratio(
     # Step 1: Read DEM and compute flow direction, accumulation, slope
     # ------------------------------------------------------------------
     dem_path = ctx.catchment_path('Topography', 'DEM.tif')
-    with rio.open(dem_path) as src:
-        dem_data = src.read(1)
-        dem_meta = src.meta
-        transform = src.transform
-        nodata = src.nodata
-        dem_profile = src.profile
+    dem_grid = read_raster_masked(dem_path)
+    dem_data = dem_grid.data
+    null_mask = dem_grid.nodata_mask
 
-    xres = transform[0]       # east-west pixel width
-    yres = abs(transform[4])  # north-south pixel height
-    pixel_area = xres * yres
+    xres = dem_grid.xres
+    yres = dem_grid.yres
+    pixel_area = dem_grid.pixel_area
+    out_meta = dem_grid.meta()
 
-    # Replace nodata with NaN
-    null_mask = dem_data == nodata
-    dem_data = np.where(null_mask, np.nan, dem_data)
-
-    # Compute flow direction and accumulation via pysheds
-    grid, fdir, acc = _topographic_indices(ctx)
+    # Compute flow direction and accumulation via pysheds (or reuse the
+    # caller's precomputed layers)
+    if topo is None:
+        topo = _topographic_indices(ctx)
+    grid, fdir, acc = topo
     logger.info('Flow direction and accumulation computed')
 
     acc_data = np.array(acc, dtype=np.float32)
@@ -491,8 +458,7 @@ def compute_sediment_delivery_ratio(
 
     # Compute slope and apply thresholds for connectivity index.
     # Slope is clamped to [0.005, 1]; NaN cells are restored below.
-    dz_dx, dz_dy = np.gradient(dem_data, xres, yres)
-    slope_ratio = np.sqrt(dz_dx**2 + dz_dy**2)
+    slope_ratio, _, _ = slope_from_dem(dem_data, xres, yres)
     Sth = np.where(
         slope_ratio < 0.005, 0.005,
         np.where(slope_ratio <= 1, slope_ratio, 1)
@@ -502,8 +468,7 @@ def compute_sediment_delivery_ratio(
 
     # Accumulate thresholded slope over upslope contributing area
     Sth_path = os.path.join(delivery_dir, 'Sth.tif')
-    with rio.open(Sth_path, 'w', **dem_meta) as dest:
-        dest.write(Sth.astype('float32'), 1)
+    write_raster(Sth_path, Sth, out_meta)
     Sth_raster = grid.read_raster(Sth_path)
     acc_Sth = grid.accumulation(fdir=fdir, weights=Sth_raster)
     acc_Sth_arr = np.array(acc_Sth, dtype=np.float32)
@@ -521,17 +486,13 @@ def compute_sediment_delivery_ratio(
     # BFS below indexes Cth with DEM-grid coordinates. A raw read() of a
     # C factor stored at a coarser native resolution would be a different
     # shape and raise IndexError. read_aligned resamples it to match.
-    c_factor = read_aligned(
-        c_factor_path, transform, dem_meta['crs'], dem_data.shape,
-    )
+    c_factor = read_aligned_like(c_factor_path, dem_grid)
 
     # Threshold C factor to a minimum of 0.001
     Cth = np.where(c_factor < 0.001, 0.001, c_factor)
     Cth_path = os.path.join(
         delivery_dir, f'Cth{suffix_text}.tif')
-    dem_meta.update(dtype='float32')
-    with rio.open(Cth_path, 'w', **dem_meta) as dest:
-        dest.write(Cth.astype('float32'), 1)
+    write_raster(Cth_path, Cth, out_meta)
     Cth_raster = grid.read_raster(Cth_path)
     acc_Cth = grid.accumulation(fdir=fdir, weights=Cth_raster)
     acc_Cth_arr = np.array(acc_Cth, dtype=np.float32)
@@ -547,8 +508,7 @@ def compute_sediment_delivery_ratio(
     streams = area > 1.3e4
     stream_cells = np.where(streams)
     streams_path = os.path.join(delivery_dir, 'Streams.tif')
-    with rio.open(streams_path, 'w', **dem_meta) as dest:
-        dest.write(streams.astype(np.uint8), 1)
+    write_raster(streams_path, streams, out_meta)
 
     # Initialise output arrays
     distance_to_stream = np.full_like(dem_data, 0)
@@ -608,16 +568,13 @@ def compute_sediment_delivery_ratio(
 
     # Mask nodata cells and write Ddn and distance outputs
     distance_to_stream[null_mask] = np.nan
-    dem_profile.update(dtype=rio.float32, nodata=np.nan)
     dist_path = os.path.join(delivery_dir, 'Distance_to_stream.tif')
-    with rio.open(dist_path, 'w', **dem_profile) as dst:
-        dst.write(distance_to_stream.astype(rio.float32), 1)
+    write_raster(dist_path, distance_to_stream, out_meta)
 
     Ddn[null_mask] = np.nan
     Ddn_path = os.path.join(
         delivery_dir, f'Ddn{suffix_text}.tif')
-    with rio.open(Ddn_path, 'w', **dem_profile) as dst:
-        dst.write(Ddn.astype(rio.float32), 1)
+    write_raster(Ddn_path, Ddn, out_meta)
 
     # ------------------------------------------------------------------
     # Step 4: Upslope component, Connectivity Index, and SDR
@@ -628,8 +585,7 @@ def compute_sediment_delivery_ratio(
     Dup[null_mask] = np.nan
     Dup_path = os.path.join(
         delivery_dir, f'Dup{suffix_text}.tif')
-    with rio.open(Dup_path, 'w', **dem_profile) as dst:
-        dst.write(Dup.astype(rio.float32), 1)
+    write_raster(Dup_path, Dup, out_meta)
 
     # Lower bound on Ddn to avoid log10(0) in IC calculation
     EPS = 1
@@ -640,8 +596,7 @@ def compute_sediment_delivery_ratio(
     IC[null_mask] = np.nan
     IC_path = os.path.join(
         delivery_dir, f'IC{suffix_text}.tif')
-    with rio.open(IC_path, 'w', **dem_profile) as dst:
-        dst.write(IC.astype(rio.float32), 1)
+    write_raster(IC_path, IC, out_meta)
 
     logger.info('Connectivity index (IC) computed')
 
@@ -649,9 +604,7 @@ def compute_sediment_delivery_ratio(
     SDR = max_sdr / (1 + np.exp((ic0 - IC) / k))
     output_sdr_path = os.path.join(
         delivery_dir, f'SDR{suffix_text}.tif')
-    dem_profile.update(dtype=rio.float32)
-    with rio.open(output_sdr_path, 'w', **dem_profile) as dst:
-        dst.write(SDR.astype(np.float32), 1)
+    write_raster(output_sdr_path, SDR, out_meta)
 
     logger.info(
         'Sediment Delivery Ratio computed for catchment: %s',
