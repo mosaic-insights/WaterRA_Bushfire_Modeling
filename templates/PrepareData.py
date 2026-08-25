@@ -5,7 +5,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.18.1
+#       jupytext_version: 1.19.0
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -321,6 +321,110 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 #
 # ### Required Inputs
 # The package will automatically download the national **C-factor** and **K-factor** rasters and prepare them for simulation in each catchment. No manual inputs are required for this step.
+
+# %% [markdown]
+# ## Calibration parameters
+#
+# Values like the peak post-fire cover factor (`c_peak`), the SDR ceiling
+# (`max_sdr`) or the debris-flow erosion coefficients are **calibration
+# parameters** — the literature reports ranges for them and they may need
+# tuning for your region. They are separate from unit conversions and from the
+# fixed coefficients of published equations, which are not user-editable.
+#
+# > **Status:** wiring is landing group by group. `fire_adjustment`,
+# > `delivery` and `topography` are **live** — changing them changes the
+# > layers the next cells build. `erosion`, `debris` and `severity` are
+# > declared and recorded but not yet consumed.
+#
+# > **Set these BEFORE running the cells below.** Changing a parameter does
+# > not rebuild anything by itself — if you change one after building the
+# > layers, re-run `compute_adjusted_k_c`.
+#
+# Overrides resolve through five layers, most specific winning:
+#
+# ```
+# package defaults
+#   └─ <project>/parameters.json                    "this study uses these values"
+#       └─ Catchments/<c>/parameters.json           "this catchment differs"
+#           └─ Events/<e>/event.json ("parameters") "this fire differs"
+#               └─ ctx.parameters(...)              one call
+# ```
+#
+# Every file is *sparse* — write only what you are changing.
+
+# %%
+# Inspect what is currently resolved. This returns the values AND where each
+# one came from, which is the part that matters when you come back to a
+# project months later.
+record = ctx.parameters()
+record.parameters.delivery.max_sdr
+
+# %%
+# 'default' means nobody chose it — it is just the package value.
+record.sources['delivery.max_sdr']
+
+# %% [markdown]
+# ### Setting overrides
+#
+# Write them from Python (validated before writing) or hand-edit the JSON.
+# A typo raises with a suggestion rather than being silently ignored — a
+# dropped override would let you believe you had calibrated the model when
+# you had not.
+
+# %%
+# Project-wide: applies to every catchment in this project.
+# proj.set_parameter_overrides({'delivery': {'max_sdr': 0.75}})
+
+# This catchment only:
+# proj.set_catchment_parameter_overrides(
+#     example_catchment_name, {'topography': {'max_slope_length_m': 200.0}})
+
+# This fire only:
+# ctx.set_event_parameter_overrides({'fire_adjustment': {'c_peak': 0.40}})
+
+# One call only (not persisted, recorded as 'call'):
+# ctx.parameters(delivery__max_sdr=0.9)
+
+# %% [markdown]
+# ### Not every parameter can be set at every level
+#
+# A parameter may only be set at a level at least as broad as the output it
+# controls. `topography` and `delivery` write layers built **once per
+# catchment** and shared by every fire, so they cannot be set per event — an
+# event-level value would either be ignored, or would overwrite a file the
+# other events depend on. Writing one to the wrong file raises, and the error
+# names the file to use instead:
+#
+# | Group | Settable at |
+# |---|---|
+# | `topography`, `delivery` | project, catchment |
+# | `fire_adjustment` (except `default_c_factor`), `severity` | project, catchment, event |
+# | `erosion`, `debris` | any level |
+
+# %%
+# This raises: max_sdr controls SDR_baseline.tif, which is per-catchment.
+# ctx.set_event_parameter_overrides({'delivery': {'max_sdr': 0.75}})
+
+# %% [markdown]
+# ### What was actually used
+#
+# The resolved record is written to a `provenance.json` alongside the outputs
+# it produced — at catchment, event or run scope. Note the two file names are
+# **not** interchangeable:
+#
+# | File | Who writes it | What it holds |
+# |---|---|---|
+# | `parameters.json` | you | a *sparse* set of overrides |
+# | `provenance.json` | the library | the *full* resolved set used, plus each value's origin |
+
+# %%
+# Everything nobody chose — i.e. still on package defaults:
+len(record.sources_for('default'))
+
+# %%
+# A digest identifying this exact parameter set, used to detect that derived
+# layers were built with different values than a later run resolves.
+record.digest
 
 # %% [markdown]
 # ### C- and K-Factors

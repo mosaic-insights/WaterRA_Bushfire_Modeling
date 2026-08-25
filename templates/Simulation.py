@@ -154,6 +154,39 @@ recorders = recorder_factory(ctx, rain_seq.index[0], rain_seq.index[-1])
 # %%
 
 # %% [markdown]
+# ### Calibration parameters for this run
+#
+# The RUSLE simulation and the debris flow model have their own calibration
+# parameters (`erosion` and `debris`). They resolve through the same five
+# layers as the preprocessing ones — package defaults, then
+# `<project>/parameters.json`, `Catchments/<c>/parameters.json`, the event's
+# `event.json`, then a one-off call override — with the most specific winning.
+#
+# You do not need to re-specify anything the PrepareData notebook set: the
+# context reads it back.
+#
+# > **Status:** `erosion` and `debris` are declared and recorded but **not
+# > yet consumed** — the simulation still uses its built-in defaults for
+# > these. The preprocessing groups (`fire_adjustment`, `delivery`,
+# > `topography`) are live, so the layers this run reads already reflect
+# > any overrides you set in PrepareData.
+
+# %%
+# What this run resolves, and where each value came from:
+record = ctx.parameters()
+record.parameters.erosion.support_practice_factor
+
+# %%
+# `sources` distinguishes a deliberate value from a defaulted one — the thing
+# you will want to know when you revisit these results.
+record.sources['erosion.support_practice_factor']
+
+# %%
+# `erosion` and `debris` control run-scope outputs, so unlike `topography` and
+# `delivery` they can be set at any level, including per event:
+# ctx.set_event_parameter_overrides({'erosion': {'support_practice_factor': 0.8}})
+
+# %% [markdown]
 # ### Run the simulation
 
 # %%

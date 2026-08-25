@@ -91,14 +91,14 @@ Data is stored at the **narrowest scope it depends on**. Fire-independent work (
 
 ```mermaid
 flowchart TD
-    P["my-project/"] --> C["Catchments/&lt;catchment&gt;/"]
+    P["my-project/<br/><br/>settings.json · parameters.json"] --> C["Catchments/&lt;catchment&gt;/"]
 
-    C --> CAT["<b>catchment scope</b><br/>(fire-independent, computed once)<br/><br/>Topography · Soils · Subcatchments<br/>Erodibility: base C/K/LS factors<br/>Delivery: SDR_baseline"]
+    C --> CAT["<b>catchment scope</b><br/>(fire-independent, computed once)<br/><br/>parameters.json (overrides)<br/>Topography · Soils · Subcatchments<br/>Erodibility: base C/K/LS factors<br/>Delivery: SDR_baseline"]
     C --> EV["Events/&lt;event&gt;/"]
     C --> EN["Ensembles/&lt;ensemble&gt;/"]
     C --> RU["Runs/&lt;event&gt;/&lt;ensemble&gt;/"]
 
-    EV --> EVS["<b>event scope</b><br/>(per fire, per recovery window)<br/><br/>event.json (recovery breakpoints)<br/>FireSeverity: dNBR, masked_dNBR, FireMeta<br/>Erodibility: C/K_factor_adjusted_t*<br/>Delivery: SDR_t*"]
+    EV --> EVS["<b>event scope</b><br/>(per fire, per recovery window)<br/><br/>event.json (breakpoints + overrides)<br/>FireSeverity: dNBR, masked_dNBR, FireMeta<br/>Erodibility: C/K_factor_adjusted_t*<br/>Delivery: SDR_t*"]
     EN --> ENS["<b>ensemble scope</b><br/>(one climate realisation)<br/><br/>stochastic rainfall replicates"]
     RU --> RUS["<b>run scope</b><br/>(one event × one ensemble)<br/><br/>Results · Results_baseline<br/>DebrisFlow · manifest.json"]
 ```
@@ -107,9 +107,12 @@ The same structure, as it appears on disk:
 
 ```
 my-project/
-├── settings.json
+├── settings.json                           # written by the library — don't hand-edit
+├── parameters.json                         # calibration overrides (yours, optional)
 └── Catchments/
     └── Big-River/
+        ├── parameters.json                 # calibration overrides for this catchment
+        ├── provenance.json                 # what the catchment-scope steps used
         ├── Topography/                     # catchment scope: DEM, slope,
         ├── Soils/                          #   headwaters, aridity, soil props
         ├── Erodibility/                    #   base C_factor, K_factor, LS_factor
@@ -117,7 +120,8 @@ my-project/
         ├── Subcatchments/
         ├── Events/
         │   └── 2019_fire/                  # event scope (one fire)
-        │       ├── event.json              #   recovery breakpoints
+        │       ├── event.json              #   recovery breakpoints + overrides
+        │       ├── provenance.json         #   what the event-scope steps used
         │       ├── FireSeverity/           #   dNBR, masked_dNBR, FireMeta.csv
         │       ├── Erodibility/            #   C/K_factor_adjusted_t0, _t0_5, ...
         │       └── Delivery/               #   SDR_t0, SDR_t0_5, ...
@@ -129,8 +133,19 @@ my-project/
                     ├── Results/            #   RUSLE grids, timeseries, summaries
                     ├── Results_baseline/   #   no-fire comparison
                     ├── DebrisFlow/         #   debris-flow outputs
-                    └── manifest.json
+                    └── manifest.json        #   (run-scope provenance.json:
+                                             #    planned, see const.py)
 ```
+
+Two file names carry the calibration story, and they are **not**
+interchangeable:
+
+| File | Who writes it | What it holds |
+|---|---|---|
+| `parameters.json` | **you** | a *sparse* set of overrides — only what you want to change |
+| `provenance.json` | the library | the *full* resolved set actually used, plus where each value came from |
+
+See [Calibration parameters](#calibration-parameters) below.
 
 #### Addressing data with a `RunContext`
 
@@ -176,6 +191,125 @@ for ctx in RunContext.enumerate_events(project):   # every (catchment, event)
 The high level interface automatically harmonises data wherever possible, bringing different imported datasets into a common coordinate reference system and resolution and clipping datasets to the relevant catchment boundaries.
 
 Internally, the high level interface calls the underlying functionality from the low level interface.
+
+### Calibration parameters
+
+> **Status:** wiring is landing group by group. `fire_adjustment`,
+> `delivery` and `topography` are **live** — changing them changes the
+> layers `compute_adjusted_k_c`, `compute_lsi` and
+> `compute_sediment_delivery_ratio` produce. `erosion`, `debris` and
+> `severity` are **declared but not yet consumed**: they resolve and are
+> recorded, but the simulation and severity functions still use their
+> built-in defaults. Setting any of them now is safe and
+> forward-compatible.
+
+Values like the post-fire cover factor, the sediment delivery ratio ceiling,
+or the debris-flow erosion coefficients are **calibration parameters**: the
+literature reports ranges for them, and they may need tuning for your region.
+They are grouped by the pipeline stage that consumes them:
+
+| Group | Controls | Wired |
+|---|---|---|
+| `fire_adjustment` | fire-adjusted C and K factors, and their recovery rates | yes |
+| `delivery` | sediment delivery ratio and the connectivity index | yes |
+| `topography` | the LS factor (headwater delineation: not yet) | partly |
+| `erosion` | the RUSLE simulation | not yet |
+| `debris` | debris-flow erosion, deposition and triggering | not yet |
+| `severity` | fire-severity imagery acquisition | not yet |
+
+Unit conversions and the fixed coefficients of published equations (the McCool
+slope factors, the Brown & Foster kinetic-energy form) are **not** parameters
+and stay in `fire_impacts.const` — changing one means running a different
+model, not a tuned one.
+
+#### Where to set them
+
+Overrides resolve through five layers, **most specific winning**:
+
+```
+package defaults                                    (fire_impacts/params.py)
+  └─ my-project/parameters.json                     "this study uses these values"
+      └─ Catchments/<c>/parameters.json             "this catchment differs"
+          └─ Events/<e>/event.json  ("parameters")  "this fire differs"
+              └─ ctx.parameters(delivery__max_sdr=0.9)   one call
+```
+
+Each file is **sparse** — write only what you are changing:
+
+```json
+{
+  "fire_adjustment": { "c_peak": 0.40 },
+  "delivery":        { "max_sdr": 0.75 }
+}
+```
+
+Write them from Python rather than by hand if you prefer — this validates
+before it writes:
+
+```python
+proj.set_parameter_overrides({'delivery': {'max_sdr': 0.75}})
+proj.set_catchment_parameter_overrides(
+    'Big-River', {'topography': {'max_slope_length_m': 200.0}})
+ctx.set_event_parameter_overrides({'fire_adjustment': {'c_peak': 0.40}})   # event
+```
+
+A typo is refused, not ignored — `"mx_sdr"` raises with a suggestion, and so
+does a value out of range or of the wrong type. This is deliberate: a
+silently-ignored override would let you believe you had calibrated the model
+when you had not.
+
+#### Not every parameter can be set at every level
+
+A parameter may only be set at a level **at least as broad as the output it
+controls**. `topography` and `delivery` write layers that are built once per
+catchment and shared by every fire, so they cannot be set per event — an
+event-level value would either be ignored, or would overwrite a file the
+other events depend on.
+
+| Group | Settable at | Because it writes |
+|---|---|---|
+| `topography` | project, catchment | `Topography/Headwaters.*`, `Erodibility/LS_factor.tif` |
+| `delivery` | project, catchment | `Delivery/SDR_baseline.tif` |
+| `fire_adjustment` | project, catchment, event | `Events/<e>/Erodibility/*_adjusted_*` |
+| ↳ `default_c_factor` | project, catchment | `Erodibility/C_factor.tif` |
+| `severity` | project, catchment, event | `Events/<e>/FireSeverity/*` |
+| `erosion`, `debris` | any | `Runs/<e>/<ens>/*` |
+
+Writing one to the wrong file raises, and the error names the file to use
+instead. A one-off `ctx.parameters(...)` override is not restricted this way —
+it is explicit, transient, and recorded as such.
+
+#### Seeing what was used
+
+`ctx.parameters()` resolves all five layers and returns a record of the values
+**and where each one came from**:
+
+```python
+record = ctx.parameters()
+record.parameters.delivery.max_sdr     # 0.75
+record.sources['delivery.max_sdr']     # 'catchment'
+record.sources_for('default')          # everything nobody chose
+record.digest()                          # 'sha256:...' — identifies this exact set
+```
+
+That record is what gets written to `provenance.json` alongside the outputs it
+produced, so a result directory says what made it. The `sources` field is the
+part that matters months later: it distinguishes a deliberate `0.5` from a
+defaulted one.
+
+To run a one-off with different values — a sensitivity sweep, say — pass a
+record straight to the producer instead of persisting anything:
+
+```python
+rusle.compute_adjusted_k_c(
+    ctx, params=ctx.parameters(delivery__max_sdr=0.9))
+```
+
+**Changing a parameter does not rebuild anything by itself.** Re-run the step
+that produces the layers you changed — `compute_adjusted_k_c` for
+`fire_adjustment` and `delivery`, `extract_headwaters` / `compute_lsi` for
+`topography`.
+
 
 ### Low level interface
 
