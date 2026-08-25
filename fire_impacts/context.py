@@ -429,8 +429,7 @@ class RunContext:
         """
         path = self._event_definition_path()
         if os.path.exists(path):
-            with open(path) as f:
-                data = json.load(f)
+            data = self._read_event_json()
         else:
             logger.warning(
                 'No %s for catchment %s event %s; using the default '
@@ -450,18 +449,258 @@ class RunContext:
 
         Validates the breakpoints (at least two, strictly increasing)
         before writing. Returns the resulting EventDefinition.
+
+        Merges into any existing event.json rather than replacing it, so
+        parameter overrides written by set_parameter_overrides survive.
         """
         const.recovery_windows(breakpoints)
-        path = self._event_definition_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         definition = EventDefinition(
             fire_start_date=self.fire_start_date,
             fire_end_date=self.fire_end_date,
             recovery_breakpoints=list(breakpoints),
         )
-        with open(path, 'w') as f:
-            json.dump(definition.to_dict(), f, indent=2)
+        self._update_event_json(definition.to_dict())
         return definition
+
+    # -- Calibration parameters ---------------------------------------------
+
+    def event_parameter_overrides(self) -> dict:
+        """Return this event's parameter overrides from event.json.
+
+        Empty dict when the event has none (or has no event.json yet).
+        Raises if this context has no event.
+        """
+        return self._read_event_json().get('parameters', {})
+
+    def set_event_parameter_overrides(self, overrides) -> dict:
+        """Persist event-scope parameter overrides to event.json.
+
+        Parameters:
+        - overrides: a ModelParameters instance, or a nested dict of
+          {group: {field: value}}. Either way only what differs from the
+          package defaults is stored, so the file records choices rather
+          than pinning every default. A ModelParameters carrying
+          catchment-scoped changes is still refused — those belong in the
+          catchment file.
+
+        Merges into any existing event.json, leaving recovery_breakpoints
+        untouched. Validated before writing.
+        """
+        from .params import ModelParameters, check_scope, sparse_overrides
+        if isinstance(overrides, ModelParameters):
+            # Only what differs from the defaults — see sparse_overrides.
+            data = sparse_overrides(overrides)
+        else:
+            data = dict(overrides or {})
+            ModelParameters.from_dict(data)   # validate; raises on bad keys
+        # An event file may not carry catchment-scoped values: the layers
+        # they control are written once per catchment, so an event-level
+        # value would either be ignored or would overwrite a file the
+        # sibling events share.
+        check_scope(data, 'event')
+        self._update_event_json({'parameters': data})
+        return data
+
+    # -- Catchment-scope overrides (delegate to the project store) ----------
+
+    def catchment_parameter_overrides(self) -> dict:
+        """Return this context's catchment-scope parameter overrides."""
+        return self.project.catchment_parameter_overrides(self.catchment)
+
+    def set_catchment_parameter_overrides(self, overrides) -> dict:
+        """Persist catchment-scope overrides for this context's catchment.
+
+        This is where catchment-scoped groups (topography, delivery) must
+        be set; :meth:`set_parameter_overrides` rejects them.
+        """
+        return self.project.set_catchment_parameter_overrides(
+            self.catchment, overrides,
+        )
+
+    def parameters(self, **overrides):
+        """Resolve this context's calibration parameters.
+
+        Merges five layers, most specific winning: the package defaults,
+        ``<project>/parameters.json``, this catchment's
+        ``Catchments/<c>/parameters.json``, this event's ``parameters``
+        key in event.json (skipped for a catchment-only context), and any
+        call-site overrides given here as ``group__field=value``.
+
+        Each parameter declares the scope of the output it controls, and
+        every persisted layer is checked against it on read as well as on
+        write — so a catchment-scoped value hand-added to an event file
+        raises rather than silently rewriting the layers the other events
+        share (see :func:`fire_impacts.params.check_scope`). Call-site
+        overrides are deliberately unrestricted.
+
+        Parameters:
+        - overrides: call-site overrides, e.g.
+          ``ctx.parameters(delivery__max_sdr=0.9)``.
+
+        Returns:
+        - A :class:`fire_impacts.params.ParameterRecord` carrying the
+          resolved values, the origin of each one, and a digest.
+
+        Notes:
+        - Unknown group or field names raise rather than being ignored,
+          at every layer.
+        """
+        from .params import nest_overrides, resolve_parameters
+
+        # Check the persisted layers on the way IN, not only when they are
+        # written. Both files are documented as hand-editable, so the
+        # setters are not the only way a value gets into them — and a
+        # catchment-scoped value hand-added to an event file is exactly the
+        # cross-event corruption the scope system exists to prevent
+        # (fire A's event.json rewriting the shared SDR_baseline.tif).
+        layers = []
+        for layer, data, where in (
+            ('project', self.project.parameter_overrides(),
+             const.PARAMETERS_FILE_NAME),
+            ('catchment', self.catchment_parameter_overrides(),
+             f'{self.catchment}/{const.PARAMETERS_FILE_NAME}'),
+        ):
+            _check_layer_scope(data, layer, where)
+            layers.append((layer, data))
+        if self.event is not None:
+            event_data = self.event_parameter_overrides()
+            _check_layer_scope(
+                event_data, 'event',
+                f'{self.event}/{const.EVENT_DEFINITION_NAME}',
+            )
+            layers.append(('event', event_data))
+        if overrides:
+            # The call layer carries exactly the keys the caller named,
+            # NOT a diff against the package defaults. Diffing would drop
+            # an explicit override that happens to equal the default, so
+            # ctx.parameters(delivery__max_sdr=0.8) against a project file
+            # holding 0.9 would silently resolve to 0.9 — the failure mode
+            # this whole system exists to prevent. If the caller typed it,
+            # they chose it.
+            layers.append(('call', nest_overrides(overrides)))
+        return resolve_parameters(layers)
+
+    def _resolved_params(self, params=None, **overrides):
+        """Resolve parameters for a model function.
+
+        The single entry point every public pre/sim function uses, so the
+        precedence rules live in one place:
+
+        - ``params`` given: it is authoritative and returned as a record
+          (a bare :class:`~fire_impacts.params.ModelParameters` is wrapped,
+          attributing every leaf to 'call'). The caller has already
+          resolved, so the layers are not re-read.
+        - ``params`` not given: the five layers are merged as in
+          :meth:`parameters`, with ``overrides`` as the call layer.
+
+        Passing both ``params`` and an override for the same value is
+        ambiguous, so it raises rather than silently picking one.
+
+        Parameters:
+        - params: a ParameterRecord or ModelParameters, or None.
+        - overrides: call-layer overrides as ``group__field=value``,
+          typically built by
+          :func:`~fire_impacts.params.deprecated_overrides` from legacy
+          keyword arguments.
+
+        Returns:
+        - A :class:`~fire_impacts.params.ParameterRecord`.
+        """
+        from .params import as_record
+
+        if params is None:
+            return self.parameters(**overrides)
+        if overrides:
+            clashes = sorted(
+                key.replace('__', '.') for key in overrides
+            )
+            raise ValueError(
+                f'Cannot pass params= together with an override for '
+                f'{clashes}: which one wins is ambiguous. Either set the '
+                f'value in the params you pass, or drop params= and let '
+                f'the context resolve.'
+            )
+        return as_record(params)
+
+    def write_provenance(self, record, *, scope: str, section=None) -> str:
+        """Write a resolved parameter record beside the outputs it produced.
+
+        Parameters:
+        - record: the ParameterRecord the step resolved.
+        - scope: 'catchment', 'event' or 'run' — which output tree this
+          step wrote to.
+        - section: for run scope, the results sub-folder (e.g. 'Results').
+          Ignored for catchment and event scope, which have no sections.
+
+        Returns:
+        - The path written.
+
+        Notes:
+        - Deliberately a different file from parameters.json: that is the
+          sparse override *input* a user edits, this is the full resolved
+          *output*. Writing the record back into an override file would
+          turn every package default into an explicit user setting on the
+          first run, which destroys the default/chosen distinction the
+          record exists to preserve.
+        """
+        path = self._provenance_path(scope, section)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(record.to_dict(), f, indent=2, default=str)
+        logger.info('Wrote parameter provenance to %s', path)
+        return path
+
+    def read_provenance(self, *, scope: str, section=None):
+        """Read back a provenance record, or None when absent.
+
+        Returns a :class:`~fire_impacts.params.ParameterRecord`.
+        """
+        from .params import ParameterRecord
+
+        path = self._provenance_path(scope, section)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return ParameterRecord.from_dict(json.load(f))
+
+    def _provenance_path(self, scope: str, section=None) -> str:
+        """Resolve the provenance path for a scope (shared by read/write)."""
+        if scope == 'catchment':
+            return self.catchment_path(const.PROVENANCE_FILE_NAME)
+        if scope == 'event':
+            return self.event_path(const.PROVENANCE_FILE_NAME)
+        if scope == 'run':
+            parts = [section] if section else []
+            return self.run_path(*parts, const.PROVENANCE_FILE_NAME)
+        raise ValueError(
+            f"Unknown provenance scope {scope!r}; expected 'catchment', "
+            f"'event' or 'run'."
+        )
+
+    # -- event.json read/write ----------------------------------------------
+
+    def _read_event_json(self) -> dict:
+        """Return the parsed event.json, or {} when it does not exist."""
+        path = self._event_definition_path()
+        if not os.path.exists(path):
+            return {}
+        with open(path) as f:
+            return json.load(f)
+
+    def _update_event_json(self, updates: dict) -> dict:
+        """Merge updates into event.json and write it back.
+
+        event.json holds several independent concerns (recovery
+        breakpoints, parameter overrides). Each writer must preserve the
+        others rather than replacing the file wholesale.
+        """
+        path = self._event_definition_path()
+        data = self._read_event_json()
+        data.update(updates)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+        return data
 
     def simulation_period(self):
         """Return the (start, end) pandas Timestamps of this event's
@@ -496,6 +735,18 @@ class RunContext:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _check_layer_scope(data, layer, where):
+    """Scope-check one persisted override layer, naming the file on failure."""
+    from .params import check_scope
+
+    if not data:
+        return
+    try:
+        check_scope(data, layer)
+    except ValueError as exc:
+        raise ValueError(f'In {where}: {exc}') from None
+
 
 def _resolve_catchments(project, catchment):
     """Return the list of catchment names to iterate, filtered by name."""
