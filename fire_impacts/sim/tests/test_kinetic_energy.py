@@ -20,13 +20,13 @@ import pytest
 from fire_impacts import const as c
 from fire_impacts.params import ErosionParams
 from fire_impacts.sim import rusle as simr
+from fire_impacts.sim.rusle import rainfall_erosivity, unit_kinetic_energy
 
 
 def unit_energy(intensity, k):
-    """The relation as the simulation implements it."""
-    return c.KE_ASYMPTOTE * (
-        1 - c.KE_FLOOR_FRACTION * np.exp(-k * intensity)
-    )
+    """Alias for the module under test — these assertions are about the
+    real implementation, not a reimplementation of it."""
+    return unit_kinetic_energy(intensity, rate=k)
 
 
 class TestPublishedCoefficients:
@@ -99,3 +99,39 @@ class TestVersionDifference:
         peak_at = intensities[np.argmax(ratio)]
         assert 5 < peak_at < 20
         assert ratio.max() == pytest.approx(1.21, abs=0.02)
+
+
+class TestErosivityHelper:
+    """rainfall_erosivity bundles the depth -> intensity -> energy -> R
+    chain that was previously written out twice in sim/rusle.py."""
+
+    def test_intensity_is_depth_over_the_timestep(self):
+        # 30-minute timestep, so 5 mm in a step is 10 mm/h.
+        intensity, _ = rainfall_erosivity(5.0)
+        assert intensity == pytest.approx(10.0)
+
+    def test_erosivity_is_energy_times_intensity(self):
+        depth = 5.0
+        intensity, erosivity = rainfall_erosivity(depth)
+        expected = unit_kinetic_energy(intensity) * depth * intensity
+        assert erosivity == expected
+
+    def test_zero_depth_gives_zero_erosivity(self):
+        intensity, erosivity = rainfall_erosivity(0.0)
+        assert (intensity, erosivity) == (0.0, 0.0)
+
+    def test_the_timestep_is_derived_not_hard_coded(self):
+        from fire_impacts.sim.rusle import (
+            _MODEL_TIMESTEP, _MODEL_TIMESTEP_HOURS)
+        assert _MODEL_TIMESTEP_HOURS == \
+            _MODEL_TIMESTEP.total_seconds() / 3600.0
+
+    def test_a_different_timestep_changes_the_intensity(self):
+        # 12-minute rainfall (the debris-flow resolution) is 0.2 h.
+        intensity, _ = rainfall_erosivity(5.0, timestep_hours=0.2)
+        assert intensity == pytest.approx(25.0)
+
+    def test_the_rate_constant_can_be_switched_to_rusle(self):
+        _, rusle2 = rainfall_erosivity(5.0)
+        _, rusle = rainfall_erosivity(5.0, rate=c.DEFAULT_KE_RATE_RUSLE)
+        assert rusle < rusle2

@@ -58,6 +58,63 @@ DNBR_SEVERITY_THRESHOLD = c.DEFAULT_DNBR_SEVERITY_THRESHOLD
 # See const.py for the derivation, the alternative (RUSLE) value, and why
 # 0.29/0.72 are not parameters.
 EMPIRICAL_COEFFICIENT = c.DEFAULT_KE_RATE_RUSLE2
+
+# The model runs on 30-minute rainfall. Intensity is depth per hour, so
+# the conversion is depth / 0.5 — derived here rather than written as a
+# literal, which previously appeared twice and silently encoded the
+# timestep in two places.
+_MODEL_TIMESTEP = pd.Timedelta(minutes=30)
+_MODEL_TIMESTEP_HOURS = _MODEL_TIMESTEP.total_seconds() / 3600.0
+
+
+def unit_kinetic_energy(intensity, rate=None):
+    """
+    Unit kinetic energy of rainfall at a given intensity.
+
+    Implements the exponential KE-intensity relation
+
+        e_r = 0.29 * [1 - 0.72 * exp(-k * i_r)]
+
+    where 0.29 is the asymptotic maximum (drops reach terminal velocity,
+    so energy per mm saturates) and 0.72 fixes the drizzle floor at
+    0.0812 MJ/ha/mm. Only the rate constant k differs between published
+    versions of the model — see const.py.
+
+    Parameters:
+    - intensity: rainfall intensity in mm/h (scalar or array).
+    - rate: rate constant k. Defaults to the RUSLE2 value.
+
+    Returns:
+    - Unit kinetic energy in MJ/ha/mm, same shape as intensity.
+    """
+    if rate is None:
+        rate = EMPIRICAL_COEFFICIENT
+    return c.KE_ASYMPTOTE * (
+        1 - c.KE_FLOOR_FRACTION * np.exp(-rate * intensity)
+    )
+
+
+def rainfall_erosivity(depth, timestep_hours=None, rate=None):
+    """
+    Convert one timestep's rainfall depth into intensity and erosivity.
+
+    Erosivity is the storm energy times the intensity (the EI form used
+    throughout RUSLE): E = e_r * depth, R = E * intensity.
+
+    Parameters:
+    - depth: rainfall depth for the timestep, in mm.
+    - timestep_hours: length of the timestep in hours. Defaults to the
+      model timestep (30 minutes).
+    - rate: kinetic-energy rate constant; see unit_kinetic_energy.
+
+    Returns:
+    - Tuple of (intensity in mm/h, erosivity).
+    """
+    if timestep_hours is None:
+        timestep_hours = _MODEL_TIMESTEP_HOURS
+    intensity = depth / timestep_hours
+    energy = unit_kinetic_energy(intensity, rate) * depth
+    return intensity, energy * intensity
 LOG_INTERVAL_SECONDS = 15.0
 
 # ---------------------------------------------------------------------------
@@ -1033,19 +1090,10 @@ def generate_rusle(
             yield (timestep, result)
             continue
 
-        # Calculate rainfall intensity (∆V_r / ∆t_r) in mm/hr
-        intensity = delta_v_r / 0.5
+        # Rainfall intensity (∆V_r / ∆t_r) in mm/hr, and the erosivity
+        # factor (R) derived from it.
+        intensity, R = rainfall_erosivity(delta_v_r)
         result['intensity'] = intensity
-
-        # Calculate unit kinetic energy (e_r)
-        e_r = c.KE_ASYMPTOTE * (
-            1 - c.KE_FLOOR_FRACTION
-            * np.exp(-EMPIRICAL_COEFFICIENT * intensity)
-        )
-
-        # Calculate kinetic energy (E) and erosivity factor (R)
-        E = e_r * delta_v_r
-        R = E * intensity
         result['erosivity'] = R
 
         # Total erosion in tonnes per hectare
@@ -1169,15 +1217,8 @@ def generate_rusle_for_feature(
             if delta_v_r == 0:
                 continue
 
-            intensity = delta_v_r / 0.5  # mm/hr
+            intensity, R = rainfall_erosivity(delta_v_r)
             max_intensity = max(max_intensity, intensity)
-
-            e_r = c.KE_ASYMPTOTE * (
-                1 - c.KE_FLOOR_FRACTION
-                * np.exp(-EMPIRICAL_COEFFICIENT * intensity)
-            )
-            E = e_r * delta_v_r
-            R = E * intensity
             max_erosivity = max(max_erosivity, R)
 
             # Total erosion in tonnes per hectare
@@ -1620,7 +1661,6 @@ def record_multi_period_grid(variable, fn, periods):
 
 
 # Model timestep used to convert timeseries_timestep to an agg_count
-_MODEL_TIMESTEP = pd.Timedelta(minutes=30)
 
 
 def default_rusle_recorders(
