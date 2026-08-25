@@ -52,13 +52,18 @@ markers = [
 # eg `pytest -m network` or `pytest -m 'network or not network'`.
 addopts = "-m 'not network and not veneer'"
 
-[tool.setuptools.packages.find]
-
-[tools.setuptools]
+# Note: this table was previously spelled [tools.setuptools] (plural), which
+# setuptools silently ignores — so include-package-data never took effect and
+# the lookup tables were absent from the built wheel.
+[tool.setuptools]
 include-package-data = true
-zip-safe = true
-packages = ["fire_impacts"]
-py_modules=['fire_impacts']
+zip-safe = false
+
+[tool.setuptools.packages.find]
+include = ["fire_impacts*"]
+
+[tool.setuptools.package-data]
+fire_impacts = ["data/*.csv", "data/*.tsv"]
 
 [project.scripts]
 fire-impacts = "fire_impacts.cli:app"

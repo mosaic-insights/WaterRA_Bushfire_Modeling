@@ -85,7 +85,10 @@ def package_data_path(fn=None):
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    dirname = os.path.join(os.path.dirname(__file__), '..', 'data')
+    # Inside the package, not beside it: '..' resolved to the repo root,
+    # which exists in a source checkout but is site-packages/ in an
+    # installed wheel — so every lookup table was missing once installed.
+    dirname = os.path.join(os.path.dirname(__file__), 'data')
     if fn is None:
         return dirname
     return os.path.join(dirname, fn)
