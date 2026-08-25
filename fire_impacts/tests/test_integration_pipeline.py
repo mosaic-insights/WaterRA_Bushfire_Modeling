@@ -54,6 +54,11 @@ BREAKPOINTS = [0, 0.05, 0.1]
 # Content hashes of every raster the preprocessing pipeline writes at default
 # parameters. Regenerate deliberately (see test_default_outputs_are_unchanged)
 # only when a default or an equation is intentionally changed.
+#
+# Last regenerated when dNBR scaling was unified (const.DNBR_SCALE): the
+# synthetic severity path had been writing the conventional 0-1000 scale
+# while the real path wrote the stored band-ratio difference, so every
+# fire-adjusted layer built from synthetic dNBR had saturated at c_peak.
 GOLDEN_PREP_HASHES = {
     "Catchments/EgSmallCatchment_7899/Delivery/Cth_baseline.tif": "6fd676cdfe9ea85a",
     "Catchments/EgSmallCatchment_7899/Delivery/Ddn_baseline.tif": "649f4b38c5852f8b",
@@ -66,25 +71,25 @@ GOLDEN_PREP_HASHES = {
     "Catchments/EgSmallCatchment_7899/Erodibility/C_factor.tif": "265597f6cbc0d122",
     "Catchments/EgSmallCatchment_7899/Erodibility/K_factor.tif": "0fa357811da0b7c1",
     "Catchments/EgSmallCatchment_7899/Erodibility/LS_factor.tif": "9b9c0b6651b8950e",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0.tif": "14d028a8b0229530",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0_05.tif": "07284186cf62abd9",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0.tif": "72b1d3c310582de0",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0_05.tif": "7b1769ff8d46d15a",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0.tif": "f45629277d65c511",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0_05.tif": "c2ca2f9ea56e98a3",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0.tif": "47c783fd4236dad5",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0_05.tif": "5c5e776ef2ace911",
     "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Distance_to_stream.tif": "5b18c6f980bb8463",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0.tif": "14ddfe74c565ee58",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0_05.tif": "032013e971caba10",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0.tif": "3ae18a50c49f42e9",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0_05.tif": "1da1e45eb53ac775",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0.tif": "27412c7807a1afc6",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0_05.tif": "9749818eccbd90da",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0.tif": "ca28b39f720f9912",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0_05.tif": "73bb0d8b159c6f21",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0.tif": "a385723fa64c982d",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0_05.tif": "47ff7021080cb547",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0.tif": "08bb02bfe0649d9f",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0_05.tif": "559ec731246244a1",
     "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Sth.tif": "7aa6577d6d77a64b",
     "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Streams.tif": "241054773ccceb30",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0.tif": "8792f7b05ed6151b",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0_05.tif": "d612be2b51be39fd",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0.tif": "9815aedfcf7bde1b",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0_05.tif": "f0f5bd9c9b299ebe",
     "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0.tif": "01d46cbd2f4ab83c",
     "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0_05.tif": "c8000d1b77e806f5",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/FireSeverity/masked_dNBR.tif": "9deb6782c8235e49",
-    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results/RUSLE_sum_total.tif": "cfcc4952132b43e6",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/FireSeverity/masked_dNBR.tif": "febf6b8df6a5e38b",
+    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results/RUSLE_sum_total.tif": "12a5a0fc30973c2a",
     "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results_baseline/RUSLE_sum_total.tif": "50270151e3192181",
     "Catchments/EgSmallCatchment_7899/Soils/Aridity.tif": "d304bc9ba572d2a0",
     "Catchments/EgSmallCatchment_7899/Topography/DEM.tif": "357d6a5f877a8625",
@@ -331,6 +336,59 @@ def test_a_deprecated_kwarg_still_works_and_warns(pipeline):
             ev.catchment_path('Delivery',
                               'SDR_deprecated_kwarg_check.tif')) as src:
         assert float(np.nanmax(src.read(1))) <= 0.5
+
+
+# --- dNBR scale ----------------------------------------------------------
+
+def test_stored_dnbr_is_on_the_stored_scale(pipeline):
+    """generate_synthetic_fire samples reference rasters published on the
+    conventional 0-1000 scale; it must convert before writing, or the
+    synthetic and real severity paths disagree by 1000x."""
+    ev = pipeline['ev']
+    with rasterio.open(
+            ev.event_path(c.FIRE_SEVERITY_FOLDER_NAME, 'masked_dNBR.tif')) as src:
+        dnbr = src.read(1)
+    finite = dnbr[np.isfinite(dnbr)]
+    assert finite.size
+    assert finite.max() < 10, (
+        'masked_dNBR.tif holds conventional-scale values; it should store '
+        'the raw band-ratio difference (see const.DNBR_SCALE)'
+    )
+
+
+def test_the_severity_split_actually_fires(pipeline):
+    """The regression this whole change exists for: dNBR was compared on
+    the stored scale against a 400 threshold, so `dnbr >= 400` was never
+    true and every high-severity output was identically zero while the
+    low-severity ones carried the entire total."""
+    from fire_impacts.sim.rusle import _rusle_parameter_grids
+    ev = pipeline['ev']
+    _, _, dnbr, _, _ = _rusle_parameter_grids(
+        ev, recovery_time=BREAKPOINTS[0])
+    finite = dnbr[np.isfinite(dnbr)]
+    assert finite.max() > c.DEFAULT_DNBR_SEVERITY_THRESHOLD, (
+        'no cell reaches the severity threshold — the grids are being read '
+        'on the wrong scale'
+    )
+    high = (finite >= c.DEFAULT_DNBR_SEVERITY_THRESHOLD).sum()
+    assert 0 < high < finite.size, (
+        'the severity split is degenerate: every cell fell on one side'
+    )
+
+
+def test_the_adjusted_c_factor_is_not_saturated_everywhere(pipeline):
+    """With dNBR 1000x too large, CdNBR exceeded the saturation threshold
+    in every cell and the adjusted C factor collapsed to c_peak, losing
+    the whole severity gradient."""
+    ev = pipeline['ev']
+    with rasterio.open(ev.event_path(
+            'Erodibility', 'C_factor_adjusted_t0.tif')) as src:
+        c_adj = src.read(1)
+    finite = c_adj[np.isfinite(c_adj)]
+    assert len(np.unique(np.round(finite, 6))) > 100, (
+        'adjusted C factor has collapsed to a handful of values — dNBR is '
+        'saturating the interpolation'
+    )
 
 
 # --- Layer scoping -------------------------------------------------------

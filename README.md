@@ -279,6 +279,22 @@ Writing one to the wrong file raises, and the error names the file to use
 instead. A one-off `ctx.parameters(...)` override is not restricted this way —
 it is explicit, transient, and recorded as such.
 
+#### A note on dNBR scale
+
+dNBR is **stored** as the raw band-ratio difference (pre-fire NBR minus
+post-fire NBR, negatives clipped), which lands in roughly `[0, 1]`. It is
+**quoted and thresholded** on the conventional `0`–`1000` scale used
+throughout the fire-severity literature — and so is every threshold and
+lookup table in this package, including `fire_adjustment.dnbr_saturation`,
+`erosion.dnbr_severity_threshold` and `debris.dnbr_threshold`.
+
+`const.DNBR_SCALE` converts between them, and lives beside the default
+thresholds so the two cannot drift apart. Read dNBR through
+`pre.util.read_dnbr_aligned` / `read_dnbr_aligned_like` rather than applying
+the factor by hand: consumers used to each remember (or forget), and one that
+forgot compared a `[0, 1]` raster against a threshold of `400`, which made the
+entire high-severity branch unreachable.
+
 #### Seeing what was used
 
 `ctx.parameters()` resolves all five layers and returns a record of the values

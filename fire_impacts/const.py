@@ -54,8 +54,37 @@ CHANNEL_PARAMETERS = dict(
     )
 NUM_SIM_YEARS = 2
 
+# ------- dNBR scale: ---------------------------------------------------
+# dNBR is *stored* as the raw band-ratio difference (pre-fire NBR minus
+# post-fire NBR, negatives clipped), which lands in roughly [0, 1]. It is
+# *quoted and thresholded* on the conventional 0-1000 scale used
+# throughout the fire-severity literature, and so are every threshold and
+# lookup table in this package.
+#
+# DNBR_SCALE converts stored -> conventional. Read dNBR through
+# pre.util.read_dnbr_* rather than applying it by hand: consumers
+# previously each remembered (or forgot) to multiply, and one that forgot
+# compared a [0, 1] raster against a 400 threshold, so the whole
+# high-severity branch was unreachable.
+#
+# Every threshold below, and params.FireAdjustmentParams.dnbr_saturation /
+# params.ErosionParams.dnbr_severity_threshold, are on the conventional
+# scale. Keep them here beside the factor: a threshold that drifts onto
+# the other scale is silent, not loud.
+DNBR_SCALE = 1000
+
+# Cells at or above this are "high severity" when splitting erosion
+# outputs for reporting (params.ErosionParams.dnbr_severity_threshold).
+DEFAULT_DNBR_SEVERITY_THRESHOLD = 400
+
+# dNBR at which the fire-adjusted C factor saturates at its peak value
+# (params.FireAdjustmentParams.dnbr_saturation).
+DEFAULT_DNBR_SATURATION = 400
+
 # Headwaters with a mean dNBR below this value are excluded from the
 # debris-flow analysis (they are considered insufficiently burnt).
+# Compared against the dNBR_mean column of summary_stats, which is on the
+# conventional scale.
 DEFAULT_DEBRIS_DNBR_THRESHOLD = 100
 
 # ------- Fire recovery time and intervals: ---------------------------------------------

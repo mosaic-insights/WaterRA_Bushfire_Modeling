@@ -400,6 +400,59 @@ def read_aligned_like(
     )
 
 
+def read_dnbr_aligned_like(path, template, **kwargs):
+    """
+    Read a dNBR raster onto a template grid, on the conventional scale.
+
+    dNBR is stored as the raw band-ratio difference (~[0, 1]) but every
+    threshold in the package is quoted on the 0-1000 scale, so the factor
+    is applied here rather than at each call site — see const.DNBR_SCALE.
+
+    Parameters:
+    - path: dNBR raster (dNBR.tif or masked_dNBR.tif).
+    - template: RasterGrid to align to.
+
+    Returns:
+    - 2-D array on the conventional 0-1000 scale.
+    """
+    return read_aligned_like(path, template, **kwargs) * c.DNBR_SCALE
+
+
+def read_dnbr_aligned(path, transform, crs, shape, **kwargs):
+    """
+    Read a dNBR raster onto an explicit grid, on the conventional scale.
+
+    The transform/crs/shape counterpart of read_dnbr_aligned_like, for
+    callers that hold a target grid rather than a RasterGrid.
+
+    Returns:
+    - 2-D array on the conventional 0-1000 scale.
+    """
+    return read_aligned(path, transform, crs, shape, **kwargs) \
+        * c.DNBR_SCALE
+
+
+def to_dnbr_scale(values):
+    """
+    Convert stored dNBR values to the conventional 0-1000 scale.
+
+    For callers that already hold an array or Series (zonal statistics,
+    for instance) rather than a path.
+    """
+    return values * c.DNBR_SCALE
+
+
+def from_dnbr_scale(values):
+    """
+    Convert conventional-scale dNBR back to the stored representation.
+
+    Used by producers that source values already on the 0-1000 scale
+    (the synthetic-fire reference rasters), so that everything written to
+    masked_dNBR.tif shares one convention.
+    """
+    return values / c.DNBR_SCALE
+
+
 def write_raster(
     path: str,
     data,

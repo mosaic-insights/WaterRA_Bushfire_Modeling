@@ -10,7 +10,8 @@ folders.
 
 from fire_impacts.pre.util import (
     clip_and_reproject_raster, read_raster_masked, read_aligned_like,
-    write_raster, slope_from_dem, dem_flow_layers, upslope_weighted_mean
+    read_dnbr_aligned_like, write_raster, slope_from_dem, dem_flow_layers,
+    upslope_weighted_mean
 )
 from fire_impacts import const as c
 from .project import FireImpactsProject
@@ -106,7 +107,7 @@ def compute_adjusted_k_c(
     )
 
     # dNBR is fire-event-specific.
-    dNBR = read_aligned_like(
+    dNBR = read_dnbr_aligned_like(
         ctx.event_path('FireSeverity', 'masked_dNBR.tif'), dem_grid,
     )
     Cbase = read_aligned_like(
@@ -150,8 +151,10 @@ def compute_adjusted_k_c(
 
     saturation = p.dnbr_saturation
 
-    # Compute fire-adjusted C factor using dNBR
-    CdNBR = dNBR * 1000
+    # Compute fire-adjusted C factor using dNBR. dNBR arrives on the
+    # conventional 0-1000 scale from read_dnbr_aligned_like, which is the
+    # scale dnbr_saturation is expressed on.
+    CdNBR = np.array(dNBR, copy=True)
     CdNBR[CdNBR < 0] = 0
     dNBRmask = (CdNBR > 0) & (CdNBR <= saturation)
     CdNBR[dNBRmask] = (

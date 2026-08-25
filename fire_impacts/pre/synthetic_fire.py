@@ -19,7 +19,7 @@ import os
 from . import data_sources
 from .project import FireImpactsProject, save_catchment_raster
 from ..context import RunContext  # noqa: F401
-from .util import read_raster
+from .util import from_dnbr_scale, read_raster
 from .. import const as c
 
 logger = logging.getLogger(__name__)
@@ -208,6 +208,12 @@ def generate_synthetic_fire(
     dnbr = generate_synthetic_dnbr(
         distribution, boundary, transform, shape, random_seed,
     )
+    # The reference rasters are published on the conventional 0-1000 scale,
+    # but masked_dNBR.tif stores the raw band-ratio difference. Convert, so
+    # the synthetic and real severity paths write the same convention —
+    # they previously differed by 1000x, and no consumer could tell which
+    # one it had been given.
+    dnbr = from_dnbr_scale(dnbr)
 
     # --- Save as masked_dNBR.tif in the event's FireSeverity folder ---
     out_path = ctx.event_path(c.FIRE_SEVERITY_FOLDER_NAME, 'masked_dNBR.tif')

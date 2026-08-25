@@ -37,7 +37,10 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Union, get_args, get_origin, get_type_hints
 
-from .const import UNSET
+from .const import (
+    DEFAULT_DNBR_SATURATION, DEFAULT_DNBR_SEVERITY_THRESHOLD,
+    DEFAULT_DEBRIS_DNBR_THRESHOLD, UNSET,
+)
 
 __all__ = [
     'FireAdjustmentParams',
@@ -115,7 +118,7 @@ class FireAdjustmentParams:
     k_fire: float = 0.081       # was Kfire
     c_recovery_scale: float = 0.4   # was x_c
     k_recovery_scale: float = 1.0   # was x_k
-    dnbr_saturation: float = 400.0
+    dnbr_saturation: float = float(DEFAULT_DNBR_SATURATION)
     # Writes the *catchment*-scoped C_factor.tif, not an event layer, so it
     # cannot vary per event: compute_adjusted_k_c runs per event but this
     # output is shared, and a per-event value would have the last event to
@@ -250,12 +253,9 @@ class ErosionParams:
     Consumed by ``sim.rusle``; produces the run's ``Results/`` outputs.
 
     ``dnbr_severity_threshold`` splits low- from high-severity cells for
-    reporting. Note the unit-scale defect recorded in the design note §3.5:
-    ``sim/rusle.py`` currently compares this against the *stored* dNBR
-    fraction rather than the conventional 0-1000 scale. The default here is
-    on the 0-1000 scale, matching every other use of the number in the
-    codebase; wiring it up (phase 3) has to fix the comparison, not the
-    default.
+    reporting. Like every dNBR threshold in the package it is on the
+    conventional 0-1000 scale — see ``const.DNBR_SCALE``, and read dNBR
+    through ``pre.util.read_dnbr_*`` so the comparison is on that scale.
 
     ``kinetic_energy_coefficient`` sits inside the Brown & Foster unit
     kinetic-energy form, where the published metric coefficient is 0.05.
@@ -267,7 +267,7 @@ class ErosionParams:
     __scope__ = 'run'
 
     support_practice_factor: float = 1.0
-    dnbr_severity_threshold: float = 400.0
+    dnbr_severity_threshold: float = float(DEFAULT_DNBR_SEVERITY_THRESHOLD)
     kinetic_energy_coefficient: float = 0.082
 
     def __post_init__(self):
@@ -338,7 +338,7 @@ class DebrisFlowParams:
     channelised_flow_threshold_m2: float = 1.4e7
     sediment_bulk_density: float = 1270.0
     rock_bulk_density: float = 2220.0
-    dnbr_threshold: float = 100.0
+    dnbr_threshold: float = float(DEFAULT_DEBRIS_DNBR_THRESHOLD)
     num_sim_years: int = 2
 
     def __post_init__(self):
