@@ -9,6 +9,11 @@ keywords = ["hydrology", "bushfire", "water quality", "catchment"]
 license = {text = "ISC License"}
 version = "0.1"
 readme = {file = "README.md", content-type = "text/markdown"}
+# 3.11 floor: `str | None` appears in signatures without
+# `from __future__ import annotations` (e.g. sim/rainfall.py,
+# pre/project.py), which is evaluated at import time and needs 3.10+.
+# 3.10 reaches end of life in October 2026, so the supported floor is 3.11.
+requires-python = ">=3.11"
 dependencies = ["numpy", "pandas"]
 authors = [
     {name = "Joel Rahman", email = "joel@flowmatters.com.au"}
@@ -21,6 +26,11 @@ classifiers = [
     "License :: OSI Approved :: ISC License (ISCL)",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
