@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import rasterio
 
 import fire_impacts
 from fire_impacts import const as c
@@ -27,6 +28,7 @@ from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.pre import topography, soil, rusle, synthetic_fire
 from fire_impacts.sim import rusle as simr
 from fire_impacts.context import RunContext
+from fire_impacts.params import ModelParameters
 
 pytestmark = pytest.mark.slow
 
@@ -48,6 +50,50 @@ FIRE_END = '2019-03-07'
 # still crossing a breakpoint, so the run is genuinely segmented into two
 # recovery windows.
 BREAKPOINTS = [0, 0.05, 0.1]
+
+# Content hashes of every raster the preprocessing pipeline writes at default
+# parameters. Regenerate deliberately (see test_default_outputs_are_unchanged)
+# only when a default or an equation is intentionally changed.
+GOLDEN_PREP_HASHES = {
+    "Catchments/EgSmallCatchment_7899/Delivery/Cth_baseline.tif": "6fd676cdfe9ea85a",
+    "Catchments/EgSmallCatchment_7899/Delivery/Ddn_baseline.tif": "649f4b38c5852f8b",
+    "Catchments/EgSmallCatchment_7899/Delivery/Distance_to_stream.tif": "5b18c6f980bb8463",
+    "Catchments/EgSmallCatchment_7899/Delivery/Dup_baseline.tif": "8eb4eb527f909267",
+    "Catchments/EgSmallCatchment_7899/Delivery/IC_baseline.tif": "7629543efd170838",
+    "Catchments/EgSmallCatchment_7899/Delivery/SDR_baseline.tif": "9dd5e31f594b8dd3",
+    "Catchments/EgSmallCatchment_7899/Delivery/Sth.tif": "7aa6577d6d77a64b",
+    "Catchments/EgSmallCatchment_7899/Delivery/Streams.tif": "241054773ccceb30",
+    "Catchments/EgSmallCatchment_7899/Erodibility/C_factor.tif": "265597f6cbc0d122",
+    "Catchments/EgSmallCatchment_7899/Erodibility/K_factor.tif": "0fa357811da0b7c1",
+    "Catchments/EgSmallCatchment_7899/Erodibility/LS_factor.tif": "9b9c0b6651b8950e",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0.tif": "14d028a8b0229530",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0_05.tif": "07284186cf62abd9",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0.tif": "72b1d3c310582de0",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0_05.tif": "7b1769ff8d46d15a",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Distance_to_stream.tif": "5b18c6f980bb8463",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0.tif": "14ddfe74c565ee58",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0_05.tif": "032013e971caba10",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0.tif": "3ae18a50c49f42e9",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0_05.tif": "1da1e45eb53ac775",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0.tif": "27412c7807a1afc6",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0_05.tif": "9749818eccbd90da",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Sth.tif": "7aa6577d6d77a64b",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Streams.tif": "241054773ccceb30",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0.tif": "8792f7b05ed6151b",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0_05.tif": "d612be2b51be39fd",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0.tif": "01d46cbd2f4ab83c",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0_05.tif": "c8000d1b77e806f5",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/FireSeverity/masked_dNBR.tif": "9deb6782c8235e49",
+    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results/RUSLE_sum_total.tif": "cfcc4952132b43e6",
+    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results_baseline/RUSLE_sum_total.tif": "50270151e3192181",
+    "Catchments/EgSmallCatchment_7899/Soils/Aridity.tif": "d304bc9ba572d2a0",
+    "Catchments/EgSmallCatchment_7899/Topography/DEM.tif": "357d6a5f877a8625",
+    "Catchments/EgSmallCatchment_7899/Topography/Flow_accumulation.tif": "950d350d781f1175",
+    "Catchments/EgSmallCatchment_7899/Topography/Flow_direction.tif": "9ef73c48072e9e7d",
+    "Catchments/EgSmallCatchment_7899/Topography/Headwaters.tif": "4243d5597f140f66",
+    "Catchments/EgSmallCatchment_7899/Topography/Slope.tif": "971539b361b302d2",
+    "Catchments/EgSmallCatchment_7899/Topography/Stream_Network.tif": "a1d6216a9cb001e0"
+}
 
 
 def _data(name):
@@ -123,6 +169,168 @@ def pipeline(tmp_path_factory):
         'prep': prep, 'ev': ev, 'run': run,
         'rain': rain, 'fire_res': fire_res, 'base_res': base_res,
     }
+
+
+# --- Calibration parameters ----------------------------------------------
+
+def test_provenance_is_written_at_both_scopes(pipeline):
+    """compute_adjusted_k_c writes catchment-scope layers (base C/K, LS,
+    baseline SDR) and event-scope ones, so both trees get a record."""
+    for ctx, scope in ((pipeline['prep'], 'catchment'),
+                       (pipeline['ev'], 'event')):
+        record = ctx.read_provenance(scope=scope)
+        assert record is not None, scope
+        assert record.digest().startswith('sha256:')
+        # Nothing was overridden in the fixture, so everything is default.
+        assert set(record.sources.values()) == {'default'}
+
+
+def test_provenance_records_a_non_default_value(pipeline):
+    """With all defaults this would pass even if write_provenance ignored
+    its argument entirely, so drive it with something overridden."""
+    ev = pipeline['ev']
+    record = ev.parameters(fire_adjustment__c_peak=0.42)
+    ev.write_provenance(record, scope='event')
+    try:
+        read_back = ev.read_provenance(scope='event')
+        assert read_back.parameters.fire_adjustment.c_peak == 0.42
+        assert read_back.sources['fire_adjustment.c_peak'] == 'call'
+        assert read_back.digest() == record.digest()
+    finally:
+        ev.write_provenance(ev.parameters(), scope='event')
+    assert ev.read_provenance(
+        scope='event').parameters == ModelParameters()
+
+
+def _prep_raster_hashes(pipeline):
+    """Hash every raster the preprocessing pipeline wrote, NaN-normalised."""
+    import hashlib
+    root = Path(pipeline['proj'].project_path)
+    out = {}
+    for tif in sorted(root.rglob('*.tif')):
+        # Probe outputs written by other tests must not perturb the set.
+        if 'probe' in tif.name:
+            continue
+        with rasterio.open(tif) as src:
+            arr = src.read(1)
+        out[str(tif.relative_to(root))] = hashlib.sha256(
+            np.nan_to_num(arr, nan=-9e9).astype('float64').tobytes()
+        ).hexdigest()[:16]
+    return out
+
+
+def test_default_outputs_are_unchanged(pipeline):
+    """Phase 2 replaced twelve hard-coded literals with resolved parameters.
+    At default values the outputs must be identical, and must stay that way:
+    without this, any of those defaults can drift and the suite stays green.
+
+    A mismatch here means either a default moved (update GOLDEN_PREP_HASHES
+    deliberately) or an equation changed (that is the bug this catches).
+    """
+    got = _prep_raster_hashes(pipeline)
+    assert got == GOLDEN_PREP_HASHES
+
+
+@pytest.mark.parametrize('field,value,layer,check', [
+    ('delivery__max_sdr', 0.5, 'Delivery/SDR_{s}.tif',
+     lambda a: np.nanmax(a) <= 0.5),
+    ('delivery__min_c_factor', 0.5, 'Delivery/Cth_{s}.tif',
+     lambda a: np.nanmin(a) >= 0.5),
+    ('delivery__stream_area_threshold_m2', 1e12, 'Delivery/Streams.tif',
+     lambda a: not np.any(a > 0)),
+])
+def test_each_delivery_field_moves_its_own_output(
+        pipeline, field, value, layer, check):
+    """One field at a time, so a swapped pair (min_slope/max_slope,
+    ic0/k) cannot pass. Writes to a probe suffix, so the fixture's
+    rasters are untouched and no restore is needed."""
+    ev = pipeline['ev']
+    suffix = f'probe_{field}'
+    rusle.compute_sediment_delivery_ratio(
+        ev, output_suffix=suffix, params=ev.parameters(**{field: value}),
+    )
+    path = ev.catchment_path(layer.format(s=suffix))
+    with rasterio.open(path) as src:
+        assert check(src.read(1)), f'{field} did not reach {layer}'
+
+
+def test_the_slope_clamp_is_not_inverted(pipeline):
+    """min_slope and max_slope are both used in one nested np.where; a
+    swap would still produce a plausible raster."""
+    ev = pipeline['ev']
+    rusle.compute_sediment_delivery_ratio(
+        ev, output_suffix='probe_slope',
+        params=ev.parameters(delivery__min_slope=0.4,
+                             delivery__max_slope=0.6),
+    )
+    with rasterio.open(ev.catchment_path('Delivery', 'Sth.tif')) as src:
+        sth = src.read(1)
+    finite = sth[np.isfinite(sth)]
+    assert finite.min() >= 0.4 and finite.max() <= 0.6
+
+
+def test_the_ls_slope_length_cap_reaches_the_ls_factor(pipeline):
+    """compute_lsi writes LS_factor.tif with no suffix option, so this
+    overrides, captures the returned array, then recomputes at defaults to
+    restore — and verifies the restore by hash.
+
+    Catches the mutation a source-inspection test cannot: reading the
+    parameter into a local and then overwriting that local with the old
+    literal, which is invisible while the literal equals the default.
+    """
+    import hashlib
+    prep, ev = pipeline['prep'], pipeline['ev']
+    ls_path = prep.catchment_path('Erodibility', 'LS_factor.tif')
+
+    def _ls_hash():
+        with rasterio.open(ls_path) as src:
+            return hashlib.sha256(
+                np.nan_to_num(src.read(1), nan=-9e9).astype('float64').tobytes()
+            ).hexdigest()
+
+    before = _ls_hash()
+    *_, overridden = rusle.compute_lsi(
+        prep, params=ev.parameters(topography__max_slope_length_m=20.0))
+    overridden = np.array(overridden, copy=True)
+    *_, restored = rusle.compute_lsi(prep)
+
+    assert not np.allclose(
+        np.nan_to_num(overridden), np.nan_to_num(restored)), \
+        'max_slope_length_m did not reach the LS factor'
+    assert _ls_hash() == before, 'fixture LS_factor was not restored'
+
+
+def test_a_catchment_layer_override_reaches_the_raster(pipeline):
+    """The call layer is covered above; this proves the *persisted*
+    catchment layer reaches the producer too. Writes to a probe suffix and
+    restores the override, verifying the restore rather than assuming it."""
+    proj, catchment = pipeline['proj'], pipeline['catchment']
+    ev = pipeline['ev']
+    proj.set_catchment_parameter_overrides(
+        catchment, {'delivery': {'max_sdr': 0.5}})
+    try:
+        rusle.compute_sediment_delivery_ratio(
+            ev, output_suffix='probe_catchment_layer')
+        with rasterio.open(ev.catchment_path(
+                'Delivery', 'SDR_probe_catchment_layer.tif')) as src:
+            assert float(np.nanmax(src.read(1))) <= 0.5
+    finally:
+        proj.set_catchment_parameter_overrides(catchment, {})
+    # The restore is verified, not assumed.
+    assert proj.catchment_parameter_overrides(catchment) == {}
+    assert ev.parameters().parameters.delivery.max_sdr == 0.8
+
+
+def test_a_deprecated_kwarg_still_works_and_warns(pipeline):
+    ev = pipeline['ev']
+    with pytest.warns(DeprecationWarning, match='delivery__max_sdr'):
+        rusle.compute_sediment_delivery_ratio(
+            ev, max_sdr=0.5, output_suffix='deprecated_kwarg_check',
+        )
+    with rasterio.open(
+            ev.catchment_path('Delivery',
+                              'SDR_deprecated_kwarg_check.tif')) as src:
+        assert float(np.nanmax(src.read(1))) <= 0.5
 
 
 # --- Layer scoping -------------------------------------------------------

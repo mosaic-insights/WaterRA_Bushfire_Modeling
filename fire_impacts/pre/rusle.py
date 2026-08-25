@@ -17,6 +17,8 @@ from .project import FireImpactsProject
 from ..context import RunContext
 from .topography import D8_FLOW_DIRECTIONS
 from .data_sources import CSIRO_C_FACTOR_GRID, CSIRO_K_FACTOR_GRID
+from ..const import UNSET
+from ..params import DeliveryParams, deprecated_overrides
 import numpy as np
 import os
 import logging
@@ -37,6 +39,7 @@ def compute_adjusted_k_c(
     compute_sdr: bool = True,
     recovery_breakpoints=None,
     recovery_times=None,
+    params=None,
 ):
     """
     Compute fire-adjusted C and K factors and prepare RUSLE inputs.
@@ -44,7 +47,8 @@ def compute_adjusted_k_c(
     Parameters:
     - ctx: event-level RunContext identifying the catchment + event.
     - c_factor_fn: Path to C-factor raster. When None, a constant
-      C factor of 0.01 is written over the valid DEM cells.
+      C factor (fire_adjustment.default_c_factor, 0.01 by default) is
+      written over the valid DEM cells.
     - k_factor_fn: Path to K-factor raster. Defaults to CSIRO grid.
     - compute_lsi_factor: If True, also compute the LSI factor
       (static — written at catchment level).
@@ -57,11 +61,19 @@ def compute_adjusted_k_c(
       event.json so the simulation step doesn't need it re-specified.
     - recovery_times: Deprecated. The old list of window-start times; if
       given it is converted to breakpoints using the default interval.
+    - params: Calibration parameters — a ParameterRecord (from
+      ctx.parameters()) or a ModelParameters. When None, the project /
+      catchment / event layers are resolved from the context. Uses the
+      fire_adjustment group here and passes delivery straight through to
+      compute_sediment_delivery_ratio, and topography.max_slope_length_m
+      to compute_lsi.
 
     Returns:
     - None. Outputs are written to project raster files.
     """
     ctx.validate()
+    record = ctx._resolved_params(params)
+    p = record.parameters.fire_adjustment
     project = ctx.project
     catchment = ctx.catchment
 
@@ -76,8 +88,9 @@ def compute_adjusted_k_c(
     c_factor_out = ctx.catchment_path('Erodibility', 'C_factor.tif')
 
     if c_factor_fn is None:
-        # Create a constant C-factor layer of 0.01 over valid DEM cells.
-        C_default = np.full(dem_grid.shape, 0.01, dtype=np.float32)
+        # Create a constant C-factor layer over valid DEM cells.
+        C_default = np.full(
+            dem_grid.shape, p.default_c_factor, dtype=np.float32)
         C_default = np.where(dem_grid.nodata_mask, np.nan, C_default)
         write_raster(c_factor_out, C_default, dem_grid.meta())
 
@@ -127,20 +140,25 @@ def compute_adjusted_k_c(
     recovery_start_times = [
         start for start, _ in c.recovery_windows(recovery_breakpoints)
     ]
-    x_c = 0.4
-    x_k = 1
-    Kfire = 0.081
-    Cpeak = 0.35
+    # Aridity is the divisor in both recovery exponents below. A
+    # non-positive or NaN AI is not a parameter problem — no validation on
+    # x_c/x_k reaches it — and it fails silently: AI == 0 gives NaN at
+    # t == 0 and reverts to the unburnt baseline for t > 0, while AI < 0
+    # flips the exponent positive so C/K diverge away from baseline the
+    # longer since the fire. Report it rather than dividing blind.
+    _warn_on_invalid_aridity(AI, dem_grid.nodata_mask)
+
+    saturation = p.dnbr_saturation
 
     # Compute fire-adjusted C factor using dNBR
     CdNBR = dNBR * 1000
     CdNBR[CdNBR < 0] = 0
-    dNBRmask = (CdNBR > 0) & (CdNBR <= 400)
+    dNBRmask = (CdNBR > 0) & (CdNBR <= saturation)
     CdNBR[dNBRmask] = (
         Cbase[dNBRmask]
-        + ((Cpeak - Cbase[dNBRmask]) * (CdNBR[dNBRmask] / 400))
+        + ((p.c_peak - Cbase[dNBRmask]) * (CdNBR[dNBRmask] / saturation))
     )
-    CdNBR[CdNBR > 400] = Cpeak
+    CdNBR[CdNBR > saturation] = p.c_peak
 
     # Flow direction/accumulation are needed by both the LS factor and
     # every SDR below. Condition the DEM once and share the result rather
@@ -153,7 +171,7 @@ def compute_adjusted_k_c(
     # LS factor is static (independent of both the fire and the recovery
     # time) — written once at the catchment level.
     if compute_lsi_factor:
-        compute_lsi(ctx, topo=topo)
+        compute_lsi(ctx, topo=topo, params=record)
 
     # The fire-adjusted layers are per-event and per-recovery-time.
     event_erod_dir = ctx.event_path('Erodibility')
@@ -172,12 +190,12 @@ def compute_adjusted_k_c(
 
         C = (
             (CdNBR - Cbase)
-            * np.exp(-recovery_time / (x_c * AI))
+            * np.exp(-recovery_time / (p.c_recovery_scale * AI))
             + Cbase
         )
         K = (
-            (Kfire - Kbase)
-            * np.exp(-recovery_time / (x_k * AI))
+            (p.k_fire - Kbase)
+            * np.exp(-recovery_time / (p.k_recovery_scale * AI))
             + Kbase
         )
 
@@ -195,6 +213,7 @@ def compute_adjusted_k_c(
                 c_factor_path=c_out,
                 output_suffix=suffix,
                 topo=topo,
+                params=record,
             )
 
     # Also compute the baseline (no-fire) SDR from the unadjusted C factor,
@@ -204,12 +223,68 @@ def compute_adjusted_k_c(
     # compute_sediment_delivery_ratio).
     if compute_sdr:
         compute_sediment_delivery_ratio(
-            ctx, output_suffix='baseline', topo=topo,
+            ctx, output_suffix='baseline', topo=topo, params=record,
         )
 
     # Persist the recovery breakpoints into the event definition so the
     # simulation step can read them back instead of re-specifying them.
     ctx.set_recovery_breakpoints(recovery_breakpoints)
+
+    # Record what this step actually used, beside the outputs it produced.
+    # The base C/K factors, the LS factor and the baseline SDR are written
+    # at catchment scope, the adjusted factors and per-recovery SDRs at
+    # event scope, so both trees get a record.
+    # The catchment record is restricted to leaves that cannot vary by
+    # event: this function runs per event but also writes catchment-level
+    # layers, so recording the full resolution there would overwrite that
+    # file on every event and make its digest flip on purely event-scoped
+    # changes — a false staleness positive on every event switch.
+    ctx.write_provenance(
+        record.restricted_to_scope('catchment'), scope='catchment')
+    ctx.write_provenance(record, scope='event')
+
+def _warn_on_invalid_aridity(AI, nodata_mask):
+    """
+    Log a warning for non-positive or NaN aridity inside the valid domain.
+
+    AI divides the recovery exponent in both the C and K adjustments, so an
+    invalid value degrades silently rather than raising:
+
+    ==========  ===============  ==============================
+    AI          t == 0           t > 0
+    ==========  ===============  ==============================
+    ``== 0``    NaN              reverts to the unburnt baseline
+    ``< 0``     NaN              diverges away from baseline
+    ==========  ===============  ==============================
+
+    numpy emits a RuntimeWarning for the division, but in a notebook that is
+    lost in the logging output, so count the cells and say so explicitly.
+    Warns rather than raises: the offending cells are often outside the
+    catchment (ocean and water bodies carry negative aridity in the source
+    grids) and the run is still meaningful.
+    """
+    valid = ~nodata_mask if nodata_mask is not None else np.ones(
+        AI.shape, dtype=bool)
+    inside = int(valid.sum())
+    if not inside:
+        return
+
+    nan_cells = int(np.isnan(AI[valid]).sum())
+    with np.errstate(invalid='ignore'):
+        zero_cells = int((AI[valid] == 0).sum())
+        negative_cells = int((AI[valid] < 0).sum())
+
+    if nan_cells or zero_cells or negative_cells:
+        logger.warning(
+            'Aridity has %d NaN, %d zero and %d negative cells inside the '
+            'valid DEM domain (of %d). AI divides the C/K recovery '
+            'exponent: zero and NaN produce NaN at T=0 and revert to the '
+            'unburnt baseline afterwards, and negative values make the '
+            'adjusted factors diverge from baseline as recovery time '
+            'grows. Check Soils/Aridity.tif over the catchment.',
+            nan_cells, zero_cells, negative_cells, inside,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Topographic index helper
@@ -232,7 +307,7 @@ def _topographic_indices(ctx: RunContext):
 # LSI factor computation
 # ---------------------------------------------------------------------------
 
-def compute_lsi(ctx: RunContext, topo=None):
+def compute_lsi(ctx: RunContext, topo=None, params=None):
     """
     Calculate the LSi (slope length-gradient) factor from a DEM.
 
@@ -244,6 +319,8 @@ def compute_lsi(ctx: RunContext, topo=None):
     - topo: optional precomputed (grid, fdir, acc) tuple from
       dem_flow_layers() for the catchment DEM, to avoid reconditioning
       the DEM when the caller already has one.
+    - params: Calibration parameters (ParameterRecord or ModelParameters).
+      Uses topography.max_slope_length_m.
 
     Returns:
     - slope_degrees: Slope in degrees for each pixel.
@@ -255,6 +332,7 @@ def compute_lsi(ctx: RunContext, topo=None):
     - LSi: Slope length-gradient factor for each pixel.
     """
     catchment = ctx.catchment
+    p = ctx._resolved_params(params).parameters.topography
     logger.info('Computing LSI factor for catchment: %s', catchment)
     dem_path = ctx.catchment_path('Topography', 'DEM.tif')
 
@@ -293,8 +371,9 @@ def compute_lsi(ctx: RunContext, topo=None):
     # Estimate specific catchment area (Ai_in) in metres
     specific_area = np.sqrt(acc_data * pixel_area)
     # Cap slope length to avoid LS factor overestimation in
-    # heterogeneous landscapes (sqrt(area in m2) ≤ 141 m)
-    specific_area = np.where(specific_area > 141, 141, specific_area)
+    # heterogeneous landscapes (default sqrt(area in m2) ≤ 141 m)
+    cap = p.max_slope_length_m
+    specific_area = np.where(specific_area > cap, cap, specific_area)
 
     # Aspect length factor (xi)
     xi = (
@@ -355,19 +434,30 @@ def compute_lsi(ctx: RunContext, topo=None):
 # Sediment Delivery Ratio computation
 # ---------------------------------------------------------------------------
 
-DEFAULT_MAX_SDR = 0.8
-DEFAULT_IC0 = 0.5
-DEFAULT_K = 1
+# Deprecated: the SDR calibration values now live in
+# params.DeliveryParams. Kept as module constants for one release because
+# they were importable; they read from the dataclass so there is one source
+# of truth.
+#
+# Do NOT pass these back in as keyword arguments. Since the kwargs now
+# default to const.UNSET, `compute_sediment_delivery_ratio(ctx,
+# max_sdr=DEFAULT_MAX_SDR)` is no longer the no-op it used to be: it is an
+# explicit call-layer override that beats the user's parameters.json.
+# Omit the argument instead.
+DEFAULT_MAX_SDR = DeliveryParams().max_sdr
+DEFAULT_IC0 = DeliveryParams().ic0
+DEFAULT_K = DeliveryParams().k
 
 
 def compute_sediment_delivery_ratio(
     ctx: RunContext,
-    max_sdr=DEFAULT_MAX_SDR,
-    ic0=DEFAULT_IC0,
-    k=DEFAULT_K,
+    max_sdr=UNSET,
+    ic0=UNSET,
+    k=UNSET,
     c_factor_path=None,
     output_suffix=None,
     topo=None,
+    params=None,
 ):
     """
     Calculate the Sediment Delivery Ratio (SDR) for the context's event.
@@ -376,11 +466,11 @@ def compute_sediment_delivery_ratio(
     - ctx: event-level RunContext. SDR depends on the fire-adjusted C
       factor, so all Delivery/ outputs are written under
       Events/<event>/Delivery/.
-    - max_sdr: Maximum SDR value. Default is 0.8.
-    - ic0: Calibration parameter for the IC-SDR relationship.
-      Default is 0.5.
-    - k: Shape parameter for the IC-SDR relationship.
-      Default is 1.
+    - max_sdr, ic0, k: Deprecated. Use the delivery parameter group
+      (a parameters.json, or ctx.parameters(delivery__max_sdr=...)).
+      Supplying one here is honoured as a call-layer override — including
+      a value that happens to equal the default, which a plain default
+      could not distinguish from "not supplied".
     - c_factor_path: Path to the C-factor raster used in the
       connectivity calculation. When None, falls back to the
       catchment's base C_factor.tif and produces the baseline
@@ -393,6 +483,10 @@ def compute_sediment_delivery_ratio(
     - topo: optional precomputed (grid, fdir, acc) tuple from
       dem_flow_layers() for the catchment DEM. compute_adjusted_k_c
       passes this so the DEM is conditioned once rather than per SDR.
+    - params: Calibration parameters (ParameterRecord or ModelParameters).
+      Uses the delivery group. compute_adjusted_k_c passes its own
+      resolved record through, so the whole per-recovery SDR set is built
+      from one resolution.
 
     Returns:
     - slope_ratio: Slope as a dimensionless ratio.
@@ -407,6 +501,14 @@ def compute_sediment_delivery_ratio(
     """
     ctx.validate()
     catchment = ctx.catchment
+    p = ctx._resolved_params(
+        params,
+        **deprecated_overrides({
+            'delivery.max_sdr': max_sdr,
+            'delivery.ic0': ic0,
+            'delivery.k': k,
+        }),
+    ).parameters.delivery
 
     # Without a C-factor raster there is no single "adjusted" C factor to
     # fall back on (there is now one per recovery time), so default to the
@@ -457,11 +559,11 @@ def compute_sediment_delivery_ratio(
     area = acc_data * pixel_area
 
     # Compute slope and apply thresholds for connectivity index.
-    # Slope is clamped to [0.005, 1]; NaN cells are restored below.
+    # Slope is clamped to [min_slope, max_slope]; NaN cells restored below.
     slope_ratio, _, _ = slope_from_dem(dem_data, xres, yres)
     Sth = np.where(
-        slope_ratio < 0.005, 0.005,
-        np.where(slope_ratio <= 1, slope_ratio, 1)
+        slope_ratio < p.min_slope, p.min_slope,
+        np.where(slope_ratio <= p.max_slope, slope_ratio, p.max_slope)
     )
     nan_mask = np.isnan(slope_ratio)
     Sth[nan_mask] = np.nan
@@ -494,8 +596,8 @@ def compute_sediment_delivery_ratio(
     # shape and raise IndexError. read_aligned resamples it to match.
     c_factor = read_aligned_like(c_factor_path, dem_grid)
 
-    # Threshold C factor to a minimum of 0.001
-    Cth = np.where(c_factor < 0.001, 0.001, c_factor)
+    # Threshold C factor to its configured minimum
+    Cth = np.where(c_factor < p.min_c_factor, p.min_c_factor, c_factor)
     Cth_path = os.path.join(
         delivery_dir, f'Cth{suffix_text}.tif')
     write_raster(Cth_path, Cth, out_meta)
@@ -513,7 +615,7 @@ def compute_sediment_delivery_ratio(
     # ------------------------------------------------------------------
 
     # Define stream network based on contributing area threshold
-    streams = area > 1.3e4
+    streams = area > p.stream_area_threshold_m2
     stream_cells = np.where(streams)
     streams_path = os.path.join(delivery_dir, 'Streams.tif')
     write_raster(streams_path, streams, out_meta)
@@ -609,7 +711,7 @@ def compute_sediment_delivery_ratio(
     logger.info('Connectivity index (IC) computed')
 
     # Calculate and save Sediment Delivery Ratio
-    SDR = max_sdr / (1 + np.exp((ic0 - IC) / k))
+    SDR = p.max_sdr / (1 + np.exp((p.ic0 - IC) / p.k))
     output_sdr_path = os.path.join(
         delivery_dir, f'SDR{suffix_text}.tif')
     write_raster(output_sdr_path, SDR, out_meta)
