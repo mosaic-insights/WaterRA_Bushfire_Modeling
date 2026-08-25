@@ -75,6 +75,25 @@ DEFAULT_RECOVERY_INTERVAL_YEARS = 0.5
 # Per-event definition file, written at Events/<event>/event.json.
 EVENT_DEFINITION_NAME = 'event.json'
 
+# Project-scope calibration parameter overrides, written at
+# <project>/parameters.json. Hand-editable and user-owned: deliberately kept
+# out of settings.json, which is machine-written (_write() rewrites it
+# wholesale whenever a catchment is added) and would drop the key.
+PARAMETERS_FILE_NAME = 'parameters.json'
+
+# Resolved parameter provenance record — the values a step actually used,
+# where each came from, and a digest. Deliberately a different name from
+# parameters.json: that file is the sparse *override input* a user edits,
+# this one is the full *resolved output* the library writes. Conflating them
+# would turn every package default into an explicit user setting on first
+# run, destroying the default/chosen distinction the record exists for.
+#
+# Written at whichever scope the step produced outputs for:
+#   Catchments/<c>/provenance.json
+#   Catchments/<c>/Events/<event>/provenance.json
+#   Catchments/<c>/Runs/<event>/<ensemble>/<section>/provenance.json
+PROVENANCE_FILE_NAME = 'provenance.json'
+
 
 def recovery_time_suffix(recovery_time: float) -> str:
     """
@@ -138,6 +157,37 @@ def breakpoints_from_times_and_interval(recovery_times, interval):
     if not times:
         raise ValueError("recovery_times is empty.")
     return times + [times[-1] + interval]
+
+
+# ------- Sentinels: ---------------------------------------------------
+
+class _Unset:
+    """Sentinel for 'this argument was not supplied'.
+
+    Needed wherever a default is a real, meaningful value: the deprecated
+    calibration kwargs (max_sdr, ic0, k, threshold_m2, ...) default to the
+    same numbers as the ModelParameters defaults, so `if max_sdr == 0.8`
+    cannot distinguish "the user asked for 0.8" from "the user said
+    nothing". Without this, an explicit value equal to the default is
+    silently dropped and a lower resolution layer wins instead.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self):
+        return 'UNSET'
+
+    def __bool__(self):
+        return False
+
+
+UNSET = _Unset()
+
 
 # ------- Dtype standards: ---------------------------------------------
 
