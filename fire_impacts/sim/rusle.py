@@ -54,7 +54,10 @@ from fire_impacts.pre.project import save_catchment_raster
 from fire_impacts.context import RunContext
 
 DNBR_SEVERITY_THRESHOLD = c.DEFAULT_DNBR_SEVERITY_THRESHOLD
-EMPIRICAL_COEFFICIENT = 0.082
+# Rate constant of the unit kinetic-energy relation — the RUSLE2 value.
+# See const.py for the derivation, the alternative (RUSLE) value, and why
+# 0.29/0.72 are not parameters.
+EMPIRICAL_COEFFICIENT = c.DEFAULT_KE_RATE_RUSLE2
 LOG_INTERVAL_SECONDS = 15.0
 
 # ---------------------------------------------------------------------------
@@ -1035,8 +1038,9 @@ def generate_rusle(
         result['intensity'] = intensity
 
         # Calculate unit kinetic energy (e_r)
-        e_r = 0.29 * (
-            1 - 0.72 * np.exp(-EMPIRICAL_COEFFICIENT * intensity)
+        e_r = c.KE_ASYMPTOTE * (
+            1 - c.KE_FLOOR_FRACTION
+            * np.exp(-EMPIRICAL_COEFFICIENT * intensity)
         )
 
         # Calculate kinetic energy (E) and erosivity factor (R)
@@ -1168,8 +1172,9 @@ def generate_rusle_for_feature(
             intensity = delta_v_r / 0.5  # mm/hr
             max_intensity = max(max_intensity, intensity)
 
-            e_r = 0.29 * (
-                1 - 0.72 * np.exp(-EMPIRICAL_COEFFICIENT * intensity)
+            e_r = c.KE_ASYMPTOTE * (
+                1 - c.KE_FLOOR_FRACTION
+                * np.exp(-EMPIRICAL_COEFFICIENT * intensity)
             )
             E = e_r * delta_v_r
             R = E * intensity

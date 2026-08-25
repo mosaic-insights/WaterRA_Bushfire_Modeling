@@ -54,6 +54,36 @@ CHANNEL_PARAMETERS = dict(
     )
 NUM_SIM_YEARS = 2
 
+# ------- Rainfall kinetic energy: --------------------------------------
+# Unit kinetic energy follows the exponential KE-intensity form
+#
+#     e_r = 0.29 * [1 - 0.72 * exp(-k * i_r)]
+#
+# with e_r in MJ/ha/mm and i_r in mm/h. 0.29 is the asymptotic maximum
+# (drops reach terminal velocity, so energy per mm saturates) and 0.72
+# fixes the drizzle floor at 0.29*(1-0.72) = 0.0812 MJ/ha/mm. Both are
+# fixed by the equation's form; only the rate constant k varies between
+# published versions:
+#
+#   0.05   Brown & Foster (1987), as used in RUSLE (Renard et al. 1997).
+#   0.082  McGregor et al. (1995), adopted by USDA-ARS (2013) in RUSLE2.
+#
+# We use the RUSLE2 value. It is the one supported by Australian
+# evidence: RUSLE's 0.05 was found to underestimate unit energy here
+# (Yu 1999), and the exponential form itself derives from Rosewell
+# (1986), measured in eastern Australia.
+#
+# Changing k selects a model version rather than tuning one, so it is not
+# a free parameter — but the literature does report regional KE-I
+# relationships, so it stays exposed as
+# params.ErosionParams.kinetic_energy_coefficient. Reference:
+# Yin, Nearing, Borrelli & Xue (2017), "Rainfall Erosivity: An Overview
+# of Methodologies and Applications", Vadose Zone Journal, eqs. [2], [3].
+KE_ASYMPTOTE = 0.29           # MJ/ha/mm
+KE_FLOOR_FRACTION = 0.72
+DEFAULT_KE_RATE_RUSLE2 = 0.082    # McGregor et al. (1995) / RUSLE2
+DEFAULT_KE_RATE_RUSLE = 0.05      # Brown & Foster (1987) / RUSLE
+
 # ------- dNBR scale: ---------------------------------------------------
 # dNBR is *stored* as the raw band-ratio difference (pre-fire NBR minus
 # post-fire NBR, negatives clipped), which lands in roughly [0, 1]. It is

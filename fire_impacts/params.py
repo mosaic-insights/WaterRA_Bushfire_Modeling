@@ -39,7 +39,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from .const import (
     DEFAULT_DNBR_SATURATION, DEFAULT_DNBR_SEVERITY_THRESHOLD,
-    DEFAULT_DEBRIS_DNBR_THRESHOLD, UNSET,
+    DEFAULT_DEBRIS_DNBR_THRESHOLD, DEFAULT_KE_RATE_RUSLE2, UNSET,
 )
 
 __all__ = [
@@ -257,18 +257,23 @@ class ErosionParams:
     conventional 0-1000 scale — see ``const.DNBR_SCALE``, and read dNBR
     through ``pre.util.read_dnbr_*`` so the comparison is on that scale.
 
-    ``kinetic_energy_coefficient`` sits inside the Brown & Foster unit
-    kinetic-energy form, where the published metric coefficient is 0.05.
-    Exposed here pending confirmation of whether 0.082 is a regional refit
-    or a transcription error; if it turns out to be the latter it should
-    move to const.py as a model-form constant.
+    ``kinetic_energy_coefficient`` is the rate constant *k* in the unit
+    kinetic-energy relation ``0.29 * [1 - 0.72 * exp(-k * i)]``. It governs
+    only how fast energy climbs from the drizzle floor to the asymptote;
+    the other two coefficients fix those ends and are not parameters.
+
+    The default 0.082 is the RUSLE2 value (McGregor et al. 1995, adopted
+    by USDA-ARS 2013), not a transcription of Brown & Foster's 0.05 — see
+    ``const.DEFAULT_KE_RATE_RUSLE2``. Setting it to
+    ``const.DEFAULT_KE_RATE_RUSLE`` selects the older RUSLE formulation,
+    which yields roughly 20% less unit energy around 10 mm/h.
     """
 
     __scope__ = 'run'
 
     support_practice_factor: float = 1.0
     dnbr_severity_threshold: float = float(DEFAULT_DNBR_SEVERITY_THRESHOLD)
-    kinetic_energy_coefficient: float = 0.082
+    kinetic_energy_coefficient: float = DEFAULT_KE_RATE_RUSLE2
 
     def __post_init__(self):
         _require(
