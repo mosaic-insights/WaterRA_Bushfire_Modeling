@@ -23,6 +23,7 @@ import pytest
 from fire_impacts.context import RunContext
 from fire_impacts.params import ParameterRecord, resolve_parameters
 from fire_impacts.pre.project import FireImpactsProject
+from fire_impacts.provenance import RunProvenance
 
 TEMPLATE_DIR = pathlib.Path(__file__).resolve().parents[1] / 'templates'
 
@@ -36,6 +37,7 @@ RECEIVER_TYPES = {
     'run': RunContext,
     'proj': FireImpactsProject,
     'record': ParameterRecord,
+    'prov': RunProvenance,
 }
 
 
@@ -105,6 +107,9 @@ def probes(tmp_path_factory):
         RunContext: RunContext(
             project=project, catchment='probe', event='e', ensemble='n'),
         ParameterRecord: resolve_parameters([]),
+        RunProvenance: RunProvenance(
+            run={}, parameters=resolve_parameters([]), inputs={},
+            section='Results'),
     }
 
 

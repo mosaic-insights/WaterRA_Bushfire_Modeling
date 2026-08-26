@@ -847,6 +847,25 @@ class RunContext:
         logger.info('Wrote parameter provenance to %s', path)
         return path
 
+    def results_provenance(self, section=None):
+        """How the results in one section were produced.
+
+        Combines the run's identity, the parameters it resolved and the
+        input layers it read into one object — see
+        :class:`fire_impacts.provenance.RunProvenance`. The lower-level
+        :meth:`read_provenance` returns only the parameter record.
+
+        Parameters:
+        - section: results sub-folder. Defaults to the standard Results
+          folder.
+
+        Returns:
+        - A RunProvenance, or None when that section has no record.
+        """
+        from .provenance import read_run_provenance
+
+        return read_run_provenance(self, section=section)
+
     def read_provenance(self, *, scope: str, section=None):
         """Read back a provenance record, or None when absent.
 

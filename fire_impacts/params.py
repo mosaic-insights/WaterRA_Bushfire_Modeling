@@ -656,6 +656,40 @@ class ParameterRecord:
             resolved_at=self.resolved_at,
         )
 
+    def to_frame(self):
+        """
+        Return the resolved values as a DataFrame, one row per parameter.
+
+        Columns: ``parameter``, ``value``, ``source``. Sorted, so two
+        records can be diffed directly.
+
+        This is the form the record is usually worth reading in — the
+        JSON answers a machine's question, this answers "what did this
+        run use, and which of it did anyone actually choose?"
+        """
+        import pandas as pd
+
+        flat = _flatten(self.parameters.to_dict())
+        return pd.DataFrame(
+            [
+                {
+                    'parameter': path,
+                    'value': value,
+                    'source': self.sources.get(path, 'default'),
+                }
+                for path, value in sorted(flat.items())
+            ]
+        )
+
+    def chosen(self):
+        """Return just the parameters somebody set, as a DataFrame.
+
+        The complement of everything still on package defaults, which is
+        usually the shorter and more interesting half.
+        """
+        frame = self.to_frame()
+        return frame[frame['source'] != 'default'].reset_index(drop=True)
+
     def sources_for(self, layer: str) -> list:
         """Return the dotted paths that came from a given layer, sorted.
 

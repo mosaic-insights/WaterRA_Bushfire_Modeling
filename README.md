@@ -524,6 +524,17 @@ record.sources_for('default')          # everything nobody chose
 record.digest()                          # 'sha256:...' — identifies this exact set
 ```
 
+Reading it back later is one call — `ctx.results_provenance()` gathers the
+run's identity, the parameters it resolved and the layers it read:
+
+```python
+prov = ctx.results_provenance()
+print(prov.summary())
+prov.chosen()      # just what somebody set, as a DataFrame
+prov.to_frame()    # every parameter, with where each value came from
+prov.inputs        # layer name -> digest of the parameters that built it
+```
+
 That record is what gets written to `provenance.json` alongside the outputs it
 produced, so a result directory says what made it. The `sources` field is the
 part that matters months later: it distinguishes a deliberate `0.5` from a

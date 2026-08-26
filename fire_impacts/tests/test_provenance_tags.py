@@ -179,3 +179,38 @@ class TestKnownLimits:
         data['digest'] = 'sha256:' + '0' * 64
         record = ParameterRecord.from_dict(data, verify=False)
         assert record.parameters == ModelParameters()
+
+
+class TestReadableViews:
+    """The record is only useful if it can be read. JSON answers a
+    machine's question; these answer 'what did this run use, and which of
+    it did anyone actually choose?'"""
+
+    def test_to_frame_has_a_row_per_parameter(self):
+        record = resolve_parameters([])
+        frame = record.to_frame()
+        assert list(frame.columns) == ['parameter', 'value', 'source']
+        assert len(frame) == len(record.sources)
+
+    def test_to_frame_is_sorted_so_two_records_can_be_diffed(self):
+        frame = resolve_parameters([]).to_frame()
+        assert list(frame['parameter']) == sorted(frame['parameter'])
+
+    def test_to_frame_carries_the_origin_of_each_value(self):
+        record = resolve_parameters(
+            [('project', {'delivery': {'max_sdr': 0.9}})])
+        frame = record.to_frame().set_index('parameter')
+        assert frame.loc['delivery.max_sdr', 'source'] == 'project'
+        assert frame.loc['delivery.ic0', 'source'] == 'default'
+
+    def test_chosen_is_only_what_somebody_set(self):
+        record = resolve_parameters(
+            [('project', {'delivery': {'max_sdr': 0.9}}),
+             ('call', {'erosion': {'support_practice_factor': 0.8}})])
+        chosen = record.chosen()
+        assert set(chosen['parameter']) == {
+            'delivery.max_sdr', 'erosion.support_practice_factor'}
+        assert 'default' not in set(chosen['source'])
+
+    def test_chosen_is_empty_for_an_untouched_record(self):
+        assert len(resolve_parameters([]).chosen()) == 0

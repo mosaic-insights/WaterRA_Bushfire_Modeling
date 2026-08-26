@@ -1185,6 +1185,69 @@ def test_a_directory_without_a_record_is_read_as_the_old_layout(pipeline):
         legacy.rmdir()
 
 
+# --- Reading provenance back ---------------------------------------------
+
+def test_results_provenance_answers_the_whole_question(pipeline):
+    """One object rather than three accessors across three modules:
+    'what produced these results?' is a single question."""
+    run = pipeline['run']
+    prov = run.results_provenance()
+    assert prov is not None
+    assert prov.run['event'] == run.event
+    assert prov.run['ensemble'] == run.ensemble
+    assert prov.section == c.RESULTS_FOLDER_NAME
+    # The parameters it resolved...
+    assert prov.parameters.parameters == ModelParameters()
+    # ...and the layers it read.
+    assert prov.inputs
+    assert all(d.startswith('sha256:') for d in prov.inputs.values())
+
+
+def test_each_results_section_describes_itself(pipeline):
+    run = pipeline['run']
+    assert run.results_provenance(
+        c.RESULTS_BASELINE_FOLDER_NAME).section == \
+        c.RESULTS_BASELINE_FOLDER_NAME
+
+
+def test_an_unwritten_section_reads_back_as_none(pipeline):
+    assert pipeline['run'].results_provenance('Nothing_Here') is None
+
+
+def test_the_summary_names_the_run_and_what_was_set(pipeline):
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    ctx = RunContext.solo_run(
+        pipeline['proj'], event=run.event, ensemble=run.ensemble,
+        label='probe_summary')
+    _rusle_run(ctx, rain,
+               params=ev.parameters(erosion__support_practice_factor=0.75))
+    summary = ctx.results_provenance().summary()
+    assert run.event in summary
+    assert 'probe_summary' in summary
+    assert 'erosion.support_practice_factor=0.75' in summary
+    assert 'input layer' in summary
+
+
+def test_the_summary_says_so_when_nothing_was_overridden(pipeline):
+    summary = pipeline['run'].results_provenance().summary()
+    assert 'every parameter on its package default' in summary
+
+
+def test_chosen_separates_deliberate_values_from_defaults(pipeline):
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    ctx = RunContext.solo_run(
+        pipeline['proj'], event=run.event, ensemble=run.ensemble,
+        label='probe_chosen')
+    _rusle_run(ctx, rain,
+               params=ev.parameters(erosion__support_practice_factor=0.75))
+    prov = ctx.results_provenance()
+    chosen = prov.chosen()
+    assert list(chosen['parameter']) == ['erosion.support_practice_factor']
+    assert list(chosen['source']) == ['call']
+    # The full frame still carries everything.
+    assert len(prov.to_frame()) > len(chosen)
+
+
 # --- Layer scoping -------------------------------------------------------
 
 def test_catchment_scope_layers_are_fire_independent(pipeline):

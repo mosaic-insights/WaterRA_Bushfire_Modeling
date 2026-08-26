@@ -23,8 +23,11 @@ of it.
 
 import json
 import logging
+from dataclasses import dataclass
 
 import rasterio
+
+from .params import ParameterRecord
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +170,97 @@ def check_layers_fresh(layers, record, strict=True):
         if not check_layer_freshness(path, record, *paths, strict=strict):
             stale.append(path)
     return stale
+
+
+# ---------------------------------------------------------------------------
+# Reading a run's provenance back
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RunProvenance:
+    """Everything recorded about how one set of results was produced.
+
+    Assembled from three files that are written separately — the run's
+    identity, the parameters the run resolved, and the digests of the
+    input layers it read. Kept together here because "what produced
+    these results?" is one question, and answering it should not mean
+    knowing which of three accessors holds which third of the answer.
+    """
+
+    #: event / ensemble / label for the run these results belong to.
+    run: dict
+    #: The full resolved parameter set, with the origin of each value.
+    parameters: ParameterRecord
+    #: Input layer name -> the digest of the parameters that built it.
+    inputs: dict
+    #: Which results section this describes.
+    section: str
+
+    def to_frame(self):
+        """The parameters as a DataFrame — see ParameterRecord.to_frame."""
+        return self.parameters.to_frame()
+
+    def chosen(self):
+        """Just the parameters somebody set, as a DataFrame."""
+        return self.parameters.chosen()
+
+    def summary(self) -> str:
+        """A short human-readable account, for printing in a notebook."""
+        chosen = self.chosen()
+        if len(chosen):
+            settings = ', '.join(
+                f'{row.parameter}={row.value} ({row.source})'
+                for row in chosen.itertuples()
+            )
+        else:
+            settings = 'every parameter on its package default'
+        return (
+            f"{self.section} for event {self.run.get('event')!r}, ensemble "
+            f"{self.run.get('ensemble')!r} (run {self.run.get('label')!r})\n"
+            f"  resolved at {self.parameters.resolved_at}\n"
+            f"  fire_impacts {self.parameters.version}\n"
+            f"  {settings}\n"
+            f"  built from {len(self.inputs)} input layer(s)"
+        )
+
+
+def read_run_provenance(ctx, section=None):
+    """
+    Read back how one set of results was produced.
+
+    Parameters:
+    - ctx: run-level RunContext.
+    - section: results sub-folder. Defaults to the standard Results
+      folder.
+
+    Returns:
+    - A :class:`RunProvenance`, or None when that section has no record
+      — it was produced before provenance was written, or the run has
+      not been executed.
+    """
+    import json
+    import os
+
+    from . import const as c
+
+    if section is None:
+        section = c.RESULTS_FOLDER_NAME
+    path = ctx.run_path(section, c.PROVENANCE_FILE_NAME)
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        stored = json.load(f)
+
+    signature = stored.get('run_signature') or {}
+    return RunProvenance(
+        run=ctx.run_identity() or {
+            'event': ctx.event, 'ensemble': ctx.ensemble,
+            'label': ctx.run_label,
+        },
+        parameters=ParameterRecord.from_dict(stored),
+        inputs=dict(signature.get('inputs', {})),
+        section=section,
+    )
 
 
 # ---------------------------------------------------------------------------

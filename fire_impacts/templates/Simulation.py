@@ -245,6 +245,75 @@ baseline_results = rusle.run_usle_simulation(
 )
 
 # %% [markdown]
+# ### What produced these results?
+#
+# Every run records what it was built from, beside the outputs it wrote.
+# Six months later — or when someone else opens the project — this is how
+# you find out what a set of results actually means.
+
+# %%
+# One object covering the run's identity, the parameters it resolved, and
+# the input layers it read.
+prov = ctx.results_provenance()
+print(prov.summary())
+
+# %% [markdown]
+# `chosen()` is usually the interesting half: the parameters somebody set,
+# as opposed to the ones still on package defaults. An empty result means
+# this run used the shipped calibration throughout.
+
+# %%
+prov.chosen()
+
+# %% [markdown]
+# `to_frame()` gives the whole resolved set, one row per parameter, with
+# where each value came from — `default`, `project`, `catchment`, `event`
+# or `call`. That distinction is the point: it tells a deliberate 0.5
+# apart from a defaulted one.
+
+# %%
+prov.to_frame()
+
+# %% [markdown]
+# Two runs can be compared directly, because the frames are sorted.
+
+# %%
+# baseline = ctx.results_provenance('Results_baseline')
+# prov.to_frame().compare(baseline.to_frame())
+
+# %% [markdown]
+# ### Where the inputs came from
+#
+# `inputs` maps each layer the run read to a digest of the parameters that
+# built it. The simulation checks these before it runs and refuses to mix
+# calibrations, so a mismatch is normally caught rather than discovered —
+# but the digests are here if you want to confirm two runs read the same
+# layers.
+
+# %%
+prov.inputs
+
+# %% [markdown]
+# The same information lives on each raster as GeoTIFF metadata, so a
+# layer still answers for itself once it has been copied out of the
+# project — `gdalinfo <file> | grep FIRE_IMPACTS` from a shell, or:
+
+# %%
+from fire_impacts.provenance import read_parameter_tags
+
+read_parameter_tags(ctx.event_path('Delivery', 'SDR_t0.tif'))
+
+# %% [markdown]
+# If the fire severity was substituted rather than derived — a synthetic
+# fire, a supplied raster, or a uniform value — that is recorded too,
+# including the seed actually used, so the draw can be reproduced.
+
+# %%
+from fire_impacts.pre.materialise import read_binding_record
+
+read_binding_record(ctx)   # None when dNBR came from the normal pipeline
+
+# %% [markdown]
 # ### Viewing RUSLE simulation results
 #
 # One easy, intuitive way to view the rsults is as a daily timeseries of total mass eroded each day. This is embedded within the `results` object created above
