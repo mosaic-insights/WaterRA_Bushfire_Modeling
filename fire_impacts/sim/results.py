@@ -351,11 +351,13 @@ def list_ensembles(project, catchment) -> list[str]:
 
     Returns:
     - Sorted list of ensemble name strings found on disk.
+
+    Notes:
+    - Thin wrapper around project.ensembles(catchment), which is the
+      more discoverable spelling — asking what exists is not a
+      simulation-results question.
     """
-    base = Path(project.catchment_path(catchment)) / 'Ensembles'
-    if not base.exists():
-        return []
-    return sorted(p.name for p in base.iterdir() if p.is_dir())
+    return project.ensembles(catchment)
 
 
 def list_events(project, catchment) -> list[str]:
@@ -368,11 +370,11 @@ def list_events(project, catchment) -> list[str]:
 
     Returns:
     - Sorted list of event name strings found on disk.
+
+    Notes:
+    - Thin wrapper around project.events(catchment).
     """
-    base = Path(project.catchment_path(catchment)) / 'Events'
-    if not base.exists():
-        return []
-    return sorted(p.name for p in base.iterdir() if p.is_dir())
+    return project.events(catchment)
 
 
 def list_runs(project, catchment, *, event: str | None = None,

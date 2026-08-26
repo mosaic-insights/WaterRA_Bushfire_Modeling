@@ -56,6 +56,14 @@ class StubProject:
     def subcatchment_label_field(self, catchment):
         return 'SiteID'
 
+    def events(self, catchment=None):
+        base = self.root / 'Catchments' / (catchment or 'c') / 'Events'
+        return sorted(p.name for p in base.iterdir()) if base.exists() else []
+
+    def ensembles(self, catchment=None):
+        base = self.root / 'Catchments' / (catchment or 'c') / 'Ensembles'
+        return sorted(p.name for p in base.iterdir()) if base.exists() else []
+
 
 @pytest.fixture()
 def proj(tmp_path):

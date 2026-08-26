@@ -192,6 +192,22 @@ interchangeable:
 
 See [Calibration parameters](#calibration-parameters) below.
 
+#### What exists in a project
+
+`proj.catchments` lists the registered catchments. Events and ensembles are
+discovered from disk per catchment, so they are methods rather than an
+attribute — there is nothing to read without knowing which catchment:
+
+```python
+proj.catchments              # ['Big-River']
+proj.events('Big-River')     # ['2019_fire', '2020_fire']
+proj.ensembles('Big-River')  # ['historical']
+```
+
+The catchment may be omitted when the project has only one.
+`list_events` / `list_ensembles` in `fire_impacts.sim` are thin wrappers
+around these.
+
 #### Addressing data with a `RunContext`
 
 Because data lives at different scopes, the pre-processing and simulation functions do not take a bare `FireImpactsProject` — they take a **`RunContext`**, a small immutable object that binds a *project + catchment* and, optionally, an *event* and *ensemble*. There are three binding levels, each with a convenience constructor:

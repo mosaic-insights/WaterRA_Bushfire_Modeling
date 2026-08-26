@@ -51,6 +51,13 @@ catchment_name = proj.catchments[0]
 # via a RunContext. The event must match a directory produced by
 # PrepareData; the ensemble names this climate realisation. Outputs
 # land under Catchments/<c>/Runs/<event>/<ensemble>/.
+# What has been prepared for this catchment? A RunContext can be built for
+# an event that does not exist yet — you might create the context before
+# running PrepareData — so it is worth checking the names first.
+proj.events(catchment_name)
+proj.ensembles(catchment_name)
+
+# %%
 ctx = RunContext.solo_run(
     proj, event='2019_fire', ensemble='stochastic',
 )

@@ -430,6 +430,60 @@ class FireImpactsProject(object):
         return os.path.join(base, catchment, *args)
 
     ###########################################################################
+    def events(self, catchment: str = None):
+        """
+        Return the event names that exist under a catchment.
+
+        Parameters:
+        - catchment: Name of the catchment. Optional when the project
+          has exactly one.
+
+        Returns:
+        - Sorted list of event names found on disk. Empty when the
+          catchment has no Events folder yet.
+        ----------------------------------------------------------------
+        Notes:
+        - A method rather than an attribute like `catchments`, because
+          events are discovered from disk per catchment rather than
+          registered in settings.json — there is nothing to read without
+          knowing which catchment to look under.
+        ----------------------------------------------------------------
+        """
+        return self._names_under(catchment, 'Events')
+
+    ###########################################################################
+    def ensembles(self, catchment: str = None):
+        """
+        Return the ensemble names that exist under a catchment.
+
+        Parameters:
+        - catchment: Name of the catchment. Optional when the project
+          has exactly one.
+
+        Returns:
+        - Sorted list of ensemble names found on disk.
+        ----------------------------------------------------------------
+        """
+        return self._names_under(catchment, 'Ensembles')
+
+    ###########################################################################
+    def _names_under(self, catchment, folder: str):
+        """Sorted names of the directories under one catchment folder."""
+        if catchment is None:
+            # catchment_path(None) is the Catchments root, not the sole
+            # catchment, so resolve the name rather than passing None on.
+            if len(self.catchments) != 1:
+                raise ValueError(
+                    f'Project has {len(self.catchments)} catchments — name '
+                    f'the one to query. Known: {list(self.catchments)}'
+                )
+            catchment = self.catchments[0]
+        base = Path(self.catchment_path(catchment)) / folder
+        if not base.exists():
+            return []
+        return sorted(p.name for p in base.iterdir() if p.is_dir())
+
+    ###########################################################################
     def event_path(
         self,
         catchment: str,

@@ -447,6 +447,7 @@ class RunContext:
         If no event.json exists yet, the package default breakpoints are
         used and a warning is logged.
         """
+        self.require_event_directory()
         path = self._event_definition_path()
         if os.path.exists(path):
             data = self._read_event_json()
@@ -909,12 +910,50 @@ class RunContext:
         """
         return self.event_definition().simulation_period()
 
+    def require_event_directory(self) -> str:
+        """Raise a specific error if this event does not exist on disk.
+
+        Called by the accessors that read per-event files, so that a
+        missing event is reported as a missing event. Without it the
+        first failure is whichever file happened to be read first, and
+        its message describes the wrong problem — a context built for a
+        mistyped event reported "Run calculate_fire_severity for event
+        'typo_fire' first", which reads as though the event exists and
+        one step is outstanding.
+
+        Contexts are deliberately constructible for events that do not
+        exist yet, so this cannot move into RunContext construction: a
+        user may reasonably build the context before running the prep
+        that creates the event.
+
+        Returns:
+        - The event directory path.
+        """
+        directory = Path(self.project.event_path(
+            self.catchment, event=self.event))
+        if directory.exists():
+            return str(directory)
+
+        available = self.project.events(self.catchment)
+        if available:
+            hint = f'Events present for {self.catchment}: {available}.'
+        else:
+            hint = (
+                f'No events exist for {self.catchment} yet — run the '
+                f'PrepareData notebook to create one.'
+            )
+        raise FileNotFoundError(
+            f'Event {self.event!r} does not exist for catchment '
+            f'{self.catchment!r}. {hint}'
+        )
+
     def _event_definition_path(self) -> str:
         """Path to this event's event.json (raises if event is None)."""
         return self.event_path(const.EVENT_DEFINITION_NAME)
 
     def _fire_meta_date(self, key):
         """Read one date from the event-scoped FireMeta.csv."""
+        self.require_event_directory()
         path = self.event_path(
             const.FIRE_SEVERITY_FOLDER_NAME, 'FireMeta.csv',
         )
