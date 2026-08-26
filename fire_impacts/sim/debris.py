@@ -4,8 +4,10 @@ Debris flow simulation for post-fire catchments.
 Computes pixel-level net erosion from slope and clay fraction inputs,
 accumulates erosion along the flow network, and applies rainfall-
 intensity thresholds to determine debris flow events at each headwater.
-Constants (HILLSLOPE_PARAMETERS, CHANNEL_PARAMETERS, etc.) are imported
-from fire_impacts.const via wildcard import.
+Constants are imported explicitly from fire_impacts.const. Not via
+wildcard: a star import makes every undefined name look plausible to
+pyflakes, which is how a reference to a local belonging to a different
+function survived review here once already.
 """
 
 import xarray as xr
@@ -16,7 +18,19 @@ from numpy.typing import ArrayLike
 import rasterio
 from rasterio.warp import Resampling
 from rasterio.transform import from_origin, Affine, rowcol
-from fire_impacts.const import *
+from fire_impacts.const import (
+    ARID_MEAN, ARID_MEAN_ADJ, AVG_CTUENT_MGPKG, CATCH_TOTAL_DEBRIS_TONNES,
+    CLY_M_ACC_KG, D8_FLOW_DIRECTIONS, DAYS_PER_SIM_YEAR,
+    DEBRIS_MASS_FIELD, DEBRIS_OP_TIMESERIES_NAME, DEBRIS_SC_SUMMARY_NAME,
+    DNBR_MEAN, DNBR_MEAN_ADJ, ERO_CUM_M_ALL_FN, ERO_CUM_M_CLY_FN,
+    ERO_CUM_M_SED_FN, FLOW_ACCUMULATION_FN, FLOW_DIRECTION_FN,
+    HF_ARID_IDX_THRESH, HF_DNBR_THRESH, HF_GRADIENT_THRESH, HF_I12_CRIT,
+    HF_YEARS_THRESH, HW_ENDP_X, HW_ENDP_Y, HW_ID, I12_CRIT_Y,
+    KG_TO_TONNES, M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS, NODATA_VAL_INT,
+    PCLE_CTUENT_NAME, PERCENT_TO_FRACTION, RESULTS_FOLDER_NAME, SC_ID,
+    SED_M_ACC_KG, SLOPE_DEG_MEAN, SLOPE_DEG_MEAN_ADJ, TOT_EM_ACC_KG,
+    TOT_EM_ACC_KG_HA, UNSET,
+)
 from fire_impacts.pre import topography
 from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.context import RunContext
@@ -1747,7 +1761,8 @@ def event_ts_to_mass(
 
 def _prepare_debris_flow_per_catchment(
     ctx: RunContext,
-    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+    dnbr_threshold=UNSET,
+    params=None,
 ):
     """
     Run prep_debris_flow_simulation() once for the context.
@@ -1759,15 +1774,16 @@ def _prepare_debris_flow_per_catchment(
 
     Parameters:
     - ctx: event-level RunContext.
-    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
-      excluded from the analysis.
+    - dnbr_threshold: Deprecated. Use the debris parameter group.
+    - params: Calibration parameters, forwarded to
+      prep_debris_flow_simulation.
 
     Returns:
     - The prepared DataFrame returned by prep_debris_flow_simulation();
       pass straight through to debris_flow(prepared=...).
     """
     return prep_debris_flow_simulation(
-        ctx, dnbr_threshold=dnbr_threshold)
+        ctx, dnbr_threshold=dnbr_threshold, params=params)
 
 
 def run_debris_flow_replicate(
@@ -1824,7 +1840,8 @@ def run_debris_flow_all_replicates(
     save: bool = False,
     save_daily_catchment_timeseries: bool = False,
     prepared=None,
-    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+    dnbr_threshold=UNSET,
+    params=None,
 ) -> dict:
     """
     Run the debris flow simulation across all replicates in parallel.
@@ -1868,7 +1885,7 @@ def run_debris_flow_all_replicates(
             'dispatching replicates.', ctx.catchment,
         )
         prepared = _prepare_debris_flow_per_catchment(
-            ctx, params=record)
+            ctx, dnbr_threshold=dnbr_threshold, params=params)
 
     tasks = [
         dask.delayed(run_debris_flow_replicate)(

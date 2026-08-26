@@ -22,13 +22,20 @@ from .project import FireImpactsProject, save_catchment_raster
 from ..context import RunContext
 from ..const import UNSET
 from ..params import deprecated_overrides
-from .util import *
+from .util import (
+    clip_and_reproject_raster, condition_dem, read_raster, slope_from_dem,
+    write_raster,
+)
 import copy
 import logging
 
 logger = logging.getLogger(__name__)
 
-from ..const import *
+from ..const import (
+    APPROX_DEGREES_TO_METRES, CRS_METRE_UNITS, D8_FLOW_DIRECTIONS,
+    FLOW_ACCUMULATION_FN, FLOW_DIRECTION_FN, FLOW_ROUTING_TYPE,
+    NODATA_VAL_INT, SLOPE_FN, SLOPE_HYDRO_FN,
+)
 
 
 # ---------------------------------------------------------------------------

@@ -185,3 +185,33 @@ class TestYearWindows:
         lookup = load_package_data(c.DEFAULT_I12_LOOKUP)
         assert len(lookup[c.HF_YEARS_THRESH].unique()) == \
             DebrisFlowParams().num_sim_years
+
+
+class TestReplicateDispatchSignatures:
+    """The replicate path has no end-to-end test (it needs a prepared
+    catchment and a dask scheduler), so its plumbing is checked by
+    signature. A NameError here would only surface in production."""
+
+    @pytest.mark.parametrize('fn_name', [
+        'prep_debris_flow_simulation',
+        '_prepare_debris_flow_per_catchment',
+        'debris_flow',
+        'run_debris_flow_all_replicates',
+    ])
+    def test_every_entry_point_accepts_params(self, fn_name):
+        import inspect
+        from fire_impacts.sim import debris
+        fn = getattr(debris, fn_name)
+        assert 'params' in inspect.signature(fn).parameters, fn_name
+
+    @pytest.mark.parametrize('fn_name', [
+        'prep_debris_flow_simulation',
+        '_prepare_debris_flow_per_catchment',
+        'debris_flow',
+        'run_debris_flow_all_replicates',
+    ])
+    def test_the_deprecated_kwarg_uses_the_sentinel(self, fn_name):
+        import inspect
+        from fire_impacts.sim import debris
+        sig = inspect.signature(getattr(debris, fn_name))
+        assert sig.parameters['dnbr_threshold'].default is c.UNSET, fn_name

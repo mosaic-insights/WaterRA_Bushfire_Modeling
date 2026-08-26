@@ -57,3 +57,39 @@ jobs:
         # they need remote services and a Windows-only eWater SOURCE
         # instance respectively.
         run: pytest -q
+
+  lint:
+    name: pyflakes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install pyflakes
+        run: pip install pyflakes
+
+      - name: Check for undefined names
+        # Undefined names only, not unused imports: the package carries a
+        # backlog of those, and failing on them would mean this job is
+        # always red and therefore ignored. Undefined names are real bugs
+        # — a threading edit once referenced a local belonging to another
+        # function, which shipped because a star import made it look
+        # plausible to both the reader and the linter.
+        #
+        # Test helpers are excluded: several use `from .util import *` for
+        # shared fixtures, which defeats the check without indicating a
+        # problem. fire_impacts/__init__.py's `from .pre import *` is a
+        # deliberate public re-export and is excluded for the same reason.
+        run: |
+          pyflakes fire_impacts > /tmp/pyflakes.txt 2>&1 || true
+          grep -vE "/tests?/|fire_impacts/__init__\\.py" /tmp/pyflakes.txt \
+            > /tmp/lib.txt || true
+          if grep -E "undefined name|may be undefined" /tmp/lib.txt; then
+            echo "::error::pyflakes found undefined names in library code"
+            exit 1
+          fi
+          echo "No undefined names in library code."
