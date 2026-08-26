@@ -117,6 +117,49 @@ def _warn_if_degenerate(values, binding):
     )
 
 
+def _paint(ctx, binding, dem_grid, input_name):
+    """Return the array a Constant or FromFile binding describes."""
+    if isinstance(binding, Constant):
+        values = np.full(dem_grid.shape, np.nan, dtype=np.float32)
+        inside = _domain_mask(ctx, binding, dem_grid)
+        values[inside] = binding.to_stored_scale(input_name)
+        logger.info(
+            'Painting a constant %s of %g (%s) over %d cells (%s).',
+            input_name, binding.value, binding.units,
+            int(inside.sum()), binding.domain,
+        )
+        return values
+
+    from .util import read_aligned_like
+    values = read_aligned_like(binding.path, dem_grid).astype(np.float32)
+    logger.info(
+        'Using supplied %s raster %s (%s), aligned to the DEM grid.',
+        input_name, binding.path, binding.units,
+    )
+    return values * binding.scale_to_stored(input_name)
+
+
+def materialise_c_factor(ctx, bindings=None):
+    """
+    Write ``Erodibility/C_factor.tif`` according to the c_factor binding.
+
+    Replaces ``compute_adjusted_k_c``'s ``c_factor_fn`` argument and its
+    ``fire_adjustment.default_c_factor`` parameter, which expressed the
+    same two things — "use this raster" and "paint this scalar" — in two
+    vocabularies with no rule for which won.
+
+    Note the scope mismatch, which is real and not yet resolved:
+    C_factor.tif is a *catchment*-scoped layer, but bindings are
+    event-scoped because dNBR is. Setting a c_factor binding per event
+    therefore rewrites a layer its sibling events share. The event layer
+    is refused for that reason — set it at project or catchment scope.
+
+    Returns:
+    - The binding record written, or None for a Derived binding.
+    """
+    return _materialise(ctx, 'c_factor', bindings)
+
+
 def materialise_dnbr(ctx, bindings=None, *, seed_sequence=None):
     """
     Write ``masked_dNBR.tif`` according to this context's dNBR binding.
@@ -135,39 +178,46 @@ def materialise_dnbr(ctx, bindings=None, *, seed_sequence=None):
       is Derived (in which case nothing is written and the normal
       severity pipeline is responsible for the raster).
     """
+    return _materialise(ctx, 'dnbr', bindings, seed_sequence=seed_sequence)
+
+
+#: Where each bindable input is written, and the record that describes it.
+_OUTPUTS = {
+    'dnbr': (
+        lambda ctx: ctx.event_path(
+            c.FIRE_SEVERITY_FOLDER_NAME, 'masked_dNBR.tif'),
+        lambda ctx: ctx.event_path(
+            c.FIRE_SEVERITY_FOLDER_NAME, BINDING_RECORD_NAME),
+    ),
+    'c_factor': (
+        lambda ctx: ctx.catchment_path('Erodibility', 'C_factor.tif'),
+        lambda ctx: ctx.catchment_path(
+            'Erodibility', 'c_factor_binding.json'),
+    ),
+}
+
+
+def _materialise(ctx, input_name, bindings=None, *, seed_sequence=None):
+    """Shared resolver: write the raster one binding describes."""
     ctx.validate(require_event_dir=False)
     if bindings is None:
         bindings = ctx.bindings()
-    binding = bindings.dnbr
+    binding = getattr(bindings, input_name)
 
     if isinstance(binding, Derived):
         logger.info(
-            'dNBR uses the derived pipeline; nothing to materialise.')
+            '%s uses the derived pipeline; nothing to materialise.',
+            input_name)
         return None
 
-    out_path = ctx.event_path(c.FIRE_SEVERITY_FOLDER_NAME, 'masked_dNBR.tif')
+    out_path, record_path = (fn(ctx) for fn in _OUTPUTS[input_name])
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
     dem_grid = read_raster_masked(ctx.catchment_path('Topography', 'DEM.tif'))
     effective_seed = None
 
-    if isinstance(binding, Constant):
-        values = np.full(dem_grid.shape, np.nan, dtype=np.float32)
-        inside = _domain_mask(ctx, binding, dem_grid)
-        values[inside] = binding.to_stored_scale()
-        logger.info(
-            'Painting a constant dNBR of %g (%s) over %d cells (%s).',
-            binding.value, binding.units, int(inside.sum()), binding.domain,
-        )
-
-    elif isinstance(binding, FromFile):
-        from .util import read_aligned_like
-        values = read_aligned_like(binding.path, dem_grid).astype(np.float32)
-        values = values * binding.scale_to_stored()
-        logger.info(
-            'Using supplied dNBR raster %s (%s), aligned to the DEM grid.',
-            binding.path, binding.units,
-        )
+    if isinstance(binding, (Constant, FromFile)):
+        values = _paint(ctx, binding, dem_grid, input_name)
 
     elif isinstance(binding, SyntheticFire):
         from .synthetic_fire import generate_synthetic_fire
@@ -190,34 +240,32 @@ def materialise_dnbr(ctx, bindings=None, *, seed_sequence=None):
         )
 
     else:
-        raise ValueError(f'Unsupported dNBR binding: {binding!r}')
+        raise ValueError(
+            f'Unsupported {input_name} binding: {binding!r}')
 
     if not isinstance(binding, SyntheticFire):
         # generate_synthetic_fire writes the raster itself.
         write_raster(out_path, values, dem_grid.meta())
 
-    _warn_if_degenerate(
-        np.asarray(values, dtype=np.float64), binding)
+    if input_name == 'dnbr':
+        _warn_if_degenerate(np.asarray(values, dtype=np.float64), binding)
 
     record = {
-        'input': 'dnbr',
+        'input': input_name,
         'binding': binding.to_dict(),
         'effective_seed': effective_seed,
         'written': os.path.relpath(out_path, ctx.project.project_path),
         'digest': _raster_digest(out_path),
-        'stored_units': 'dnbr',
     }
-    record_path = ctx.event_path(
-        c.FIRE_SEVERITY_FOLDER_NAME, BINDING_RECORD_NAME)
     with open(record_path, 'w') as f:
         json.dump(record, f, indent=2)
-    logger.info('Wrote dNBR binding record to %s', record_path)
+    logger.info('Wrote %s binding record to %s', input_name, record_path)
     return record
 
 
-def read_binding_record(ctx):
-    """Return the dNBR binding record for this event, or None."""
-    path = ctx.event_path(c.FIRE_SEVERITY_FOLDER_NAME, BINDING_RECORD_NAME)
+def read_binding_record(ctx, input_name='dnbr'):
+    """Return a materialised input's binding record, or None."""
+    path = _OUTPUTS[input_name][1](ctx)
     if not os.path.exists(path):
         return None
     with open(path) as f:

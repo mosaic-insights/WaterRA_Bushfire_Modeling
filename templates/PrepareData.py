@@ -323,6 +323,23 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 # The package will automatically download the national **C-factor** and **K-factor** rasters and prepare them for simulation in each catchment. No manual inputs are required for this step.
 
 # %% [markdown]
+# ## Substituting an input
+#
+# Sometimes you want to drive the model with something other than the real
+# data — a scenario fire, a supplied raster, or a uniform value. That is an
+# *input binding*, kept separate from calibration parameters: a parameter
+# says what coefficient the model uses, a binding says where an input comes
+# from. `dnbr` and `c_factor` are bindable.
+
+# %%
+# ctx.set_event_binding_overrides({
+#     'dnbr': {'source': 'synthetic', 'severity': 'high'},
+# })
+# ...then materialise it before the cells that consume it:
+# from fire_impacts.pre.materialise import materialise_dnbr
+# materialise_dnbr(ctx)
+
+# %% [markdown]
 # ## Calibration parameters
 #
 # Values like the peak post-fire cover factor (`c_peak`), the SDR ceiling

@@ -98,16 +98,7 @@ def compute_adjusted_k_c(
     os.makedirs(ctx.catchment_path('Erodibility'), exist_ok=True)
     c_factor_out = ctx.catchment_path('Erodibility', 'C_factor.tif')
 
-    if c_factor_fn is None:
-        # Create a constant C-factor layer over valid DEM cells.
-        C_default = np.full(
-            dem_grid.shape, p.default_c_factor, dtype=np.float32)
-        C_default = np.where(dem_grid.nodata_mask, np.nan, C_default)
-        write_raster(c_factor_out, C_default, dem_grid.meta())
-
-    else:
-        # A user-supplied C-factor raster is clipped to the catchment.
-        clip_and_reproject_raster(c_factor_fn, shp, c_factor_out)
+    _build_base_c_factor(ctx, c_factor_fn, p, dem_grid, shp, c_factor_out)
 
     if k_factor_fn is None:
         k_factor_fn = CSIRO_K_FACTOR_GRID
@@ -258,6 +249,79 @@ def compute_adjusted_k_c(
         record.restricted_to_scope('catchment'), scope='catchment',
         groups=('fire_adjustment', 'delivery', 'topography'))
     ctx.write_provenance(record, scope='event')
+
+def _build_base_c_factor(ctx, c_factor_fn, fire_adjustment, dem_grid,
+                         boundary_shp, out_path):
+    """
+    Produce the catchment's base C factor, from whichever source is set.
+
+    Three ways of saying the same two things used to coexist here: the
+    ``c_factor_fn`` argument ("use this raster"), the
+    ``fire_adjustment.default_c_factor`` parameter ("paint this scalar"),
+    and — since bindings landed — a ``c_factor`` binding, which expresses
+    both. Nothing defined which won.
+
+    The binding is now authoritative when one is set. The older two still
+    work and warn, and supplying a binding *and* a non-default
+    ``default_c_factor`` raises rather than silently picking one: that
+    combination is a user asking for two different constants.
+    """
+    from .materialise import materialise_c_factor
+    from ..bindings import Derived
+    from ..params import FireAdjustmentParams
+
+    binding = ctx.bindings().c_factor
+    bound = not isinstance(binding, Derived)
+    scalar_set = (fire_adjustment.default_c_factor
+                  != FireAdjustmentParams().default_c_factor)
+
+    if bound:
+        if c_factor_fn is not None:
+            raise ValueError(
+                'Both a c_factor binding and a c_factor_fn argument were '
+                'given, which is ambiguous. c_factor_fn is deprecated — '
+                'express the raster as a binding instead: '
+                '{"c_factor": {"source": "file", "path": ..., '
+                '"units": "dimensionless"}}.'
+            )
+        if scalar_set:
+            raise ValueError(
+                f'Both a c_factor binding and a non-default '
+                f'fire_adjustment.default_c_factor '
+                f'({fire_adjustment.default_c_factor}) were given, which '
+                f'is ambiguous — they are two ways of asking for a '
+                f'constant C factor. default_c_factor is deprecated; '
+                f'keep the binding and remove it.'
+            )
+        materialise_c_factor(ctx)
+        return
+
+    if c_factor_fn is not None:
+        warnings.warn(
+            'c_factor_fn is deprecated; bind the input instead — '
+            '{"c_factor": {"source": "file", "path": ..., '
+            '"units": "dimensionless"}}.',
+            DeprecationWarning, stacklevel=3,
+        )
+        clip_and_reproject_raster(c_factor_fn, boundary_shp, out_path)
+        return
+
+    if scalar_set:
+        warnings.warn(
+            'fire_adjustment.default_c_factor is deprecated; bind the '
+            'input instead — {"c_factor": {"source": "constant", '
+            '"value": ..., "units": "dimensionless", "domain": '
+            '"dem_valid"}}. It says the same thing, and the binding is '
+            'recorded beside the raster it produces.',
+            DeprecationWarning, stacklevel=3,
+        )
+    # Paint the constant. Identical to what a Constant binding on
+    # dem_valid produces, which is the point of deprecating it.
+    values = np.full(
+        dem_grid.shape, fire_adjustment.default_c_factor, dtype=np.float32)
+    values = np.where(dem_grid.nodata_mask, np.nan, values)
+    write_raster(out_path, values, dem_grid.meta())
+
 
 def _warn_on_invalid_aridity(AI, nodata_mask):
     """

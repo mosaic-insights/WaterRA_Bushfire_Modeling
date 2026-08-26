@@ -56,6 +56,27 @@ DNBR_UNITS = {
     'dnbr_x1000': 1.0 / DNBR_SCALE,
 }
 
+# The RUSLE cover factor is a dimensionless ratio, so there is only one
+# unit — but it is still required, so that every binding reads the same
+# way and adding a second scale later cannot silently reinterpret files
+# written under the first.
+C_FACTOR_UNITS = {'dimensionless': 1.0}
+
+#: Units accepted for each bindable input.
+UNITS_BY_INPUT = {
+    'dnbr': DNBR_UNITS,
+    'c_factor': C_FACTOR_UNITS,
+}
+
+#: Which variants make sense for each input. A synthetic draw is defined
+#: only for fire severity: there is no reference distribution to sample a
+#: cover factor from, and silently accepting one would produce a raster
+#: of dNBR values in a C-factor file.
+VARIANTS_BY_INPUT = {
+    'dnbr': ('derived', 'constant', 'file', 'synthetic'),
+    'c_factor': ('derived', 'constant', 'file'),
+}
+
 # Where a Constant is painted.
 DOMAINS = (
     # Inside the catchment boundary. Claims lakes, rock and urban area
@@ -104,13 +125,14 @@ class Constant:
     domain: str = 'catchment'
 
     def __post_init__(self):
-        if self.units not in DNBR_UNITS:
+        if not self.units:
             raise ValueError(
-                f'Unknown units {self.units!r} for a constant binding. '
-                f'Valid units: {sorted(DNBR_UNITS)}. Units are required '
-                f'because dNBR is stored on a different scale from the '
-                f'one it is quoted on, and the two differ by '
-                f'{DNBR_SCALE}x.'
+                'A constant binding needs units. They are required '
+                'because an input may be stored on a different scale '
+                'from the one it is quoted on — dNBR is, by a factor of '
+                f'{DNBR_SCALE} — and nothing about a bare number says '
+                'which is meant. Validated against the input it is '
+                'attached to.'
             )
         base = self.domain.split(':', 1)[0]
         if base not in DOMAINS:
@@ -132,9 +154,9 @@ class Constant:
             'units': self.units, 'domain': self.domain,
         }
 
-    def to_stored_scale(self) -> float:
-        """Return the value converted to the stored representation."""
-        return self.value * DNBR_UNITS[self.units]
+    def to_stored_scale(self, input_name: str = 'dnbr') -> float:
+        """Return the value converted to the input's stored scale."""
+        return self.value * UNITS_BY_INPUT[input_name][self.units]
 
 
 @dataclass(frozen=True)
@@ -156,19 +178,19 @@ class FromFile:
     def __post_init__(self):
         if not self.path:
             raise ValueError('A file binding needs a path.')
-        if self.units not in DNBR_UNITS:
+        if not self.units:
             raise ValueError(
-                f'Unknown units {self.units!r} for a file binding. '
-                f'Valid units: {sorted(DNBR_UNITS)}.'
+                'A file binding needs units: nothing about a raster says '
+                'which scale its values are on.'
             )
 
     def to_dict(self) -> dict:
         return {'source': self.SOURCE, 'path': self.path,
                 'units': self.units}
 
-    def scale_to_stored(self) -> float:
+    def scale_to_stored(self, input_name: str = 'dnbr') -> float:
         """Factor converting this file's values to the stored scale."""
-        return DNBR_UNITS[self.units]
+        return UNITS_BY_INPUT[input_name][self.units]
 
 
 @dataclass(frozen=True)
@@ -207,6 +229,35 @@ class SyntheticFire:
 _VARIANTS = {
     cls.SOURCE: cls for cls in (Derived, Constant, FromFile, SyntheticFire)
 }
+
+
+def validate_binding(binding, input_name: str) -> None:
+    """
+    Check a binding against the input it is attached to.
+
+    Units and permitted variants depend on the input, which the binding
+    itself cannot know — a Constant does not know whether it is painting
+    a dNBR or a cover factor. Validating here rather than in the
+    variant's __post_init__ keeps the check early without hard-coding
+    one input's vocabulary into the union.
+    """
+    if input_name not in UNITS_BY_INPUT:
+        raise ValueError(
+            f'Unknown input {input_name!r}. Bindable inputs: '
+            f'{sorted(UNITS_BY_INPUT)}.'
+        )
+    allowed = VARIANTS_BY_INPUT[input_name]
+    if binding.SOURCE not in allowed:
+        raise ValueError(
+            f'A {binding.SOURCE!r} binding is not defined for '
+            f'{input_name!r}. Valid sources for it: {list(allowed)}.'
+        )
+    units = getattr(binding, 'units', None)
+    if units is not None and units not in UNITS_BY_INPUT[input_name]:
+        raise ValueError(
+            f'Unknown units {units!r} for {input_name!r}. Valid units: '
+            f'{sorted(UNITS_BY_INPUT[input_name])}.'
+        )
 
 
 def binding_from_dict(data: Any):
@@ -276,9 +327,16 @@ class InputBindings:
     """
 
     # masked_dNBR.tif is per event, so bindings are event-scoped.
+    # C_factor.tif is catchment-scoped, but it is written by an
+    # event-scoped step; see the note in materialise_c_factor.
     __scope__ = 'event'
 
     dnbr: Any = Derived()
+    c_factor: Any = Derived()
+
+    def __post_init__(self):
+        for spec in fields(self):
+            validate_binding(getattr(self, spec.name), spec.name)
 
     def to_dict(self) -> dict:
         return {name: getattr(self, name).to_dict()

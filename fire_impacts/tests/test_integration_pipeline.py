@@ -833,6 +833,130 @@ def test_an_unrelated_parameter_change_does_not_block_the_run(pipeline):
     assert 'RUSLE_sum_total' in results
 
 
+# --- C factor: one idea, one vocabulary ----------------------------------
+
+@pytest.fixture
+def restore_c_factor(pipeline):
+    from fire_impacts.pre.util import write_raster
+    prep = pipeline['prep']
+    path = prep.catchment_path('Erodibility', 'C_factor.tif')
+    with rasterio.open(path) as src:
+        original, meta = src.read(1), src.meta.copy()
+    yield pipeline
+    write_raster(path, original, meta)
+
+
+def _c_factor(prep):
+    with rasterio.open(
+            prep.catchment_path('Erodibility', 'C_factor.tif')) as src:
+        return src.read(1)
+
+
+def test_a_c_factor_binding_replaces_the_scalar_parameter(
+        restore_c_factor):
+    """fire_adjustment.default_c_factor and a Constant c_factor binding
+    say the same thing. The binding is authoritative."""
+    from fire_impacts.bindings import Constant, InputBindings
+    from fire_impacts.pre.materialise import materialise_c_factor
+    prep = restore_c_factor['prep']
+    materialise_c_factor(prep, InputBindings(
+        c_factor=Constant(value=0.05, units='dimensionless',
+                          domain='dem_valid')))
+    values = _c_factor(prep)
+    assert np.allclose(values[np.isfinite(values)], 0.05)
+
+
+def test_compute_adjusted_k_c_honours_the_c_factor_binding(
+        restore_c_factor):
+    """The hop that matters: the binding has to reach the producer, not
+    just the resolver called directly."""
+    from fire_impacts.pre import rusle as prusle
+    prep, ev = restore_c_factor['prep'], restore_c_factor['ev']
+    ev.set_event_binding_overrides({'c_factor': {
+        'source': 'constant', 'value': 0.07,
+        'units': 'dimensionless', 'domain': 'dem_valid'}})
+    try:
+        prusle.compute_adjusted_k_c(
+            ev, recovery_breakpoints=BREAKPOINTS,
+            compute_lsi_factor=False, compute_sdr=False)
+        values = _c_factor(prep)
+        assert np.allclose(values[np.isfinite(values)], 0.07)
+    finally:
+        ev.set_event_binding_overrides({})
+
+
+def test_a_binding_and_the_deprecated_scalar_together_are_refused(
+        restore_c_factor):
+    """Two ways of asking for a constant, with no rule for which wins —
+    exactly the ambiguity the binding exists to remove."""
+    from fire_impacts.pre import rusle as prusle
+    prep, ev = restore_c_factor['prep'], restore_c_factor['ev']
+    ev.set_event_binding_overrides({'c_factor': {
+        'source': 'constant', 'value': 0.05,
+        'units': 'dimensionless', 'domain': 'dem_valid'}})
+    try:
+        with pytest.raises(ValueError, match='ambiguous'):
+            prusle.compute_adjusted_k_c(
+                ev, recovery_breakpoints=BREAKPOINTS,
+                params=ev.parameters(
+                    fire_adjustment__default_c_factor=0.02),
+            )
+    finally:
+        ev.set_event_binding_overrides({})
+
+
+def test_a_binding_and_the_deprecated_argument_together_are_refused(
+        restore_c_factor):
+    from fire_impacts.pre import rusle as prusle
+    ev = restore_c_factor['ev']
+    ev.set_event_binding_overrides({'c_factor': {
+        'source': 'constant', 'value': 0.05,
+        'units': 'dimensionless', 'domain': 'dem_valid'}})
+    try:
+        with pytest.raises(ValueError, match='ambiguous'):
+            prusle.compute_adjusted_k_c(
+                ev, c_factor_fn=_data(C_FACTOR_FILE),
+                recovery_breakpoints=BREAKPOINTS)
+    finally:
+        ev.set_event_binding_overrides({})
+
+
+def test_the_deprecated_scalar_still_works_and_warns(restore_c_factor):
+    from fire_impacts.pre import rusle as prusle
+    prep, ev = restore_c_factor['prep'], restore_c_factor['ev']
+    with pytest.warns(DeprecationWarning, match='default_c_factor'):
+        prusle.compute_adjusted_k_c(
+            ev, recovery_breakpoints=BREAKPOINTS,
+            compute_lsi_factor=False, compute_sdr=False,
+            params=ev.parameters(fire_adjustment__default_c_factor=0.02),
+        )
+    values = _c_factor(prep)
+    assert np.allclose(values[np.isfinite(values)], 0.02)
+
+
+def test_the_deprecated_argument_still_works_and_warns(restore_c_factor):
+    from fire_impacts.pre import rusle as prusle
+    ev = restore_c_factor['ev']
+    with pytest.warns(DeprecationWarning, match='c_factor_fn'):
+        prusle.compute_adjusted_k_c(
+            ev, c_factor_fn=_data(C_FACTOR_FILE),
+            recovery_breakpoints=BREAKPOINTS,
+            compute_lsi_factor=False, compute_sdr=False)
+
+
+def test_the_default_path_does_not_warn(restore_c_factor):
+    """Nothing deprecated is in play when neither is set, so an ordinary
+    run must stay quiet."""
+    import warnings as _warnings
+    from fire_impacts.pre import rusle as prusle
+    ev = restore_c_factor['ev']
+    with _warnings.catch_warnings():
+        _warnings.simplefilter('error', DeprecationWarning)
+        prusle.compute_adjusted_k_c(
+            ev, recovery_breakpoints=BREAKPOINTS,
+            compute_lsi_factor=False, compute_sdr=False)
+
+
 # --- Layer scoping -------------------------------------------------------
 
 def test_catchment_scope_layers_are_fire_independent(pipeline):

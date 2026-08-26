@@ -317,7 +317,8 @@ kept separate from calibration parameters: a parameter says *what
 coefficient the model uses*, a binding says *where an input comes from*.
 
 Bindings live under a `"bindings"` key in the same files as parameters, and
-resolve project → catchment → event. dNBR is the only bindable input today:
+resolve project → catchment → event. Two inputs are bindable — `dnbr` and
+`c_factor`:
 
 ```json
 {
@@ -334,10 +335,21 @@ resolve project → catchment → event. dNBR is the only bindable input today:
 | `file` | a raster you supply; needs `units` |
 | `synthetic` | sampled from a reference fire's dNBR distribution |
 
-`units` is **required** for `constant` and `file` — either `"dnbr"` (the
-stored band-ratio difference) or `"dnbr_x1000"` (the conventional scale
-thresholds are quoted on). The two differ by 1000×, and nothing about a
-value or a file reveals which it is.
+`units` is **required** for `constant` and `file`, and valid units depend on
+the input: `dnbr` takes `"dnbr"` (the stored band-ratio difference) or
+`"dnbr_x1000"` (the conventional scale thresholds are quoted on), which
+differ by 1000×; `c_factor` takes `"dimensionless"`. Nothing about a bare
+value or a raster reveals which scale it is on, so there is no default.
+
+`synthetic` applies only to `dnbr` — there is no reference distribution to
+sample a cover factor from, and accepting one would write dNBR values into
+a C-factor file.
+
+> **Deprecated:** `fire_adjustment.default_c_factor` and the `c_factor_fn`
+> argument to `compute_adjusted_k_c` both say what a `c_factor` binding
+> says — "paint this scalar" and "use this raster". They still work and
+> warn. Supplying a binding *and* either of them raises, because nothing
+> defines which should win.
 
 `domain` decides which cells a constant fills: `catchment`, `dem_valid`, or
 `mask:<section>/<file>` to borrow an existing layer's valid cells. The

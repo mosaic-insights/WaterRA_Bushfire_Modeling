@@ -37,9 +37,15 @@ class TestUnitsAreRequired:
         with pytest.raises(ValueError, match='Incomplete'):
             binding_from_dict({'source': 'file', 'path': '/tmp/x.tif'})
 
-    def test_unknown_units_are_rejected(self):
+    def test_empty_units_are_rejected_by_the_variant(self):
+        with pytest.raises(ValueError, match='needs units'):
+            Constant(value=300, units='')
+
+    def test_unknown_units_are_rejected_against_the_input(self):
+        # Units are validated where the input is known: a Constant does
+        # not know whether it is painting a dNBR or a cover factor.
         with pytest.raises(ValueError, match='Unknown units'):
-            Constant(value=300, units='metres')
+            InputBindings(dnbr=Constant(value=300, units='metres'))
 
     def test_conventional_units_convert_to_the_stored_scale(self):
         assert Constant(value=300, units='dnbr_x1000').to_stored_scale() \
@@ -56,6 +62,44 @@ class TestUnitsAreRequired:
     def test_a_file_binding_reports_its_scale_factor(self):
         assert FromFile(path='x.tif', units='dnbr_x1000') \
             .scale_to_stored() == pytest.approx(1 / c.DNBR_SCALE)
+
+
+class TestPerInputRules:
+    """Units and permitted variants depend on the input, which a binding
+    cannot know by itself."""
+
+    def test_a_cover_factor_is_dimensionless(self):
+        bound = InputBindings(
+            c_factor=Constant(value=0.01, units='dimensionless'))
+        assert bound.c_factor.to_stored_scale('c_factor') == 0.01
+
+    def test_dnbr_units_are_refused_for_the_cover_factor(self):
+        with pytest.raises(ValueError, match='Unknown units'):
+            InputBindings(
+                c_factor=Constant(value=0.01, units='dnbr_x1000'))
+
+    def test_dimensionless_is_refused_for_dnbr(self):
+        with pytest.raises(ValueError, match='Unknown units'):
+            InputBindings(dnbr=Constant(value=0.3, units='dimensionless'))
+
+    def test_a_synthetic_cover_factor_is_refused(self):
+        # There is no reference distribution to sample a cover factor
+        # from; accepting one would write dNBR values into a C-factor file.
+        with pytest.raises(ValueError, match='not defined for'):
+            InputBindings(c_factor=SyntheticFire())
+
+    def test_a_synthetic_dnbr_is_allowed(self):
+        assert isinstance(
+            InputBindings(dnbr=SyntheticFire()).dnbr, SyntheticFire)
+
+    @pytest.mark.parametrize('input_name', ['dnbr', 'c_factor'])
+    def test_every_input_accepts_derived_constant_and_file(self, input_name):
+        from fire_impacts.bindings import UNITS_BY_INPUT
+        units = sorted(UNITS_BY_INPUT[input_name])[0]
+        for binding in (Derived(),
+                        Constant(value=0.1, units=units),
+                        FromFile(path='x.tif', units=units)):
+            InputBindings(**{input_name: binding})
 
 
 class TestDomains:
