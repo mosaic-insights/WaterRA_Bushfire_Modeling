@@ -332,9 +332,10 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 # fixed coefficients of published equations, which are not user-editable.
 #
 # > **Status:** wiring is landing group by group. `fire_adjustment`,
-# > `delivery` and `topography` are **live** — changing them changes the
-# > layers the next cells build. `erosion`, `debris` and `severity` are
-# > declared and recorded but not yet consumed.
+# > `delivery`, `topography` and `erosion` are **live** — changing them
+# > changes the layers the next cells build (and, for `erosion`, the
+# > simulation results). `debris` and `severity` are declared and
+# > recorded but not yet consumed.
 #
 # > **Set these BEFORE running the cells below.** Changing a parameter does
 # > not rebuild anything by itself — if you change one after building the

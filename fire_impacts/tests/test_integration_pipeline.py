@@ -391,6 +391,136 @@ def test_the_adjusted_c_factor_is_not_saturated_everywhere(pipeline):
     )
 
 
+# --- Erosion parameters (phase 3) ----------------------------------------
+
+def test_the_p_factor_is_reachable_from_the_simulation(pipeline):
+    """The defect phase 3 exists to fix: support_practice_factor was a
+    parameter of compute_klscp_layer, but _rusle_parameter_grids called
+    through without it and run_usle_simulation had no way to pass it, so
+    the RUSLE P factor was pinned at 1.0 from every realistic entry
+    point."""
+    ev = pipeline['ev']
+    base, _ = simr.compute_klscp_layer(ev, recovery_time=BREAKPOINTS[0])
+    half, _ = simr.compute_klscp_layer(
+        ev, recovery_time=BREAKPOINTS[0],
+        params=ev.parameters(erosion__support_practice_factor=0.5),
+    )
+    finite = np.isfinite(base) & np.isfinite(half)
+    assert finite.any()
+    # P multiplies the product of the other three factors, so halving it
+    # halves KLSCP everywhere.
+    assert np.allclose(half[finite] / base[finite], 0.5)
+
+
+def test_the_p_factor_reaches_a_full_run(pipeline):
+    """Reaching compute_klscp_layer is not enough — it has to survive the
+    hop through _rusle_parameter_grids that previously dropped it."""
+    ev, run = pipeline['ev'], pipeline['run']
+    rain = pipeline['rain']
+    factory = simr.default_rusle_recorders(
+        grid_variables=('RUSLE',), grid_fns=('sum',),
+        grid_timesteps=('total',), include_timeseries=False)
+    start, end = rain.index[0], rain.index[-1]
+    full = simr.run_usle_simulation(
+        run, rain, recorders=factory(run, start, end),
+        save_rasters=False, save_timeseries=False)
+    half = simr.run_usle_simulation(
+        run, rain, recorders=factory(run, start, end),
+        save_rasters=False, save_timeseries=False,
+        params=ev.parameters(erosion__support_practice_factor=0.5),
+    )
+    a = np.asarray(full['RUSLE_sum_total'])
+    b = np.asarray(half['RUSLE_sum_total'])
+    finite = np.isfinite(a) & np.isfinite(b) & (a != 0)
+    assert finite.any()
+    assert np.allclose(b[finite] / a[finite], 0.5)
+
+
+def test_the_severity_threshold_moves_the_split(pipeline):
+    from fire_impacts.params import ErosionParams
+    ev = pipeline['ev']
+    _, _, dnbr, area, _ = simr._rusle_parameter_grids(
+        ev, recovery_time=BREAKPOINTS[0])
+    ones = np.ones_like(dnbr)
+    rain = pd.Series(
+        [10.0], index=pd.date_range('2020-01-01', periods=1, freq='30min'))
+
+    def high_total(threshold):
+        _, data = next(iter(simr.generate_rusle(
+            rain, ones, ones, dnbr, area,
+            erosion=ErosionParams(dnbr_severity_threshold=threshold))))
+        return float(np.nansum(data['RUSLE_above_threshold']))
+
+    # Lowering the threshold must move cells into the high-severity class.
+    assert high_total(10.0) > high_total(400.0) > 0
+
+
+def test_the_kinetic_energy_rate_moves_erosivity(pipeline):
+    from fire_impacts.params import ErosionParams
+    ev = pipeline['ev']
+    _, _, dnbr, area, _ = simr._rusle_parameter_grids(
+        ev, recovery_time=BREAKPOINTS[0])
+    ones = np.ones_like(dnbr)
+    rain = pd.Series(
+        [10.0], index=pd.date_range('2020-01-01', periods=1, freq='30min'))
+
+    def erosivity(rate):
+        _, data = next(iter(simr.generate_rusle(
+            rain, ones, ones, dnbr, area,
+            erosion=ErosionParams(kinetic_energy_coefficient=rate))))
+        return data['erosivity']
+
+    # RUSLE2 delivers more unit energy than RUSLE at this intensity.
+    assert erosivity(c.DEFAULT_KE_RATE_RUSLE2) > \
+        erosivity(c.DEFAULT_KE_RATE_RUSLE)
+
+
+def test_the_erosion_group_reaches_a_full_run(pipeline):
+    """The P-factor tests only exercise the KLSCP path. This covers the
+    other hop: erosion parameters consumed inside generate_rusle must be
+    threaded from run_usle_simulation, not defaulted there."""
+    ev, run = pipeline['ev'], pipeline['run']
+    rain = pipeline['rain']
+    factory = simr.default_rusle_recorders(
+        grid_variables=('RUSLE',), grid_fns=('sum',),
+        grid_timesteps=('total',), include_timeseries=False)
+    start, end = rain.index[0], rain.index[-1]
+
+    def total(**overrides):
+        res = simr.run_usle_simulation(
+            run, rain, recorders=factory(run, start, end),
+            save_rasters=False, save_timeseries=False,
+            params=ev.parameters(**overrides) if overrides else None)
+        return float(np.nansum(np.asarray(res['RUSLE_sum_total'])))
+
+    # The RUSLE kinetic-energy rate gives less unit energy than RUSLE2,
+    # so erosion must fall — and can only do so if the group is threaded.
+    assert total(
+        erosion__kinetic_energy_coefficient=c.DEFAULT_KE_RATE_RUSLE
+    ) < total()
+
+
+def test_a_run_records_its_provenance(pipeline):
+    run = pipeline['run']
+    record = run.read_provenance(scope='run', section=c.RESULTS_FOLDER_NAME)
+    assert record is not None
+    assert record.digest().startswith('sha256:')
+    baseline = run.read_provenance(
+        scope='run', section=c.RESULTS_BASELINE_FOLDER_NAME)
+    assert baseline is not None
+
+
+def test_a_deprecated_p_factor_kwarg_still_works_and_warns(pipeline):
+    ev = pipeline['ev']
+    with pytest.warns(DeprecationWarning,
+                      match='erosion__support_practice_factor'):
+        half, _ = simr.compute_klscp_layer(
+            ev, recovery_time=BREAKPOINTS[0], support_practice_factor=0.5)
+    base, _ = simr.compute_klscp_layer(ev, recovery_time=BREAKPOINTS[0])
+    finite = np.isfinite(base) & np.isfinite(half)
+    assert np.allclose(half[finite] / base[finite], 0.5)
+
+
 # --- Layer scoping -------------------------------------------------------
 
 def test_catchment_scope_layers_are_fire_independent(pipeline):

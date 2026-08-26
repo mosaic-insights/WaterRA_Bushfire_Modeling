@@ -46,6 +46,8 @@ from fire_impacts import const as c
 from fire_impacts.const import M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS
 from fire_impacts.pre.util import (
     read_aligned, read_dnbr_aligned, read_raster)
+from fire_impacts.const import UNSET
+from fire_impacts.params import ErosionParams, deprecated_overrides
 from fire_impacts.util import load_package_data, get_zonal_stats
 logger = logging.getLogger(__name__)
 
@@ -123,9 +125,10 @@ LOG_INTERVAL_SECONDS = 15.0
 
 def compute_klscp_layer(
     ctx: RunContext,
-    support_practice_factor: float = 1.0,
+    support_practice_factor=UNSET,
     use_fire_adjusted: bool = True,
     recovery_time: float = None,
+    params=None,
 ):
     """
     Combine C, K, and LS factor rasters into a single KLSCP layer.
@@ -136,8 +139,13 @@ def compute_klscp_layer(
 
     Parameters:
     - ctx: event-level (or run-level) RunContext.
-    - support_practice_factor: RUSLE P factor (support practice).
-      Default is 1.0 (no conservation practice applied).
+    - support_practice_factor: Deprecated. Use the erosion parameter
+      group (erosion.support_practice_factor), which is reachable from
+      run_usle_simulation; this argument was not. Supplying it here is
+      honoured as a call-layer override.
+    - params: Calibration parameters — a ParameterRecord (from
+      ctx.parameters()) or a ModelParameters. When None the layers are
+      resolved from the context.
     - use_fire_adjusted: If True, use the fire-adjusted C and K rasters
       from Events/<event>/Erodibility/; otherwise the base catchment-
       level rasters are used.
@@ -150,6 +158,13 @@ def compute_klscp_layer(
       float32 numpy array and metadata_dict is a rasterio metadata dict
       matching the LS-factor raster resolution and extent.
     """
+    p = ctx._resolved_params(
+        params,
+        **deprecated_overrides({
+            'erosion.support_practice_factor': support_practice_factor,
+        }),
+    ).parameters.erosion
+
     if use_fire_adjusted:
         if recovery_time is None:
             raise ValueError(
@@ -180,7 +195,7 @@ def compute_klscp_layer(
 
     # Multiply the four RUSLE factors to get the base erosion layer
     base = (
-        c_array * k_array * ls_array * support_practice_factor
+        c_array * k_array * ls_array * p.support_practice_factor
     ).astype(np.float32)
 
     meta.update(dtype=rasterio.float32, count=1, compress='lzw')
@@ -192,6 +207,7 @@ def _rusle_parameter_grids(
     ctx: RunContext,
     use_fire_adjusted: bool = True,
     recovery_time: float = None,
+    params=None,
 ):
     """
     Load KLSCP, SDR, and dNBR rasters plus spatial metadata for a
@@ -202,6 +218,10 @@ def _rusle_parameter_grids(
     - use_fire_adjusted: If True, use fire-adjusted C and K factors.
     - recovery_time: Years since the fire for the recovery window being
       modelled. Required when use_fire_adjusted is True.
+    - params: Calibration parameters, passed through to
+      compute_klscp_layer. Threading this is what makes the RUSLE P
+      factor reachable from run_usle_simulation: it previously stopped
+      here, so P was fixed at 1.0 from every realistic entry point.
 
     Returns:
     - Tuple of (klscp, sdr, dnbr, cell_area_ha, transform) where all
@@ -217,6 +237,7 @@ def _rusle_parameter_grids(
         ctx,
         use_fire_adjusted=use_fire_adjusted,
         recovery_time=recovery_time,
+        params=params,
     )
 
     transform = klscp_meta['transform']
@@ -259,6 +280,7 @@ def lumped_daily_rusle(
     ctx: RunContext,
     rainfall,
     recovery_time: float = None,
+    params=None,
 ):
     """
     Run RUSLE and SDR calculations for sub-catchments using 30-min
@@ -269,12 +291,14 @@ def lumped_daily_rusle(
     - rainfall: Series-like with 30-minute rainfall depth values in mm.
     - recovery_time: Years since the fire for the recovery window being
       modelled; selects the fire-adjusted layers to read.
+    - params: Calibration parameters (ParameterRecord or ModelParameters).
 
     Returns:
     - DataFrame summarising RUSLE and sediment delivery results, one
       row per sub-catchment per day.
     """
     ctx.validate()
+    record = ctx._resolved_params(params)
 
     if 'units' not in rainfall.attrs:
         logger.warning(
@@ -293,7 +317,9 @@ def lumped_daily_rusle(
     RUSLE_df = calculate_lumped_rusle(
         ctx.project.get_subcatchments(ctx.catchment),
         rainfall,
-        *_rusle_parameter_grids(ctx, recovery_time=recovery_time),
+        *_rusle_parameter_grids(
+            ctx, recovery_time=recovery_time, params=record),
+        erosion=record.parameters.erosion,
     )
 
     logger.info('Done')
@@ -736,6 +762,7 @@ def run_usle_simulation(
     save_timeseries: bool = True,
     use_fire_adjusted: bool = True,
     results_section: str = None,
+    params=None,
 ):
     """
     Run the USLE simulation for the context and record outputs.
@@ -762,6 +789,11 @@ def run_usle_simulation(
     - results_section: Sub-folder name for outputs within the run
       directory. If None, defaults to the standard results folder
       (or the baseline folder when use_fire_adjusted is False).
+    - params: Calibration parameters — a ParameterRecord (from
+      ctx.parameters()) or a ModelParameters. When None the project /
+      catchment / event layers are resolved from the context. Resolved
+      once here and reused for every recovery segment, so a run cannot
+      straddle two resolutions.
 
     Returns:
     - Dict of finalised recorder outputs keyed by recorder name, with
@@ -777,6 +809,8 @@ def run_usle_simulation(
     ------------------------------------------------------------------------
     """
     ctx.validate()
+    record = ctx._resolved_params(params)
+    erosion = record.parameters.erosion
 
     if results_section is None:
         results_section = (
@@ -798,15 +832,16 @@ def run_usle_simulation(
         recorder.reset()
 
     results = dict()
-    params = None
+    grids = None
     for recovery_time, segment_rain in segments:
         # Load the RUSLE parameter grids for this segment's recovery window
-        params = _rusle_parameter_grids(
+        grids = _rusle_parameter_grids(
             ctx,
             use_fire_adjusted=use_fire_adjusted,
             recovery_time=recovery_time,
+            params=record,
         )
-        klscp, sdr, dnbr, cell_area_ha, transform = params
+        klscp, sdr, dnbr, cell_area_ha, transform = grids
 
         # Rasterise the catchment boundary: 1 inside, NaN outside
         geometry = ctx.project.catchment_boundary(
@@ -829,6 +864,7 @@ def run_usle_simulation(
             sdr_masked,
             dnbr_masked,
             cell_area_ha,
+            erosion=erosion,
         ):
             for recorder in recorders.values():
                 recorder(
@@ -871,8 +907,15 @@ def run_usle_simulation(
         output.index.name = 'Datetime'
         output.to_csv(out_name)
 
+    # Record what this run actually used, beside its outputs. Written
+    # per results section so the fire-adjusted and baseline runs each
+    # describe themselves — they resolve the same parameters today, but
+    # a caller can pass params= to only one of them.
+    if save_rasters or save_timeseries:
+        ctx.write_provenance(record, scope='run', section=results_section)
+
     # Attach a pointer to all the RUSLE parameters used for these calcs
-    results['params'] = params
+    results['params'] = grids
 
     return results
 
@@ -885,7 +928,7 @@ def run_usle_simulation(
     "This function is deprecated and will be removed in a future version."
     " Please use run_usle_simulation() with appropriate recorders instead."
 )
-def gridded_total_rusle(ctx: RunContext, rainfall):
+def gridded_total_rusle(ctx: RunContext, rainfall, params=None):
     """
     Compute total RUSLE erosion and delivery grids over a simulation.
 
@@ -901,6 +944,7 @@ def gridded_total_rusle(ctx: RunContext, rainfall):
       transform object from the RUSLE parameter grids.
     """
     ctx.validate()
+    record = ctx._resolved_params(params)
     result = None
     # Get the boundary geometry for the first subcatchment only
     subcatch_boundaries = (
@@ -909,9 +953,10 @@ def gridded_total_rusle(ctx: RunContext, rainfall):
 
     total_eroded = None
     total_delivered = None
-    params = _rusle_parameter_grids(ctx)
+    grids = _rusle_parameter_grids(ctx, params=record)
     for day_data in generate_rusle_for_feature(
-        [subcatch_boundaries], rainfall, *params
+        [subcatch_boundaries], rainfall, *grids,
+        erosion=record.parameters.erosion,
     ):
         day, _, _, _, \
         daily_RUSLE, daily_SDR, \
@@ -924,7 +969,7 @@ def gridded_total_rusle(ctx: RunContext, rainfall):
             total_delivered += daily_SDR
 
     logger.info('Done')
-    return total_eroded, total_delivered, params[-1]
+    return total_eroded, total_delivered, grids[-1]
 
 
 @deprecated(
@@ -939,6 +984,7 @@ def calculate_lumped_rusle(
     dnbr: np.array,
     cell_area_ha: float,
     transform: Affine,
+    erosion: ErosionParams = None,
 ):
     """
     Compute lumped daily RUSLE totals for each subcatchment polygon.
@@ -953,6 +999,8 @@ def calculate_lumped_rusle(
     - dnbr: dNBR raster array.
     - cell_area_ha: Area of each raster cell in hectares.
     - transform: Affine transform shared by all three raster arrays.
+    - erosion: ErosionParams supplying the severity threshold and the
+      kinetic-energy rate constant. Defaults to the package values.
 
     Returns:
     - DataFrame with one row per subcatchment per day containing RUSLE
@@ -965,7 +1013,7 @@ def calculate_lumped_rusle(
 
         for day_data in generate_rusle_for_feature(
             geometry, rainfall, klscp, sdr, dnbr,
-            cell_area_ha, transform,
+            cell_area_ha, transform, erosion=erosion,
         ):
             day, daily_total_rain, max_intensity, max_erosivity, \
             daily_RUSLE, daily_SDR, \
@@ -1012,6 +1060,7 @@ def generate_rusle(
     sdr: np.array,
     dnbr: np.array,
     cell_area_ha: float,
+    erosion: ErosionParams = None,
 ):
     """
     Yield per-timestep RUSLE erosion and delivery results as a generator.
@@ -1020,8 +1069,13 @@ def generate_rusle(
     - rainfall: Series with 30-minute rainfall depth values in mm.
     - klscp: KLSCP raster array.
     - sdr: Sediment Delivery Ratio raster array.
-    - dnbr: dNBR raster array.
+    - dnbr: dNBR raster array, on the conventional 0-1000 scale (read it
+      through pre.util.read_dnbr_aligned, not read_aligned).
     - cell_area_ha: Area of each raster cell in hectares.
+    - erosion: ErosionParams supplying the severity threshold and the
+      kinetic-energy rate constant. Defaults to the package values. A
+      plain parameter group rather than a RunContext, so this stays a
+      data-in/data-out generator.
 
     Returns:
     - Generator yielding (timestep, data_dict) tuples. Each data_dict
@@ -1048,9 +1102,12 @@ def generate_rusle(
             data=rainfall['rainfall'], index=rainfall.index
         )
 
+    if erosion is None:
+        erosion = ErosionParams()
+
     # Pre-compute severity masks based on dNBR thresholds
-    dnbr_below_threshold = dnbr < DNBR_SEVERITY_THRESHOLD
-    dnbr_above_threshold = dnbr >= DNBR_SEVERITY_THRESHOLD
+    dnbr_below_threshold = dnbr < erosion.dnbr_severity_threshold
+    dnbr_above_threshold = dnbr >= erosion.dnbr_severity_threshold
 
     # Initialise timing variables for progress logging
     total_timesteps = len(rainfall.index)
@@ -1092,7 +1149,8 @@ def generate_rusle(
 
         # Rainfall intensity (∆V_r / ∆t_r) in mm/hr, and the erosivity
         # factor (R) derived from it.
-        intensity, R = rainfall_erosivity(delta_v_r)
+        intensity, R = rainfall_erosivity(
+            delta_v_r, rate=erosion.kinetic_energy_coefficient)
         result['intensity'] = intensity
         result['erosivity'] = R
 
@@ -1166,6 +1224,7 @@ def generate_rusle_for_feature(
     dnbr: np.array,
     cell_area_ha: float,
     transform: Affine,
+    erosion: ErosionParams = None,
 ):
     """
     Yield daily RUSLE results clipped to a single feature geometry.
@@ -1177,9 +1236,11 @@ def generate_rusle_for_feature(
     - rainfall: DataFrame with 30-minute rainfall depth values in mm.
     - klscp: KLSCP raster array.
     - sdr: Sediment Delivery Ratio raster array.
-    - dnbr: dNBR raster array.
+    - dnbr: dNBR raster array, on the conventional 0-1000 scale.
     - cell_area_ha: Area of each raster cell in hectares.
     - transform: Affine transform shared by all three raster arrays.
+    - erosion: ErosionParams supplying the severity threshold and the
+      kinetic-energy rate constant. Defaults to the package values.
 
     Returns:
     - Generator yielding one tuple per day:
@@ -1188,6 +1249,9 @@ def generate_rusle_for_feature(
        daily_RUSLE_below_threshold, daily_RUSLE_above_threshold,
        daily_SDR_below_threshold, daily_SDR_above_threshold)
     """
+    if erosion is None:
+        erosion = ErosionParams()
+
     mask = rasterio.features.rasterize(
         geometry,
         transform=transform,
@@ -1217,7 +1281,8 @@ def generate_rusle_for_feature(
             if delta_v_r == 0:
                 continue
 
-            intensity, R = rainfall_erosivity(delta_v_r)
+            intensity, R = rainfall_erosivity(
+                delta_v_r, rate=erosion.kinetic_energy_coefficient)
             max_intensity = max(max_intensity, intensity)
             max_erosivity = max(max_erosivity, R)
 
@@ -1232,8 +1297,8 @@ def generate_rusle_for_feature(
             daily_SDR += SDR_RUSLE
 
         # Split daily totals by dNBR severity threshold
-        dnbr_below_threshold = dnbr_masked < DNBR_SEVERITY_THRESHOLD
-        dnbr_above_threshold = dnbr_masked >= DNBR_SEVERITY_THRESHOLD
+        dnbr_below_threshold = dnbr_masked < erosion.dnbr_severity_threshold
+        dnbr_above_threshold = dnbr_masked >= erosion.dnbr_severity_threshold
 
         daily_RUSLE_below_threshold = np.where(
             dnbr_below_threshold, daily_RUSLE, 0

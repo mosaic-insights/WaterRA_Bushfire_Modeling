@@ -195,11 +195,10 @@ Internally, the high level interface calls the underlying functionality from the
 ### Calibration parameters
 
 > **Status:** wiring is landing group by group. `fire_adjustment`,
-> `delivery` and `topography` are **live** — changing them changes the
-> layers `compute_adjusted_k_c`, `compute_lsi` and
-> `compute_sediment_delivery_ratio` produce. `erosion`, `debris` and
+> `delivery`, `topography` and `erosion` are **live** — changing them
+> changes the layers and results the pipeline produces. `debris` and
 > `severity` are **declared but not yet consumed**: they resolve and are
-> recorded, but the simulation and severity functions still use their
+> recorded, but the debris-flow and severity functions still use their
 > built-in defaults. Setting any of them now is safe and
 > forward-compatible.
 
@@ -213,7 +212,7 @@ They are grouped by the pipeline stage that consumes them:
 | `fire_adjustment` | fire-adjusted C and K factors, and their recovery rates | yes |
 | `delivery` | sediment delivery ratio and the connectivity index | yes |
 | `topography` | the LS factor (headwater delineation: not yet) | partly |
-| `erosion` | the RUSLE simulation | not yet |
+| `erosion` | the RUSLE simulation | yes |
 | `debris` | debris-flow erosion, deposition and triggering | not yet |
 | `severity` | fire-severity imagery acquisition | not yet |
 
@@ -324,7 +323,7 @@ rusle.compute_adjusted_k_c(
 **Changing a parameter does not rebuild anything by itself.** Re-run the step
 that produces the layers you changed — `compute_adjusted_k_c` for
 `fire_adjustment` and `delivery`, `extract_headwaters` / `compute_lsi` for
-`topography`.
+`topography`, `run_usle_simulation` for `erosion`.
 
 
 ### Low level interface

@@ -165,11 +165,11 @@ recorders = recorder_factory(ctx, rain_seq.index[0], rain_seq.index[-1])
 # You do not need to re-specify anything the PrepareData notebook set: the
 # context reads it back.
 #
-# > **Status:** `erosion` and `debris` are declared and recorded but **not
-# > yet consumed** — the simulation still uses its built-in defaults for
-# > these. The preprocessing groups (`fire_adjustment`, `delivery`,
-# > `topography`) are live, so the layers this run reads already reflect
-# > any overrides you set in PrepareData.
+# > **Status:** `erosion` is **live** — the RUSLE P factor, the dNBR
+# > severity split and the kinetic-energy rate all take effect here.
+# > `debris` is declared and recorded but not yet consumed. The
+# > preprocessing groups are live too, so the layers this run reads
+# > already reflect any overrides you set in PrepareData.
 
 # %%
 # What this run resolves, and where each value came from:
@@ -185,6 +185,14 @@ record.sources['erosion.support_practice_factor']
 # `erosion` and `debris` control run-scope outputs, so unlike `topography` and
 # `delivery` they can be set at any level, including per event:
 # ctx.set_event_parameter_overrides({'erosion': {'support_practice_factor': 0.8}})
+
+# %%
+# ...or for a single run, without persisting anything. The resolved record
+# is written to provenance.json beside the results, so the outputs say what
+# produced them:
+# results = rusle.run_usle_simulation(
+#     ctx, rain_seq, recorders=recorders,
+#     params=ctx.parameters(erosion__support_practice_factor=0.8))
 
 # %% [markdown]
 # ### Run the simulation
