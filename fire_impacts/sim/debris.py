@@ -22,7 +22,8 @@ from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.context import RunContext
 from fire_impacts.pre.util import read_aligned, read_raster, write_raster
 from fire_impacts.util import load_package_data, unique_file_matching
-from fire_impacts.params import deprecated_overrides
+from fire_impacts.params import DebrisFlowParams, deprecated_overrides
+import dataclasses
 from pysheds.grid import Grid
 import os
 import tempfile
@@ -342,6 +343,7 @@ def prep_debris_flow_simulation(
         dem_data, slope_h_ratio, transform, flow_acc_data,
         flow_dir_data, clay0_5, clay5_15, out_path,
         fire_impact_data, hf_lookup, debris_lookup, dem_meta, id_field,
+        debris=p,
     )
 
 
@@ -360,6 +362,8 @@ def net_erosion(
     flow_area: np.ndarray,
     gradient_arr: np.ndarray,
     pixel_area: float,
+    sediment_bulk_density: float = None,
+    rock_bulk_density: float = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute net erosion mass per pixel using empirical depth equations.
@@ -379,22 +383,31 @@ def net_erosion(
     - flow_area: 2-D array of upstream contributing area in m².
     - gradient_arr: 2-D array of slope gradient (rise/run ratio).
     - pixel_area: Area of each raster pixel in m².
+    - sediment_bulk_density: Density of the non-rock fraction in kg/m³.
+      Defaults to the package value.
+    - rock_bulk_density: Density of the rock fraction in kg/m³. Defaults
+      to the package value.
 
     Returns:
     - e_net_mass: 2-D array of total net erosion mass (kg) per pixel.
     - e_clay_mass: 2-D array of clay fraction of erosion mass (kg).
     - e_sediment_mass: 2-D array of non-clay sediment mass (kg).
     """
+    if sediment_bulk_density is None:
+        sediment_bulk_density = DebrisFlowParams().sediment_bulk_density
+    if rock_bulk_density is None:
+        rock_bulk_density = DebrisFlowParams().rock_bulk_density
+
     e0 = np.where(threshold_met, flow_area, 0)  # Erosion
     e = ae * (gradient_arr * e0) ** be  # erosion depth (m)
     d = ad * (gradient_arr * e0) ** bd  # deposition depth (m)
     e_net = e - d  # net erosion depth (m)
     e_net_vol = e_net * pixel_area  # erosion volume (m³)
     e_sediment_mass = (
-        e_net_vol * (1 - rock) * SEDIMENT_BULK_DENSITY
+        e_net_vol * (1 - rock) * sediment_bulk_density
     )  # sediment only (kg)
     e_rock_mass = (
-        e_net_vol * rock * ROCK_BULK_DENSITY
+        e_net_vol * rock * rock_bulk_density
     )  # rock only (kg)
     e_net_mass = e_sediment_mass + e_rock_mass  # net erosion mass (kg)
     e_clay_mass = e_sediment_mass * clay_fraction
@@ -407,6 +420,7 @@ def compute_net_erosion(
     clay_frac_05_15: np.ndarray,
     gradient_arr: np.ndarray,
     pixel_area: float,
+    debris: DebrisFlowParams = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute net erosion layers for both hillslope and channelised flow.
@@ -421,32 +435,46 @@ def compute_net_erosion(
     - clay_frac_05_15: Clay fraction array for the 5–15 cm depth layer.
     - gradient_arr: 2-D slope gradient array (rise/run).
     - pixel_area: Area of each raster pixel in m².
+    - debris: DebrisFlowParams supplying the two regimes' depth
+      coefficients, the zone thresholds and the bulk densities. Defaults
+      to the package values. A plain parameter group rather than a
+      RunContext, so this stays data-in/data-out.
 
     Returns:
     - erosion_mass_all: Total net erosion mass (kg) per pixel.
     - erosion_mass_clay: Clay component of erosion mass (kg) per pixel.
     - Sediment_mass: Non-clay sediment mass (kg) per pixel.
     """
+    if debris is None:
+        debris = DebrisFlowParams()
+
+    densities = dict(
+        sediment_bulk_density=debris.sediment_bulk_density,
+        rock_bulk_density=debris.rock_bulk_density,
+    )
+
     # Hillslope erosion — pixels with small upstream area
     er_mass_hs_total, er_mass_hs_clay, er_mass_hs_sediment = net_erosion(
-        threshold_met=flow_acc_area <= HILLSLOPE_AREA,
-        **HILLSLOPE_PARAMETERS,
+        threshold_met=flow_acc_area <= debris.hillslope_area_m2,
+        **dataclasses.asdict(debris.hillslope),
         clay_fraction=clay_frac_0_05,
         flow_area=flow_acc_area,
         gradient_arr=gradient_arr,
         pixel_area=pixel_area,
+        **densities,
     )
     # Channelised flow erosion — pixels in the channelised zone
     er_mass_ch_total, er_mass_ch_clay, er_mass_ch_sediment = net_erosion(
         threshold_met=(
-            (flow_acc_area > HILLSLOPE_AREA)
-            & (flow_acc_area <= CHANNELISED_FLOW_THRESHOLD)
+            (flow_acc_area > debris.hillslope_area_m2)
+            & (flow_acc_area <= debris.channelised_flow_threshold_m2)
         ),
-        **CHANNEL_PARAMETERS,
+        **dataclasses.asdict(debris.channel),
         clay_fraction=clay_frac_05_15,
         flow_area=flow_acc_area,
         gradient_arr=gradient_arr,
         pixel_area=pixel_area,
+        **densities,
     )
 
     erosion_mass_all = er_mass_hs_total + er_mass_ch_total
@@ -884,6 +912,7 @@ def debris_flow_load(
     debris_flow_constituents: pd.DataFrame,
     raster_meta,
     id_field: str,
+    debris: DebrisFlowParams = None,
 ):
     """
     Calculate per-pixel debris flow erosion and populate headwater results.
@@ -909,6 +938,9 @@ def debris_flow_load(
       values.
     - raster_meta: Rasterio metadata dict for output rasters.
     - id_field: Column name used as the headwater ID key.
+    - debris: DebrisFlowParams supplying the erosion/deposition
+      coefficients, zone thresholds and bulk densities. Defaults to the
+      package values.
 
     Returns:
     - Updated fire_impact_data DataFrame with all debris load and
@@ -927,7 +959,7 @@ def debris_flow_load(
     erosion_mass_all, erosion_mass_clay, Sediment_mass = (
         compute_net_erosion(
             flow_acc_area, clay0_5_fraction, clay5_15_fraction,
-            slope_ratio, pixel_area,
+            slope_ratio, pixel_area, debris=debris,
         )
     )
 
@@ -1330,6 +1362,7 @@ def postprocess_debris_flow(
 def aggregate_debris_flow_summary_to_subcatchments(
     ctx: RunContext,
     debris_flow_data: pd.DataFrame,
+    params=None,
 ) -> 'pd.DataFrame | None':
     """
     Aggregate headwater-level debris flow summary statistics to
@@ -1366,14 +1399,16 @@ def aggregate_debris_flow_summary_to_subcatchments(
         )
         return None
 
+    num_years = ctx._resolved_params(params).parameters.debris.num_sim_years
+
     # Build column lists, checking each column actually exists
     count_cols = [
-        f'Year{y}_num_events' for y in range(1, NUM_SIM_YEARS + 1)
+        f'Year{y}_num_events' for y in range(1, num_years + 1)
     ]
     mass_cols = [CLY_M_ACC_KG, TOT_EM_ACC_KG, SED_M_ACC_KG]
     # I12 threshold columns — aggregate min (most vulnerable) and mean
     thresh_cols = [
-        I12_CRIT_Y + str(y) for y in range(1, NUM_SIM_YEARS + 1)
+        I12_CRIT_Y + str(y) for y in range(1, num_years + 1)
     ]
 
     avail_count = [
@@ -1480,6 +1515,14 @@ def debris_flow(
     ------------------------------------------------------------------------
     """
     ctx.validate()
+    # Resolved here as well as in the prep step, because num_sim_years is
+    # used by this function's own event loop even when `prepared` is
+    # supplied and prep_debris_flow_simulation never runs.
+    record = ctx._resolved_params(
+        params,
+        **deprecated_overrides({'debris.dnbr_threshold': dnbr_threshold}),
+    )
+    debris_params = record.parameters.debris
     out_path = ctx.run_path('DebrisFlow')
     os.makedirs(out_path, exist_ok=True)
 
@@ -1501,7 +1544,7 @@ def debris_flow(
         working_deb_flow_data = prepared.copy(deep=True)
     else:
         working_deb_flow_data = prep_debris_flow_simulation(
-            ctx, dnbr_threshold=dnbr_threshold, params=params
+            ctx, params=record
         )
 
     # --- Note: this section may be superseded by recorders ----------
@@ -1514,7 +1557,27 @@ def debris_flow(
         columns=working_deb_flow_data[HW_ID],
     )
 
-    years = range(1, NUM_SIM_YEARS + 1)
+    years = range(1, debris_params.num_sim_years + 1)
+    # num_sim_years is bounded by the lookup, not by the simulation: the
+    # per-year critical-intensity columns come from the table's `years`
+    # bins, so asking for a year it has no bin for used to fail with a
+    # bare KeyError on a column name the user never chose.
+    missing_years = [
+        year for year in years
+        if I12_CRIT_Y + str(year) not in working_deb_flow_data.columns
+    ]
+    if missing_years:
+        available = [
+            col for col in working_deb_flow_data.columns
+            if str(col).startswith(I12_CRIT_Y)
+        ]
+        raise ValueError(
+            f'debris.num_sim_years is {debris_params.num_sim_years}, but '
+            f'the I12 lookup supplies thresholds only for '
+            f'{sorted(available)}. The simulation horizon is bounded by '
+            f'the years the lookup table was fitted for; supply a table '
+            f'covering more years (debris.i12_lookup) before raising it.'
+        )
     year_results = {
         year: {
             "event_counts": [],
@@ -1595,7 +1658,7 @@ def debris_flow(
         )
         # Aggregate summary stats to subcatchments (skipped if none)
         aggregate_debris_flow_summary_to_subcatchments(
-            ctx, Debris_Flow_Data,
+            ctx, Debris_Flow_Data, params=record,
         )
 
     if save_daily_catchment_timeseries:
@@ -1772,7 +1835,7 @@ def run_debris_flow_all_replicates(
             'dispatching replicates.', ctx.catchment,
         )
         prepared = _prepare_debris_flow_per_catchment(
-            ctx, dnbr_threshold=dnbr_threshold, params=params)
+            ctx, params=record)
 
     tasks = [
         dask.delayed(run_debris_flow_replicate)(

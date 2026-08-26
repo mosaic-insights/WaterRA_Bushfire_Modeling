@@ -194,25 +194,23 @@ Internally, the high level interface calls the underlying functionality from the
 
 ### Calibration parameters
 
-> **Status:** every group except `debris` is **live** — changing it
-> changes the layers and results the pipeline produces. `debris` is
-> partly wired: the dNBR cutoff and the lookup table are live, the
-> erosion and deposition coefficients are not yet. Setting any of them
-> now is safe and forward-compatible.
+> **Status:** every group is **live** — changing a value changes the
+> layers and results the pipeline produces, and the values used are
+> recorded in a `provenance.json` beside the outputs.
 
 Values like the post-fire cover factor, the sediment delivery ratio ceiling,
 or the debris-flow erosion coefficients are **calibration parameters**: the
 literature reports ranges for them, and they may need tuning for your region.
 They are grouped by the pipeline stage that consumes them:
 
-| Group | Controls | Wired |
-|---|---|---|
-| `fire_adjustment` | fire-adjusted C and K factors, and their recovery rates | yes |
-| `delivery` | sediment delivery ratio and the connectivity index | yes |
-| `topography` | headwater delineation and the LS factor | yes |
-| `erosion` | the RUSLE simulation | yes |
-| `debris` | debris-flow erosion, deposition and triggering | partly |
-| `severity` | fire-severity imagery acquisition | yes |
+| Group | Controls |
+|---|---|
+| `fire_adjustment` | fire-adjusted C and K factors, and their recovery rates |
+| `delivery` | sediment delivery ratio and the connectivity index |
+| `topography` | headwater delineation and the LS factor |
+| `erosion` | the RUSLE simulation |
+| `debris` | debris-flow erosion, deposition and triggering |
+| `severity` | fire-severity imagery acquisition |
 
 Unit conversions and the fixed coefficients of published equations (the McCool
 slope factors, the Brown & Foster kinetic-energy form) are **not** parameters
@@ -322,9 +320,9 @@ rusle.compute_adjusted_k_c(
 that produces the layers you changed — `compute_adjusted_k_c` for
 `fire_adjustment` and `delivery`, `extract_headwaters` / `compute_lsi` for
 `topography` (`extract_headwaters` for the headwater threshold),
-`run_usle_simulation` for `erosion`, and `calculate_fire_severity` for
-`severity` — note that re-running severity invalidates everything
-downstream of the dNBR.
+`run_usle_simulation` for `erosion`, `debris_flow` for `debris`, and
+`calculate_fire_severity` for `severity` — note that re-running severity
+invalidates everything downstream of the dNBR.
 
 
 ### Low level interface

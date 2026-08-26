@@ -331,10 +331,9 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 # tuning for your region. They are separate from unit conversions and from the
 # fixed coefficients of published equations, which are not user-editable.
 #
-# > **Status:** every group except `debris` is live — changing it changes
-# > the layers the next cells build (and, for `erosion`, the simulation
-# > results). `debris` is partly wired: its dNBR cutoff and lookup table
-# > take effect, its erosion/deposition coefficients do not yet.
+# > **Status:** every group is live — changing a value changes the layers
+# > the next cells build, and the values used are recorded in a
+# > `provenance.json` beside the outputs.
 # >
 # > `severity` is live too, so set it before running the fire-severity
 # > cell — re-running that invalidates every layer downstream of the dNBR.
