@@ -825,6 +825,12 @@ def calc_I12_crit_columns(
     table's discrete bins, then left-joins the HF lookup twice —
     once for years < 1 and once for years >= 1.
 
+    The lookup tabulates each threshold at one time since fire (0.434
+    and 1.434 years in the packaged table, i.e. roughly 5 and 17
+    months). Those are taken as representative of their whole year: the
+    0.434-year threshold applies across the entire first post-fire year
+    and the 1.434-year one across the second.
+
     Parameters:
     - fire_impact_data: DataFrame of per-headwater debris inputs.
     - hf_lookup: HFlookup DataFrame with I12_crit_mean values keyed
@@ -1485,6 +1491,13 @@ def debris_flow(
     Iterates over rainfall timesteps to count events exceeding each
     headwater's I12 critical threshold for Year 1 and Year 2 post-fire.
 
+    Year windows are measured from the fire end date, matching how
+    recovery time is defined everywhere else in the package. Each
+    window's threshold comes from a single tabulated time since fire
+    (0.434 and 1.434 years in the packaged lookup) which is treated as
+    representative of that whole year, so the threshold is
+    piecewise-constant in time rather than varying continuously.
+
     Parameters:
     - ctx: run-level RunContext. Outputs land under
       Runs/<event>/<ensemble>/DebrisFlow/.
@@ -1586,11 +1599,31 @@ def debris_flow(
         }
         for year in years
     }
-    t0 = rainfall.index[0]
+    # Windows are measured from the END OF THE FIRE, not from the first
+    # rainfall timestamp. Recovery time is defined from fire_end_date
+    # everywhere else (see context.EventDefinition), and keying off the
+    # rainfall instead silently offset the debris windows from the
+    # recovery clock the rest of the model runs on whenever the series
+    # did not happen to start at the fire end.
+    t0 = pd.Timestamp(ctx.fire_end_date)
+    if rainfall.index[0] < t0:
+        logger.info(
+            'Rainfall starts %s, before the fire end (%s); the '
+            'pre-fire portion is outside every debris-flow window and '
+            'is ignored.',
+            rainfall.index[0], t0.date(),
+        )
+    elif rainfall.index[0] > t0 + pd.Timedelta(days=DAYS_PER_SIM_YEAR):
+        logger.warning(
+            'Rainfall starts %s, more than a year after the fire end '
+            '(%s), so the first debris-flow year window is empty. Check '
+            'the rainfall period against the event dates.',
+            rainfall.index[0], t0.date(),
+        )
 
     # Iterate through each simulated year
     for year in years:
-        t1 = t0 + pd.Timedelta(days=365)
+        t1 = t0 + pd.Timedelta(days=DAYS_PER_SIM_YEAR)
         threshold_col = I12_CRIT_Y + str(year)
         rain_year = rainfall[
             (rainfall.index >= t0) & (rainfall.index < t1)

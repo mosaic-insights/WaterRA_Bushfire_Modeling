@@ -153,3 +153,35 @@ class TestSimulationHorizon:
         # make this legitimate. debris_flow raises if the table cannot
         # supply the thresholds.
         assert DebrisFlowParams(num_sim_years=3).num_sim_years == 3
+
+
+class TestYearWindows:
+    """Debris year windows are measured from the fire end date."""
+
+    def test_the_year_length_constant_is_365(self):
+        # Deliberately not 365.25 — see issues/debris-flow-year-length.md.
+        assert c.DAYS_PER_SIM_YEAR == 365
+
+    def test_the_windows_key_off_the_fire_end_not_the_rainfall(self):
+        """Reading the source, because running debris_flow end to end
+        needs a full prepared catchment. The distinction matters whenever
+        the rainfall series does not begin exactly at the fire end."""
+        import inspect
+        from fire_impacts.sim.debris import debris_flow
+        src = inspect.getsource(debris_flow)
+        assert 't0 = pd.Timestamp(ctx.fire_end_date)' in src
+        assert 't0 = rainfall.index[0]' not in src
+
+    def test_the_representative_year_assumption_is_recorded(self):
+        # The lookup tabulates one time per year (0.434, 1.434); those are
+        # applied across the whole year rather than interpolated. Pinned
+        # so the assumption is not quietly changed.
+        from fire_impacts.sim.debris import calc_I12_crit_columns
+        assert 'representative of their whole year' in \
+            calc_I12_crit_columns.__doc__
+
+    def test_the_packaged_lookup_has_one_bin_per_simulated_year(self):
+        from fire_impacts.util import load_package_data
+        lookup = load_package_data(c.DEFAULT_I12_LOOKUP)
+        assert len(lookup[c.HF_YEARS_THRESH].unique()) == \
+            DebrisFlowParams().num_sim_years

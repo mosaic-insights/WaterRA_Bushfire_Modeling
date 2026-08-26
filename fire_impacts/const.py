@@ -54,6 +54,25 @@ CHANNEL_PARAMETERS = dict(
     )
 NUM_SIM_YEARS = 2
 
+# Length of a debris-flow simulation year, in days.
+#
+# Deliberately 365, not 365.25. The two are not interchangeable here and
+# neither is unambiguously right: 365 is exact for three years in four,
+# while 365.25 is the better long-run average — and which applies depends
+# on whether the driving rainfall contains leap days at all. Stochastic
+# replicates (pyraingen) may not; historical series do. See
+# issues/debris-flow-year-length.md — this is parked, not settled.
+DAYS_PER_SIM_YEAR = 365
+
+# The I12 lookup tabulates thresholds at discrete times since fire — for
+# the packaged table, 0.434 and 1.434 years (roughly 5 and 17 months).
+# These are treated as REPRESENTATIVE OF THEIR WHOLE YEAR: the threshold
+# fitted at 0.434 years is applied across the entire first year after the
+# fire, and the one at 1.434 across the second. The model is therefore
+# piecewise-constant in time since fire, with one step per year, rather
+# than varying continuously. A table with more `years` bins would give
+# more steps; the code reads the bins rather than assuming two.
+
 # ------- Rainfall kinetic energy: --------------------------------------
 # Unit kinetic energy follows the exponential KE-intensity form
 #
