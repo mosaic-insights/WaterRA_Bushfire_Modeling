@@ -461,6 +461,7 @@ def write_raster(
     dtype='float32',
     nodata=np.nan,
     compress='lzw',
+    tags=None,
     **meta_updates,
 ):
     """
@@ -479,6 +480,10 @@ def write_raster(
     - dtype: output dtype (default float32).
     - nodata: output nodata value (default NaN).
     - compress: compression (default 'lzw'; pass None for uncompressed).
+    - tags: optional dict of GeoTIFF metadata tags. Used to stamp derived
+      layers with the parameters that produced them, so the file answers
+      "what made this?" on its own — including after it has been copied
+      out of the project directory. Values are stringified by GDAL.
     - meta_updates: any further metadata overrides.
 
     Returns:
@@ -511,6 +516,8 @@ def write_raster(
 
     with rio.open(path, 'w', **out_meta) as dst:
         dst.write(np.asarray(data).astype(out_meta['dtype']), 1)
+        if tags:
+            dst.update_tags(**tags)
     logger.debug('Wrote raster to %s', path)
 
 

@@ -48,6 +48,7 @@ from fire_impacts.pre.util import (
     read_aligned, read_dnbr_aligned, read_raster)
 from fire_impacts.const import UNSET
 from fire_impacts.params import ErosionParams, deprecated_overrides
+from fire_impacts.provenance import check_layers_fresh
 from fire_impacts.util import load_package_data, get_zonal_stats
 logger = logging.getLogger(__name__)
 
@@ -754,6 +755,38 @@ def _recovery_run_segments(ctx: RunContext, rainfall, use_fire_adjusted):
     return segments
 
 
+def _layers_read_by(ctx, segments, use_fire_adjusted):
+    """Return (path, consumed_paths) for every layer a run will read.
+
+    Mirrors the paths _rusle_parameter_grids resolves, so the freshness
+    check covers exactly what is about to be opened — including the
+    per-recovery layers, which a single shared record cannot describe.
+    """
+    from fire_impacts.pre.rusle import (
+        ADJUSTED_CK_CONSUMES, LS_CONSUMES, SDR_CONSUMES)
+
+    layers = [(ctx.catchment_path('Erodibility', 'LS_factor.tif'),
+               LS_CONSUMES)]
+    if not use_fire_adjusted:
+        layers.append(
+            (ctx.catchment_path('Delivery', 'SDR_baseline.tif'),
+             SDR_CONSUMES))
+        return layers
+    for recovery_time, _ in segments:
+        suffix = c.recovery_time_suffix(recovery_time)
+        layers += [
+            (ctx.event_path('Erodibility',
+                            f'C_factor_adjusted_{suffix}.tif'),
+             ADJUSTED_CK_CONSUMES),
+            (ctx.event_path('Erodibility',
+                            f'K_factor_adjusted_{suffix}.tif'),
+             ADJUSTED_CK_CONSUMES),
+            (ctx.event_path('Delivery', f'SDR_{suffix}.tif'),
+             SDR_CONSUMES),
+        ]
+    return layers
+
+
 def run_usle_simulation(
     ctx: RunContext,
     rainfall,
@@ -763,6 +796,7 @@ def run_usle_simulation(
     use_fire_adjusted: bool = True,
     results_section: str = None,
     params=None,
+    allow_stale: bool = False,
 ):
     """
     Run the USLE simulation for the context and record outputs.
@@ -794,6 +828,12 @@ def run_usle_simulation(
       catchment / event layers are resolved from the context. Resolved
       once here and reused for every recovery segment, so a run cannot
       straddle two resolutions.
+    - allow_stale: proceed when the fire-adjusted layers this run reads
+      were built with different parameters than it resolves. False (the
+      default) raises instead, because the alternative is a run that
+      silently mixes two calibrations — changing max_sdr and re-running
+      the simulation used to reuse the old SDR rasters with no signal at
+      all. Set True when the mismatch is understood and deliberate.
 
     Returns:
     - Dict of finalised recorder outputs keyed by recorder name, with
@@ -826,6 +866,15 @@ def run_usle_simulation(
     # Build the chronological run segments (one per recovery window for
     # fire-adjusted runs; a single whole-period segment for baseline).
     segments = _recovery_run_segments(ctx, rainfall, use_fire_adjusted)
+
+    # Check the layers this run is about to read against the parameters
+    # it resolves. The layers are produced by a separate preprocessing
+    # step, so nothing otherwise connects a parameter change to the
+    # rasters built before it.
+    check_layers_fresh(
+        _layers_read_by(ctx, segments, use_fire_adjusted),
+        record, strict=not allow_stale,
+    )
 
     # Reset each recorder once so they accumulate across every segment.
     for recorder in recorders.values():

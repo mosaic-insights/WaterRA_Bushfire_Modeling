@@ -20,12 +20,22 @@ from .topography import D8_FLOW_DIRECTIONS
 from .data_sources import CSIRO_C_FACTOR_GRID, CSIRO_K_FACTOR_GRID
 from ..const import UNSET
 from ..params import DeliveryParams, deprecated_overrides
+from ..provenance import parameter_tags
 import numpy as np
 import os
 import logging
 import warnings
 
 logger = logging.getLogger(__name__)
+
+# The parameters each derived layer is built from. Named per layer rather
+# than per group: `topography` holds both the headwater threshold and the
+# LS slope-length cap, which build different files, so digesting the whole
+# group would flag the LS factor stale whenever the headwater threshold
+# moved. See provenance.check_layer_freshness.
+ADJUSTED_CK_CONSUMES = ('fire_adjustment',)
+SDR_CONSUMES = ('delivery',)
+LS_CONSUMES = ('topography.max_slope_length_m',)
 
 
 # ---------------------------------------------------------------------------
@@ -202,13 +212,15 @@ def compute_adjusted_k_c(
             + Kbase
         )
 
+        ck_tags = parameter_tags(record, *ADJUSTED_CK_CONSUMES)
+
         c_out = os.path.join(
             event_erod_dir, f'C_factor_adjusted_{suffix}.tif')
-        write_raster(c_out, C, out_meta)
+        write_raster(c_out, C, out_meta, tags=ck_tags)
 
         k_out = os.path.join(
             event_erod_dir, f'K_factor_adjusted_{suffix}.tif')
-        write_raster(k_out, K, out_meta)
+        write_raster(k_out, K, out_meta, tags=ck_tags)
 
         if compute_sdr:
             compute_sediment_delivery_ratio(
@@ -336,7 +348,8 @@ def compute_lsi(ctx: RunContext, topo=None, params=None):
     - LSi: Slope length-gradient factor for each pixel.
     """
     catchment = ctx.catchment
-    p = ctx._resolved_params(params).parameters.topography
+    record = ctx._resolved_params(params)
+    p = record.parameters.topography
     logger.info('Computing LSI factor for catchment: %s', catchment)
     dem_path = ctx.catchment_path('Topography', 'DEM.tif')
 
@@ -427,7 +440,10 @@ def compute_lsi(ctx: RunContext, topo=None, params=None):
     LSi = np.where(np.isnan(LSi), nodata_value, LSi)
 
     lsi_path = ctx.catchment_path('Erodibility', 'LS_factor.tif')
-    write_raster(lsi_path, LSi, dem_grid.meta(nodata=nodata_value))
+    write_raster(
+        lsi_path, LSi, dem_grid.meta(nodata=nodata_value),
+        tags=parameter_tags(record, *LS_CONSUMES),
+    )
 
     logger.info('LS factor computed for catchment: %s', catchment)
 
@@ -505,14 +521,15 @@ def compute_sediment_delivery_ratio(
     """
     ctx.validate()
     catchment = ctx.catchment
-    p = ctx._resolved_params(
+    sdr_record = ctx._resolved_params(
         params,
         **deprecated_overrides({
             'delivery.max_sdr': max_sdr,
             'delivery.ic0': ic0,
             'delivery.k': k,
         }),
-    ).parameters.delivery
+    )
+    p = sdr_record.parameters.delivery
 
     # Without a C-factor raster there is no single "adjusted" C factor to
     # fall back on (there is now one per recovery time), so default to the
@@ -718,7 +735,10 @@ def compute_sediment_delivery_ratio(
     SDR = p.max_sdr / (1 + np.exp((p.ic0 - IC) / p.k))
     output_sdr_path = os.path.join(
         delivery_dir, f'SDR{suffix_text}.tif')
-    write_raster(output_sdr_path, SDR, out_meta)
+    write_raster(
+        output_sdr_path, SDR, out_meta,
+        tags=parameter_tags(sdr_record, *SDR_CONSUMES),
+    )
 
     logger.info(
         'Sediment Delivery Ratio computed for catchment: %s',

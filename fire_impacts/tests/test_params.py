@@ -404,15 +404,34 @@ class TestDigest:
         assert changed.group_digest('delivery') == base.group_digest('delivery')
         assert changed.digest() != base.digest()
 
-    def test_group_digest_needs_at_least_one_group(self):
+    def test_group_digest_needs_at_least_one_path(self):
         # With none it hashes {}, identical for every parameter set, so a
         # staleness check would always report "unchanged".
-        with pytest.raises(ValueError, match='at least one group'):
+        with pytest.raises(ValueError, match='at least one path'):
             ModelParameters().group_digest()
 
-    def test_group_digest_rejects_an_unknown_group(self):
-        with pytest.raises(ValueError, match='Unknown parameter group'):
+    def test_group_digest_rejects_an_unknown_path(self):
+        with pytest.raises(ValueError, match='Unknown parameter'):
             ModelParameters().group_digest('nope')
+
+    def test_group_digest_accepts_a_single_leaf(self):
+        # The groups do not line up with the producers: topography holds
+        # the headwater threshold (builds Headwaters.*) beside the LS
+        # slope-length cap (builds LS_factor.tif). Digesting the whole
+        # group would flag the LS factor stale whenever the headwater
+        # threshold moved.
+        params = ModelParameters()
+        moved = params.replace(topography__headwater_threshold_m2=50000)
+        leaf = 'topography.max_slope_length_m'
+        assert moved.group_digest(leaf) == params.group_digest(leaf)
+        assert moved.group_digest('topography') != \
+            params.group_digest('topography')
+
+    def test_subset_returns_only_the_named_paths(self):
+        got = ModelParameters().subset('delivery.max_sdr',
+                                       'erosion')
+        assert set(got) == {'delivery', 'erosion'}
+        assert set(got['delivery']) == {'max_sdr'}
 
 
 class TestResolution:

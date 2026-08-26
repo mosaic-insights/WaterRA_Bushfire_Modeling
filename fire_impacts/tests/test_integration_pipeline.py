@@ -742,6 +742,97 @@ def test_bindings_resolve_through_the_persisted_layers(pipeline):
         ev.set_event_binding_overrides({})
 
 
+# --- Staleness (phase 7) -------------------------------------------------
+
+def test_derived_layers_carry_their_parameters(pipeline):
+    from fire_impacts.provenance import read_parameter_tags
+    ev, prep = pipeline['ev'], pipeline['prep']
+    suffix = c.recovery_time_suffix(BREAKPOINTS[0])
+    for path, expected_group in (
+        (ev.event_path('Delivery', f'SDR_{suffix}.tif'), 'delivery'),
+        (ev.event_path('Erodibility', f'C_factor_adjusted_{suffix}.tif'),
+         'fire_adjustment'),
+        (prep.catchment_path('Erodibility', 'LS_factor.tif'), 'topography'),
+    ):
+        tags = read_parameter_tags(path)
+        assert tags is not None, path
+        assert set(tags['values']) == {expected_group}, path
+        assert tags['digest'].startswith('sha256:')
+
+
+def test_changing_a_parameter_stops_the_simulation_reusing_old_layers(
+        pipeline):
+    """The scenario this whole mechanism exists for: change max_sdr, run
+    the simulation without rebuilding, and the old SDR rasters used to be
+    reused with no signal at all."""
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    factory = simr.default_rusle_recorders(
+        grid_variables=('RUSLE',), grid_fns=('sum',),
+        grid_timesteps=('total',), include_timeseries=False)
+    changed = ev.parameters(delivery__max_sdr=0.5)
+    with pytest.raises(ValueError, match='built with different parameters'):
+        simr.run_usle_simulation(
+            run, rain,
+            recorders=factory(run, rain.index[0], rain.index[-1]),
+            save_rasters=False, save_timeseries=False, params=changed,
+        )
+
+
+def test_the_staleness_error_names_the_parameter_that_moved(pipeline):
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    factory = simr.default_rusle_recorders(
+        grid_variables=('RUSLE',), grid_fns=('sum',),
+        grid_timesteps=('total',), include_timeseries=False)
+    with pytest.raises(ValueError) as excinfo:
+        simr.run_usle_simulation(
+            run, rain,
+            recorders=factory(run, rain.index[0], rain.index[-1]),
+            save_rasters=False, save_timeseries=False,
+            params=ev.parameters(delivery__max_sdr=0.5),
+        )
+    assert 'delivery.max_sdr' in str(excinfo.value)
+
+
+def test_allow_stale_proceeds_deliberately(pipeline):
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    factory = simr.default_rusle_recorders(
+        grid_variables=('RUSLE',), grid_fns=('sum',),
+        grid_timesteps=('total',), include_timeseries=False)
+    results = simr.run_usle_simulation(
+        run, rain, recorders=factory(run, rain.index[0], rain.index[-1]),
+        save_rasters=False, save_timeseries=False,
+        params=ev.parameters(delivery__max_sdr=0.5), allow_stale=True,
+    )
+    assert 'RUSLE_sum_total' in results
+
+
+def test_matching_parameters_run_without_complaint(pipeline):
+    run, rain = pipeline['run'], pipeline['rain']
+    factory = simr.default_rusle_recorders(
+        grid_variables=('RUSLE',), grid_fns=('sum',),
+        grid_timesteps=('total',), include_timeseries=False)
+    results = simr.run_usle_simulation(
+        run, rain, recorders=factory(run, rain.index[0], rain.index[-1]),
+        save_rasters=False, save_timeseries=False,
+    )
+    assert 'RUSLE_sum_total' in results
+
+
+def test_an_unrelated_parameter_change_does_not_block_the_run(pipeline):
+    """erosion is consumed by the simulation itself, not baked into any
+    layer, so changing it must not flag the preprocessing outputs."""
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    factory = simr.default_rusle_recorders(
+        grid_variables=('RUSLE',), grid_fns=('sum',),
+        grid_timesteps=('total',), include_timeseries=False)
+    results = simr.run_usle_simulation(
+        run, rain, recorders=factory(run, rain.index[0], rain.index[-1]),
+        save_rasters=False, save_timeseries=False,
+        params=ev.parameters(erosion__support_practice_factor=0.5),
+    )
+    assert 'RUSLE_sum_total' in results
+
+
 # --- Layer scoping -------------------------------------------------------
 
 def test_catchment_scope_layers_are_fire_independent(pipeline):

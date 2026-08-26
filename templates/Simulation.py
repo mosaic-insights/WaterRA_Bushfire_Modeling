@@ -195,6 +195,15 @@ record.sources['erosion.support_practice_factor']
 #     params=ctx.parameters(erosion__support_practice_factor=0.8))
 
 # %% [markdown]
+# ### Stale layer check
+#
+# The C/K/SDR layers this run reads were built by PrepareData. If you have
+# changed a preprocessing parameter since then, the simulation raises
+# rather than silently mixing two calibrations — re-run
+# `compute_adjusted_k_c`, or pass `allow_stale=True` if the mismatch is
+# deliberate. Only the parameters a layer depends on are compared.
+
+# %% [markdown]
 # ### Run the simulation
 
 # %%
@@ -304,6 +313,15 @@ rainfall.rainfall
 # Extract and inspect one replicate:
 rain_intensity_seq = rainfall.rainfall[:,9].to_pandas()
 rain_intensity_seq
+# %% [markdown]
+# ### Stale layer check
+#
+# The C/K/SDR layers this run reads were built by PrepareData. If you have
+# changed a preprocessing parameter since then, the simulation raises
+# rather than silently mixing two calibrations — re-run
+# `compute_adjusted_k_c`, or pass `allow_stale=True` if the mismatch is
+# deliberate. Only the parameters a layer depends on are compared.
+
 # %% [markdown]
 # ### Run the simulation
 

@@ -274,6 +274,40 @@ Writing one to the wrong file raises, and the error names the file to use
 instead. A one-off `ctx.parameters(...)` override is not restricted this way —
 it is explicit, transient, and recorded as such.
 
+#### Stale layers
+
+Changing a parameter does not rebuild anything, so the layers on disk can
+fall out of step with the values now in force. Every derived raster is
+stamped with the parameters that built it, as GeoTIFF tags:
+
+```
+$ gdalinfo Events/2019_fire/Delivery/SDR_t0.tif | grep FIRE_IMPACTS
+  FIRE_IMPACTS_DIGEST=sha256:9a019f573bd...
+  FIRE_IMPACTS_PARAMS={"delivery":{"ic0":0.5,"k":1.0,"max_sdr":0.8,...}}
+  FIRE_IMPACTS_VERSION=0.1
+```
+
+The simulation checks those tags against the parameters it resolves and
+**raises** rather than silently mixing two calibrations:
+
+```
+ValueError: .../SDR_t0.tif was built with different parameters than this
+run resolves — delivery.max_sdr: built with 0.8, now 0.5. Re-run the step
+that produces it, or pass the parameters it was built with.
+```
+
+Re-run the producing step, or pass `allow_stale=True` when the mismatch is
+deliberate. Only the parameters a layer actually *depends on* are compared,
+so changing an unrelated group does not flag it.
+
+The tag is per-file, which the JSON record cannot be: it survives partial
+rebuilds, orphaned layers left behind by a shortened breakpoint list, and
+the raster being copied out of the project.
+
+> **Limit:** the check covers parameters only. Re-extract the DEM,
+> re-derive dNBR, or hand-edit a C factor and every digest still matches.
+> It is one edge of a dependency graph, not the whole of it.
+
 #### Substituting an input
 
 Sometimes you want to drive the model with something other than the real

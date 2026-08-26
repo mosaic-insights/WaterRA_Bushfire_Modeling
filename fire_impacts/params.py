@@ -495,24 +495,44 @@ class ModelParameters:
         """
         return _digest(self.to_dict())
 
-    def group_digest(self, *groups: str) -> str:
-        """Return a digest over a subset of groups, for per-stage staleness
-        checks (e.g. the layers a given prep step produced)."""
-        if not groups:
+    def group_digest(self, *paths: str) -> str:
+        """
+        Return a digest over a subset of the values.
+
+        Each path may name a whole group ('delivery') or a single leaf
+        ('topography.max_slope_length_m'). Leaf paths matter because the
+        groups do not line up with the producers: `topography` holds
+        `headwater_threshold_m2`, which builds Headwaters.*, alongside
+        `max_slope_length_m`, which builds LS_factor.tif. Digesting the
+        whole group would flag the LS factor stale whenever the headwater
+        threshold moved.
+        """
+        if not paths:
             raise ValueError(
-                'group_digest() needs at least one group: with none it '
+                'group_digest() needs at least one path: with none it '
                 'hashes an empty dict, which is the same value for every '
                 'parameter set and would make a staleness check always '
                 'report "unchanged".'
             )
-        values = self.to_dict()
-        unknown = [g for g in groups if g not in values]
-        if unknown:
-            raise ValueError(
-                f'Unknown parameter group(s): {unknown}. '
-                f'Known: {sorted(values)}'
-            )
-        return _digest({g: values[g] for g in groups})
+        return _digest(self.subset(*paths))
+
+    def subset(self, *paths: str) -> dict:
+        """Return a nested dict of just the named groups and leaves."""
+        flat = _flatten(self.to_dict())
+        selected = {}
+        for path in paths:
+            scope_of(path)          # validates the name, raises if unknown
+            matched = {
+                key: value for key, value in flat.items()
+                if key == path or key.startswith(f'{path}.')
+            }
+            if not matched:
+                raise ValueError(
+                    f'Parameter path {path!r} names a group rather than a '
+                    f'value, but matched nothing. Known: {sorted(flat)}'
+                )
+            selected.update(matched)
+        return nest_overrides(selected)
 
 
 # ---------------------------------------------------------------------------
@@ -558,14 +578,34 @@ class ParameterRecord:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> 'ParameterRecord':
-        """Rebuild a record written by :meth:`to_dict`."""
-        return cls(
+    def from_dict(cls, data: dict, *, verify: bool = True
+                  ) -> 'ParameterRecord':
+        """
+        Rebuild a record written by :meth:`to_dict`.
+
+        The stored digest is checked against the stored values unless
+        ``verify=False``. Previously it was discarded and silently
+        recomputed, which meant a record whose digest did not describe
+        its own values — a stale one left behind by a partial write, or a
+        hand-edited one — read back as self-consistent, and any staleness
+        check built on it was trusting a number nothing verified.
+        """
+        record = cls(
             parameters=ModelParameters.from_dict(data.get('values', {})),
             sources=dict(data.get('sources', {})),
             version=data.get('fire_impacts_version', 'unknown'),
             resolved_at=data.get('resolved_at', ''),
         )
+        stored = data.get('digest')
+        if verify and stored is not None and stored != record.digest():
+            raise ValueError(
+                f'Parameter record is inconsistent: its stored digest '
+                f'{stored} does not match a digest of its own values '
+                f'({record.digest()}). The file was probably written '
+                f'partially or edited by hand. Pass verify=False to read '
+                f'it anyway.'
+            )
+        return record
 
     def restricted_to_scope(self, scope: str) -> 'ParameterRecord':
         """
