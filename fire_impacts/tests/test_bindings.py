@@ -176,9 +176,50 @@ class TestDefaults:
         assert not InputBindings(
             dnbr=Constant(value=0.3, units='dnbr')).is_default()
 
-    def test_bindings_are_event_scoped(self):
-        # masked_dNBR.tif is written per event.
-        assert InputBindings.__scope__ == 'event'
+    def test_each_input_declares_the_scope_of_its_output(self):
+        from fire_impacts.bindings import SCOPE_BY_INPUT
+        # masked_dNBR.tif is per event; C_factor.tif is built once per
+        # catchment and shared by every fire in it.
+        assert SCOPE_BY_INPUT['dnbr'] == 'event'
+        assert SCOPE_BY_INPUT['c_factor'] == 'catchment'
+
+    def test_every_bindable_input_declares_a_scope(self):
+        from dataclasses import fields
+        from fire_impacts.bindings import SCOPE_BY_INPUT
+        assert {f.name for f in fields(InputBindings)} == set(SCOPE_BY_INPUT)
+
+
+class TestScopeEnforcement:
+    """A binding may only be set at a layer at least as broad as the
+    output it produces — the same rule the parameter groups follow."""
+
+    def test_a_catchment_scoped_input_is_refused_at_event_scope(self):
+        from fire_impacts.bindings import check_binding_scope
+        with pytest.raises(ValueError, match='catchment-scoped'):
+            check_binding_scope(
+                {'c_factor': {'source': 'derived'}}, 'event')
+
+    def test_the_error_names_where_it_belongs(self):
+        from fire_impacts.bindings import check_binding_scope
+        with pytest.raises(ValueError, match='catchment-level'):
+            check_binding_scope(
+                {'c_factor': {'source': 'derived'}}, 'event')
+
+    def test_an_event_scoped_input_is_allowed_at_event_scope(self):
+        from fire_impacts.bindings import check_binding_scope
+        check_binding_scope({'dnbr': {'source': 'derived'}}, 'event')
+
+    def test_broader_layers_accept_everything(self):
+        from fire_impacts.bindings import check_binding_scope
+        both = {'dnbr': {'source': 'derived'},
+                'c_factor': {'source': 'derived'}}
+        check_binding_scope(both, 'catchment')
+        check_binding_scope(both, 'project')
+
+    def test_an_unknown_input_is_rejected(self):
+        from fire_impacts.bindings import check_binding_scope
+        with pytest.raises(ValueError, match='Unknown input'):
+            check_binding_scope({'nope': {'source': 'derived'}}, 'project')
 
 
 class TestSyntheticSeed:

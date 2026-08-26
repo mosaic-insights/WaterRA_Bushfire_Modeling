@@ -148,11 +148,10 @@ def materialise_c_factor(ctx, bindings=None):
     same two things — "use this raster" and "paint this scalar" — in two
     vocabularies with no rule for which won.
 
-    Note the scope mismatch, which is real and not yet resolved:
-    C_factor.tif is a *catchment*-scoped layer, but bindings are
-    event-scoped because dNBR is. Setting a c_factor binding per event
-    therefore rewrites a layer its sibling events share. The event layer
-    is refused for that reason — set it at project or catchment scope.
+    C_factor.tif is a catchment-scoped layer, so the c_factor binding is
+    declared catchment-scoped (bindings.SCOPE_BY_INPUT) and an event-level
+    one is refused on both read and write — it would have one fire
+    rewrite the input its siblings share.
 
     Returns:
     - The binding record written, or None for a Derived binding.

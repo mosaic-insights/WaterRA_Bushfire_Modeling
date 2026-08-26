@@ -189,7 +189,8 @@ class FireImpactsProject(object):
           partially-written file can still be inspected.
         ----------------------------------------------------------------
         """
-        return self._read_parameter_overrides(self._parameters_fn())
+        return _parameters_only(
+            self._read_parameter_overrides(self._parameters_fn()))
 
     ###########################################################################
     def set_parameter_overrides(self, overrides) -> dict:
@@ -261,9 +262,9 @@ class FireImpactsProject(object):
         - Nested dict of {group: {field: value}}. Empty when absent.
         ----------------------------------------------------------------
         """
-        return self._read_parameter_overrides(
+        return _parameters_only(self._read_parameter_overrides(
             self._catchment_parameters_fn(catchment)
-        )
+        ))
 
     ###########################################################################
     def set_catchment_parameter_overrides(self, catchment: str, overrides):
@@ -328,10 +329,72 @@ class FireImpactsProject(object):
             except ValueError as exc:
                 raise ValueError(f'For {path}: {exc}') from None
         check_scope(data, scope)
+        self._merge_into_settings_file(path, data, drop='parameters')
+        logger.info('Wrote %s parameters to %s', scope, path)
+        return data
+
+    ###########################################################################
+    def _merge_into_settings_file(self, path: str, data: dict, *, drop: str):
+        """Write one concern into a shared overrides file, keeping the
+        other. parameters.json holds parameter groups at the top level and
+        bindings under a "bindings" key; writing either as the whole file
+        would erase the other."""
+        existing = self._read_parameter_overrides(path)
+        if drop == 'parameters':
+            merged = dict(data)
+            if existing.get('bindings'):
+                merged['bindings'] = existing['bindings']
+        else:
+            merged = {k: v for k, v in existing.items() if k != 'bindings'}
+            if data:
+                merged['bindings'] = data
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as f:
-            json.dump(data, f, indent=2)
-        logger.info('Wrote %s parameters to %s', scope, path)
+            json.dump(merged, f, indent=2)
+
+    ###########################################################################
+    def set_binding_overrides(self, bindings):
+        """
+        Write project-scope input bindings to parameters.json.
+        ----------------------------------------------------------------
+        """
+        return self._write_binding_overrides(
+            self._parameters_fn(), bindings, scope='project')
+
+    ###########################################################################
+    def set_catchment_binding_overrides(self, catchment: str, bindings):
+        """
+        Write catchment-scope input bindings.
+        ----------------------------------------------------------------
+        Notes:
+        - This is where a c_factor binding belongs: C_factor.tif is built
+          once per catchment and shared by every fire in it.
+        ----------------------------------------------------------------
+        """
+        _assert_catchment_registered_for_params(self, catchment)
+        return self._write_binding_overrides(
+            self._catchment_parameters_fn(catchment), bindings,
+            scope='catchment')
+
+    ###########################################################################
+    def _write_binding_overrides(self, path: str, bindings, *, scope: str):
+        """Validate and write the bindings half of one overrides file."""
+        from ..bindings import InputBindings, check_binding_scope
+        if isinstance(bindings, InputBindings):
+            data = {
+                name: binding.to_dict()
+                for name, binding in bindings.to_dict().items()
+                if binding.get('source') != 'derived'
+            }
+        else:
+            data = dict(bindings or {})
+            try:
+                InputBindings.from_dict(data)
+            except ValueError as exc:
+                raise ValueError(f'For {path}: {exc}') from None
+        check_binding_scope(data, scope)
+        self._merge_into_settings_file(path, data, drop='bindings')
+        logger.info('Wrote %s bindings to %s', scope, path)
         return data
 
     # --- Path helpers -------------------------------------------------------
@@ -2117,6 +2180,16 @@ class FireImpactsProject(object):
 
 
 ###############################################################################
+def _parameters_only(data: dict) -> dict:
+    """Strip the bindings half out of a shared overrides file.
+
+    parameters.json carries parameter groups at the top level and input
+    bindings under a "bindings" key. Handing the whole file to the
+    parameter validator makes "bindings" look like an unknown group.
+    """
+    return {k: v for k, v in (data or {}).items() if k != 'bindings'}
+
+
 def _assert_catchment_registered_for_params(project, catchment):
     """Raise if a catchment name is not registered with the project."""
     if catchment not in project.catchments:

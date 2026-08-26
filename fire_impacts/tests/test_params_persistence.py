@@ -418,3 +418,102 @@ class TestRunContextResolution:
         before = ctx.parameters().digest()
         ctx.project.set_parameter_overrides({'delivery': {'max_sdr': 0.9}})
         assert ctx.parameters().digest() != before
+
+
+class TestBindingsShareTheFile:
+    """parameters.json carries parameter groups at the top level and input
+    bindings under a "bindings" key. Each writer must preserve the other,
+    and each reader must ignore the other."""
+
+    def test_writing_parameters_keeps_the_bindings(self, ctx):
+        ctx.set_catchment_binding_overrides({'c_factor': {
+            'source': 'constant', 'value': 0.02,
+            'units': 'dimensionless'}})
+        ctx.project.set_catchment_parameter_overrides(
+            ctx.catchment, {'delivery': {'max_sdr': 0.7}})
+        assert ctx.catchment_binding_overrides()['c_factor']['value'] == 0.02
+
+    def test_writing_bindings_keeps_the_parameters(self, ctx):
+        ctx.project.set_catchment_parameter_overrides(
+            ctx.catchment, {'delivery': {'max_sdr': 0.7}})
+        ctx.set_catchment_binding_overrides({'c_factor': {
+            'source': 'constant', 'value': 0.02,
+            'units': 'dimensionless'}})
+        assert ctx.project.catchment_parameter_overrides(
+            ctx.catchment) == {'delivery': {'max_sdr': 0.7}}
+
+    def test_the_parameter_reader_ignores_the_bindings_key(self, ctx):
+        ctx.set_catchment_binding_overrides({'c_factor': {
+            'source': 'constant', 'value': 0.02,
+            'units': 'dimensionless'}})
+        # Would otherwise read 'bindings' as an unknown parameter group.
+        assert ctx.parameters().parameters.delivery.max_sdr == 0.8
+
+    def test_both_survive_a_reload(self, ctx):
+        from fire_impacts.pre.project import FireImpactsProject
+        ctx.project.set_catchment_parameter_overrides(
+            ctx.catchment, {'delivery': {'max_sdr': 0.7}})
+        ctx.set_catchment_binding_overrides({'c_factor': {
+            'source': 'constant', 'value': 0.02,
+            'units': 'dimensionless'}})
+        reloaded = FireImpactsProject(ctx.project.project_path, exist_ok=True)
+        assert reloaded.catchment_parameter_overrides(ctx.catchment) == {
+            'delivery': {'max_sdr': 0.7}}
+        assert reloaded.catchment_binding_overrides(
+            ctx.catchment)['c_factor']['value'] == 0.02
+
+
+class TestBindingScope:
+    """A binding may only be set at a layer at least as broad as the
+    output it produces — the same rule the parameter groups follow."""
+
+    def test_a_c_factor_binding_is_refused_at_event_scope(self, ctx):
+        with pytest.raises(ValueError, match='catchment-scoped'):
+            ctx.set_event_binding_overrides({'c_factor': {
+                'source': 'constant', 'value': 0.02,
+                'units': 'dimensionless'}})
+
+    def test_a_dnbr_binding_is_accepted_at_event_scope(self, ctx):
+        ctx.set_event_binding_overrides({'dnbr': {
+            'source': 'synthetic', 'severity': 'high'}})
+        assert ctx.bindings().dnbr.severity == 'high'
+
+    def test_a_c_factor_binding_is_accepted_at_catchment_scope(self, ctx):
+        ctx.set_catchment_binding_overrides({'c_factor': {
+            'source': 'constant', 'value': 0.02,
+            'units': 'dimensionless'}})
+        assert ctx.bindings().c_factor.value == 0.02
+
+    def test_a_hand_edited_event_file_is_refused_on_read(self, ctx):
+        # The setters are not the only way in: the files are documented
+        # as hand-editable.
+        import json
+        path = ctx.event_path(c.EVENT_DEFINITION_NAME)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump({'bindings': {'c_factor': {
+                'source': 'constant', 'value': 0.02,
+                'units': 'dimensionless'}}}, f)
+        with pytest.raises(ValueError, match='catchment-scoped'):
+            ctx.bindings()
+
+    def test_the_read_error_names_the_offending_file(self, ctx):
+        import json
+        path = ctx.event_path(c.EVENT_DEFINITION_NAME)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump({'bindings': {'c_factor': {
+                'source': 'constant', 'value': 0.02,
+                'units': 'dimensionless'}}}, f)
+        with pytest.raises(ValueError, match=c.EVENT_DEFINITION_NAME):
+            ctx.bindings()
+
+    def test_layers_merge_across_scopes(self, ctx):
+        ctx.set_catchment_binding_overrides({'c_factor': {
+            'source': 'constant', 'value': 0.02,
+            'units': 'dimensionless'}})
+        ctx.set_event_binding_overrides({'dnbr': {
+            'source': 'synthetic', 'severity': 'high'}})
+        bindings = ctx.bindings()
+        assert bindings.c_factor.value == 0.02
+        assert bindings.dnbr.severity == 'high'

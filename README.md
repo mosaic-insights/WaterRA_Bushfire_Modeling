@@ -345,6 +345,18 @@ value or a raster reveals which scale it is on, so there is no default.
 sample a cover factor from, and accepting one would write dNBR values into
 a C-factor file.
 
+Like parameters, a binding may only be set at a level at least as broad as
+the output it produces:
+
+| Input | Settable at | Because it writes |
+|---|---|---|
+| `dnbr` | project, catchment, event | `Events/<e>/FireSeverity/masked_dNBR.tif` |
+| `c_factor` | project, catchment | `Erodibility/C_factor.tif`, shared by every fire in the catchment |
+
+Binding `c_factor` per event would have one fire rewrite the input its
+siblings depend on, so it is refused — on reading the files as well as
+writing them, since they are hand-editable.
+
 > **Deprecated:** `fire_adjustment.default_c_factor` and the `c_factor_fn`
 > argument to `compute_adjusted_k_c` both say what a `c_factor` binding
 > says — "paint this scalar" and "use this raster". They still work and

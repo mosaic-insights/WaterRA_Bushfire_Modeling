@@ -517,15 +517,37 @@ class RunContext:
         Validated before writing, and merged into event.json alongside
         the recovery breakpoints and parameter overrides.
         """
-        from .bindings import InputBindings
+        from .bindings import InputBindings, check_binding_scope
 
         if isinstance(bindings, InputBindings):
-            data = bindings.to_dict()
+            data = {
+                name: binding
+                for name, binding in bindings.to_dict().items()
+                if binding.get('source') != 'derived'
+            }
         else:
             data = dict(bindings or {})
             InputBindings.from_dict(data)   # validate
+        # An event file may only carry event-scoped inputs. c_factor
+        # builds a catchment-level layer every fire in the catchment
+        # shares, so binding it per event would have one event rewrite
+        # the others' input.
+        check_binding_scope(data, 'event')
         self._update_event_json({'bindings': data})
         return data
+
+    def catchment_binding_overrides(self) -> dict:
+        """Return this context's catchment-scope input bindings."""
+        return self.project.catchment_binding_overrides(self.catchment)
+
+    def set_catchment_binding_overrides(self, bindings) -> dict:
+        """Persist catchment-scope bindings for this context's catchment.
+
+        Where a c_factor binding belongs; set_event_binding_overrides
+        refuses it.
+        """
+        return self.project.set_catchment_binding_overrides(
+            self.catchment, bindings)
 
     def bindings(self):
         """Resolve this context's input bindings.
@@ -540,16 +562,28 @@ class RunContext:
         Returns:
         - An :class:`fire_impacts.bindings.InputBindings`.
         """
-        from .bindings import InputBindings
+        from .bindings import InputBindings, check_binding_scope
 
         merged: dict = {}
-        for data in (
-            self.project.binding_overrides(),
-            self.project.catchment_binding_overrides(self.catchment),
-            self.event_binding_overrides() if self.event else {},
+        for layer, data, where in (
+            ('project', self.project.binding_overrides(),
+             const.PARAMETERS_FILE_NAME),
+            ('catchment',
+             self.project.catchment_binding_overrides(self.catchment),
+             f'{self.catchment}/{const.PARAMETERS_FILE_NAME}'),
+            ('event',
+             self.event_binding_overrides() if self.event else {},
+             f'{self.event}/{const.EVENT_DEFINITION_NAME}'),
         ):
-            for name, binding in (data or {}).items():
-                merged[name] = binding
+            if not data:
+                continue
+            # Checked on read as well as on write: these files are
+            # hand-editable, so the setters are not the only way in.
+            try:
+                check_binding_scope(data, layer)
+            except ValueError as exc:
+                raise ValueError(f'In {where}: {exc}') from None
+            merged.update(data)
         return InputBindings.from_dict(merged)
 
     # -- Catchment-scope overrides (delegate to the project store) ----------

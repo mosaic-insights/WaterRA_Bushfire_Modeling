@@ -41,7 +41,9 @@ __all__ = [
     'InputBindings',
     'DNBR_UNITS',
     'DOMAINS',
+    'SCOPE_BY_INPUT',
     'binding_from_dict',
+    'check_binding_scope',
 ]
 
 # Accepted units for a dNBR binding. dNBR is *stored* as the raw
@@ -66,6 +68,17 @@ C_FACTOR_UNITS = {'dimensionless': 1.0}
 UNITS_BY_INPUT = {
     'dnbr': DNBR_UNITS,
     'c_factor': C_FACTOR_UNITS,
+}
+
+#: The scope of the output each input produces — and therefore the
+#: narrowest layer it may be set at. C_factor.tif is built once per
+#: catchment and shared by every fire in it, so an event-level c_factor
+#: binding would rewrite a layer its siblings depend on; masked_dNBR.tif
+#: is per event and may vary freely. Same reasoning as the parameter
+#: groups' __scope__, and enforced the same way.
+SCOPE_BY_INPUT = {
+    'dnbr': 'event',
+    'c_factor': 'catchment',
 }
 
 #: Which variants make sense for each input. A synthetic draw is defined
@@ -231,6 +244,45 @@ _VARIANTS = {
 }
 
 
+def check_binding_scope(data: dict, layer: str) -> None:
+    """
+    Raise if any binding in an override dict may not be set at ``layer``.
+
+    Mirrors :func:`fire_impacts.params.check_scope`. A binding may only
+    be set at a layer at least as broad as the scope of the output it
+    produces: a c_factor binding in an event file would have that event
+    rewrite the catchment's shared C_factor.tif, which is the cross-event
+    corruption the parameter scopes already prevent.
+    """
+    from .params import SCOPES
+
+    if layer not in SCOPES:
+        raise ValueError(
+            f'Unknown scope {layer!r}. Valid scopes: {list(SCOPES)}.')
+    limit = SCOPES.index(layer)
+    offenders = []
+    for name in (data or {}):
+        if name not in SCOPE_BY_INPUT:
+            raise ValueError(
+                f'Unknown input {name!r}. Bindable inputs: '
+                f'{sorted(SCOPE_BY_INPUT)}.'
+            )
+        scope = SCOPE_BY_INPUT[name]
+        if SCOPES.index(scope) < limit:
+            offenders.append((name, scope))
+    if offenders:
+        detail = '; '.join(
+            f'{name!r} is {scope}-scoped' for name, scope in offenders)
+        first = offenders[0]
+        raise ValueError(
+            f'Cannot bind {len(offenders)} input(s) at {layer} scope: '
+            f'{detail}. The layer each produces is written at that scope, '
+            f'so a {layer}-level binding would overwrite a file its '
+            f'siblings share. Bind {first[0]!r} in the {first[1]}-level '
+            f'parameters.json instead.'
+        )
+
+
 def validate_binding(binding, input_name: str) -> None:
     """
     Check a binding against the input it is attached to.
@@ -325,11 +377,6 @@ class InputBindings:
     consumes is the same silent failure as a declared parameter nothing
     reads.
     """
-
-    # masked_dNBR.tif is per event, so bindings are event-scoped.
-    # C_factor.tif is catchment-scoped, but it is written by an
-    # event-scoped step; see the note in materialise_c_factor.
-    __scope__ = 'event'
 
     dnbr: Any = Derived()
     c_factor: Any = Derived()

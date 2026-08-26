@@ -872,7 +872,7 @@ def test_compute_adjusted_k_c_honours_the_c_factor_binding(
     just the resolver called directly."""
     from fire_impacts.pre import rusle as prusle
     prep, ev = restore_c_factor['prep'], restore_c_factor['ev']
-    ev.set_event_binding_overrides({'c_factor': {
+    ev.set_catchment_binding_overrides({'c_factor': {
         'source': 'constant', 'value': 0.07,
         'units': 'dimensionless', 'domain': 'dem_valid'}})
     try:
@@ -882,7 +882,7 @@ def test_compute_adjusted_k_c_honours_the_c_factor_binding(
         values = _c_factor(prep)
         assert np.allclose(values[np.isfinite(values)], 0.07)
     finally:
-        ev.set_event_binding_overrides({})
+        ev.set_catchment_binding_overrides({})
 
 
 def test_a_binding_and_the_deprecated_scalar_together_are_refused(
@@ -891,7 +891,7 @@ def test_a_binding_and_the_deprecated_scalar_together_are_refused(
     exactly the ambiguity the binding exists to remove."""
     from fire_impacts.pre import rusle as prusle
     prep, ev = restore_c_factor['prep'], restore_c_factor['ev']
-    ev.set_event_binding_overrides({'c_factor': {
+    ev.set_catchment_binding_overrides({'c_factor': {
         'source': 'constant', 'value': 0.05,
         'units': 'dimensionless', 'domain': 'dem_valid'}})
     try:
@@ -902,14 +902,14 @@ def test_a_binding_and_the_deprecated_scalar_together_are_refused(
                     fire_adjustment__default_c_factor=0.02),
             )
     finally:
-        ev.set_event_binding_overrides({})
+        ev.set_catchment_binding_overrides({})
 
 
 def test_a_binding_and_the_deprecated_argument_together_are_refused(
         restore_c_factor):
     from fire_impacts.pre import rusle as prusle
     ev = restore_c_factor['ev']
-    ev.set_event_binding_overrides({'c_factor': {
+    ev.set_catchment_binding_overrides({'c_factor': {
         'source': 'constant', 'value': 0.05,
         'units': 'dimensionless', 'domain': 'dem_valid'}})
     try:
@@ -918,7 +918,7 @@ def test_a_binding_and_the_deprecated_argument_together_are_refused(
                 ev, c_factor_fn=_data(C_FACTOR_FILE),
                 recovery_breakpoints=BREAKPOINTS)
     finally:
-        ev.set_event_binding_overrides({})
+        ev.set_catchment_binding_overrides({})
 
 
 def test_the_deprecated_scalar_still_works_and_warns(restore_c_factor):
