@@ -1,0 +1,304 @@
+"""
+Input bindings: where a gridded model input comes from.
+
+A *parameter* answers "what coefficient does the model use". A *binding*
+answers "where does this input come from" — the normal pipeline, a
+user-supplied raster, a uniform scalar, or a synthetic draw. The two are
+kept apart because their validity rules differ: a coefficient has a
+range, a binding has a domain, a unit and a provenance.
+
+The rule is **materialise, don't branch**. A binding is resolved once, at
+preprocessing time, by writing a real raster to the standard path.
+Everything downstream keeps reading that path and needs no knowledge of
+where it came from. Teaching every read site to accept a scalar-or-array
+would touch dozens of call sites, break the ``read_aligned_like``
+contract (which needs a grid to align *to*), lose the ability to open the
+input in QGIS, and silently change every zonal statistic.
+
+Resolution differs from parameters in one way that matters: resolving a
+binding has a *side effect*, so there is no call-site layer. A binding
+override at simulation time would either rewrite a preprocessing artefact
+mid-run or be silently ignored. Bindings therefore resolve through
+project -> catchment -> event only, and are applied at exactly one point.
+
+Design notes: ``design-notes/calibration-parameters-proposal.md`` section 5.
+"""
+
+from __future__ import annotations
+
+import difflib
+from dataclasses import MISSING as _MISSING
+from dataclasses import dataclass, fields, is_dataclass
+from typing import Any
+
+from .const import DNBR_SCALE
+
+__all__ = [
+    'Derived',
+    'Constant',
+    'FromFile',
+    'SyntheticFire',
+    'InputBindings',
+    'DNBR_UNITS',
+    'DOMAINS',
+    'binding_from_dict',
+]
+
+# Accepted units for a dNBR binding. dNBR is *stored* as the raw
+# band-ratio difference but *quoted* on the 0-1000 scale, and the two
+# differ by 1000x — the exact confusion that had two producers writing
+# incompatible rasters. A binding must therefore say which it means;
+# there is no safe default.
+DNBR_UNITS = {
+    # The stored representation: pre-fire NBR minus post-fire NBR, ~[0, 1].
+    'dnbr': 1.0,
+    # The conventional scale used by every threshold and lookup table.
+    'dnbr_x1000': 1.0 / DNBR_SCALE,
+}
+
+# Where a Constant is painted.
+DOMAINS = (
+    # Inside the catchment boundary. Claims lakes, rock and urban area
+    # burned too, which inflates catchment totals — see the warning in
+    # the resolver.
+    'catchment',
+    # Every cell with valid DEM data.
+    'dem_valid',
+    # Borrow the valid-cell footprint of an existing raster, named as
+    # 'mask:<section>/<file>' — e.g. 'mask:FireSeverity/masked_dNBR.tif'
+    # to reuse the natural-vegetation mask a previous run produced. That
+    # layer has to exist already; the resolver fails clearly if it does
+    # not rather than silently falling back to the whole catchment.
+    'mask',
+)
+
+
+# ---------------------------------------------------------------------------
+# Binding variants
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Derived:
+    """Produce the input through the normal pipeline. The default."""
+
+    SOURCE = 'derived'
+
+    def to_dict(self) -> dict:
+        return {'source': self.SOURCE}
+
+
+@dataclass(frozen=True)
+class Constant:
+    """
+    Paint a uniform value over a domain.
+
+    ``units`` is required: see :data:`DNBR_UNITS`. ``domain`` decides
+    which cells are filled — the default fills the catchment, which for
+    dNBR asserts that water bodies and bare rock burned as well.
+    """
+
+    SOURCE = 'constant'
+
+    value: float
+    units: str
+    domain: str = 'catchment'
+
+    def __post_init__(self):
+        if self.units not in DNBR_UNITS:
+            raise ValueError(
+                f'Unknown units {self.units!r} for a constant binding. '
+                f'Valid units: {sorted(DNBR_UNITS)}. Units are required '
+                f'because dNBR is stored on a different scale from the '
+                f'one it is quoted on, and the two differ by '
+                f'{DNBR_SCALE}x.'
+            )
+        base = self.domain.split(':', 1)[0]
+        if base not in DOMAINS:
+            raise ValueError(
+                f'Unknown domain {self.domain!r}. Valid domains: '
+                f'{list(DOMAINS)} (use "mask:<section>/<file>" to borrow '
+                f'an existing layer\'s valid cells).'
+            )
+        if base == 'mask' and ':' not in self.domain:
+            raise ValueError(
+                'A mask domain must name the layer to borrow, as '
+                '"mask:<section>/<file>" — for example '
+                '"mask:FireSeverity/masked_dNBR.tif".'
+            )
+
+    def to_dict(self) -> dict:
+        return {
+            'source': self.SOURCE, 'value': self.value,
+            'units': self.units, 'domain': self.domain,
+        }
+
+    def to_stored_scale(self) -> float:
+        """Return the value converted to the stored representation."""
+        return self.value * DNBR_UNITS[self.units]
+
+
+@dataclass(frozen=True)
+class FromFile:
+    """
+    Use a raster the user supplies.
+
+    ``units`` is required for the same reason as :class:`Constant`, and
+    matters more here: a user-supplied dNBR raster on the 0-1000 scale is
+    at least as likely as a mis-scaled scalar, and nothing about the file
+    reveals which it is.
+    """
+
+    SOURCE = 'file'
+
+    path: str
+    units: str
+
+    def __post_init__(self):
+        if not self.path:
+            raise ValueError('A file binding needs a path.')
+        if self.units not in DNBR_UNITS:
+            raise ValueError(
+                f'Unknown units {self.units!r} for a file binding. '
+                f'Valid units: {sorted(DNBR_UNITS)}.'
+            )
+
+    def to_dict(self) -> dict:
+        return {'source': self.SOURCE, 'path': self.path,
+                'units': self.units}
+
+    def scale_to_stored(self) -> float:
+        """Factor converting this file's values to the stored scale."""
+        return DNBR_UNITS[self.units]
+
+
+@dataclass(frozen=True)
+class SyntheticFire:
+    """
+    Sample from the empirical dNBR distribution of a reference fire.
+
+    ``random_seed`` may be left None, in which case the resolver draws
+    one and records the *effective* seed. Recording None would make the
+    provenance record undescriptive of the raster it sits beside — the
+    draw could never be reproduced.
+    """
+
+    SOURCE = 'synthetic'
+
+    severity: str = 'medium'
+    random_seed: int | None = None
+    reference_url: str | None = None
+
+    def __post_init__(self):
+        if self.random_seed is not None and not isinstance(
+                self.random_seed, int):
+            raise ValueError(
+                f'random_seed must be an integer or None, got '
+                f'{self.random_seed!r}.'
+            )
+
+    def to_dict(self) -> dict:
+        return {
+            'source': self.SOURCE, 'severity': self.severity,
+            'random_seed': self.random_seed,
+            'reference_url': self.reference_url,
+        }
+
+
+_VARIANTS = {
+    cls.SOURCE: cls for cls in (Derived, Constant, FromFile, SyntheticFire)
+}
+
+
+def binding_from_dict(data: Any):
+    """
+    Rebuild a binding from its tagged-union dict.
+
+    Unknown source tags and unknown fields raise rather than being
+    ignored, for the same reason parameters do: a binding that silently
+    fell back to 'derived' would let a user believe they had substituted
+    an input when they had not.
+    """
+    if is_dataclass(data) and not isinstance(data, type):
+        return data
+    if data is None:
+        return Derived()
+    if not isinstance(data, dict):
+        raise ValueError(
+            f'A binding must be an object with a "source" key, got '
+            f'{type(data).__name__}.'
+        )
+    source = data.get('source')
+    if source is None:
+        raise ValueError(
+            f'A binding needs a "source" key. Valid sources: '
+            f'{sorted(_VARIANTS)}.'
+        )
+    if source not in _VARIANTS:
+        close = difflib.get_close_matches(str(source), _VARIANTS, n=1)
+        hint = f' Did you mean {close[0]!r}?' if close else ''
+        raise ValueError(
+            f'Unknown binding source {source!r}.{hint} Valid sources: '
+            f'{sorted(_VARIANTS)}.'
+        )
+    cls = _VARIANTS[source]
+    known = {f.name for f in fields(cls)}
+    supplied = {k: v for k, v in data.items() if k != 'source'}
+    unknown = set(supplied) - known
+    if unknown:
+        raise ValueError(
+            f'Unknown field(s) {sorted(unknown)} for a {source!r} '
+            f'binding. Valid fields: {sorted(known)}.'
+        )
+    try:
+        return cls(**supplied)
+    except TypeError as exc:
+        # A missing required field (units, path) would otherwise surface
+        # as a bare constructor TypeError naming __init__.
+        raise ValueError(
+            f'Incomplete {source!r} binding: {exc}. Required fields: '
+            f'{sorted(f.name for f in fields(cls) if f.default is _MISSING)}.'
+        ) from None
+
+
+# ---------------------------------------------------------------------------
+# The binding set
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class InputBindings:
+    """
+    How each substitutable model input is supplied.
+
+    Only dNBR is bindable today. The tree is deliberately not populated
+    with inputs that have no resolver: a declared binding nothing
+    consumes is the same silent failure as a declared parameter nothing
+    reads.
+    """
+
+    # masked_dNBR.tif is per event, so bindings are event-scoped.
+    __scope__ = 'event'
+
+    dnbr: Any = Derived()
+
+    def to_dict(self) -> dict:
+        return {name: getattr(self, name).to_dict()
+                for name in (f.name for f in fields(self))}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'InputBindings':
+        data = data or {}
+        known = {f.name for f in fields(cls)}
+        unknown = set(data) - known
+        if unknown:
+            raise ValueError(
+                f'Unknown input(s) {sorted(unknown)}. Bindable inputs: '
+                f'{sorted(known)}.'
+            )
+        return cls(**{
+            name: binding_from_dict(value) for name, value in data.items()
+        })
+
+    def is_default(self) -> bool:
+        """True when every input uses the normal pipeline."""
+        return all(isinstance(getattr(self, f.name), Derived)
+                   for f in fields(self))

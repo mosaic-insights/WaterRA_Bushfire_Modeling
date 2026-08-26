@@ -588,6 +588,160 @@ def test_catchment_provenance_merges_across_producers(pipeline):
         topography.extract_headwaters(prep)
 
 
+# --- Input bindings (phase 6) --------------------------------------------
+
+@pytest.fixture
+def restore_dnbr(pipeline):
+    """Materialising a binding overwrites masked_dNBR.tif, which the rest
+    of the module depends on. Snapshot and restore it, verifying the
+    restore rather than assuming it."""
+    from fire_impacts.pre.util import write_raster
+    ev = pipeline['ev']
+    path = ev.event_path(c.FIRE_SEVERITY_FOLDER_NAME, 'masked_dNBR.tif')
+    with rasterio.open(path) as src:
+        original, meta = src.read(1), src.meta.copy()
+    yield ev
+    write_raster(path, original, meta)
+    with rasterio.open(path) as src:
+        assert np.array_equal(src.read(1), original, equal_nan=True)
+
+
+def _dnbr(ev):
+    with rasterio.open(ev.event_path(
+            c.FIRE_SEVERITY_FOLDER_NAME, 'masked_dNBR.tif')) as src:
+        return src.read(1)
+
+
+def test_a_derived_binding_writes_nothing(pipeline):
+    from fire_impacts.bindings import InputBindings
+    from fire_impacts.pre.materialise import materialise_dnbr
+    before = _dnbr(pipeline['ev']).copy()
+    assert materialise_dnbr(pipeline['ev'], InputBindings()) is None
+    assert np.array_equal(_dnbr(pipeline['ev']), before, equal_nan=True)
+
+
+def test_a_constant_binding_is_written_on_the_stored_scale(restore_dnbr):
+    """The units the user quotes are converted to the stored convention,
+    so a scalar given on the 0-1000 scale does not land 1000x out."""
+    from fire_impacts.bindings import Constant, InputBindings
+    from fire_impacts.pre.materialise import materialise_dnbr
+    ev = restore_dnbr
+    materialise_dnbr(ev, InputBindings(
+        dnbr=Constant(value=300, units='dnbr_x1000')))
+    values = _dnbr(ev)
+    finite = values[np.isfinite(values)]
+    assert finite.size
+    assert np.allclose(finite, 0.3)
+
+
+def test_the_domain_selects_which_cells_are_filled(restore_dnbr):
+    from fire_impacts.bindings import Constant, InputBindings
+    from fire_impacts.pre.materialise import materialise_dnbr
+    ev = restore_dnbr
+    counts = {}
+    for domain in ('catchment', 'dem_valid'):
+        materialise_dnbr(ev, InputBindings(
+            dnbr=Constant(value=0.3, units='dnbr', domain=domain)))
+        counts[domain] = int(np.isfinite(_dnbr(ev)).sum())
+    # The catchment boundary is a subset of the valid DEM extent, so the
+    # domain is a real choice rather than a label.
+    assert counts['catchment'] < counts['dem_valid']
+
+
+def test_a_missing_mask_layer_fails_rather_than_falling_back(restore_dnbr):
+    """Falling back to the whole catchment is exactly the 'lakes and rock
+    burned too' error the domain exists to prevent."""
+    from fire_impacts.bindings import Constant, InputBindings
+    from fire_impacts.pre.materialise import materialise_dnbr
+    with pytest.raises(FileNotFoundError, match='does not exist yet'):
+        materialise_dnbr(restore_dnbr, InputBindings(
+            dnbr=Constant(value=0.3, units='dnbr',
+                          domain='mask:FireSeverity/nope.tif')))
+
+
+def test_a_supplied_raster_is_aligned_and_rescaled(restore_dnbr, tmp_path):
+    from fire_impacts.bindings import FromFile, InputBindings
+    from fire_impacts.pre.materialise import materialise_dnbr
+    ev = restore_dnbr
+    source = tmp_path / 'supplied.tif'
+    with rasterio.open(ev.catchment_path('Topography', 'DEM.tif')) as dem:
+        meta = dem.meta.copy()
+    meta.update(dtype='float32', count=1, nodata=np.nan)
+    with rasterio.open(source, 'w', **meta) as dst:
+        dst.write(np.full((meta['height'], meta['width']), 450.0,
+                          dtype='float32'), 1)
+    materialise_dnbr(ev, InputBindings(
+        dnbr=FromFile(path=str(source), units='dnbr_x1000')))
+    assert np.nanmax(_dnbr(ev)) == pytest.approx(0.45)
+
+
+def test_an_unpinned_synthetic_seed_is_recorded(restore_dnbr):
+    """A record saying random_seed=None could never reproduce the raster
+    sitting beside it, so the resolver draws a seed and records it."""
+    from fire_impacts.bindings import InputBindings, SyntheticFire
+    from fire_impacts.pre.materialise import (
+        materialise_dnbr, read_binding_record)
+    ev = restore_dnbr
+    record = materialise_dnbr(ev, InputBindings(dnbr=SyntheticFire()))
+    assert record['effective_seed'] is not None
+    assert record['binding']['random_seed'] is None
+    assert read_binding_record(ev) == record
+
+
+def test_the_recorded_seed_reproduces_the_raster(restore_dnbr):
+    """The point of recording the effective seed: replaying it must give
+    back the same raster, or the record is decoration."""
+    from fire_impacts.bindings import InputBindings, SyntheticFire
+    from fire_impacts.pre.materialise import materialise_dnbr
+    ev = restore_dnbr
+    drawn = materialise_dnbr(ev, InputBindings(dnbr=SyntheticFire()))
+    replayed = materialise_dnbr(ev, InputBindings(
+        dnbr=SyntheticFire(random_seed=drawn['effective_seed'])))
+    assert replayed['digest'] == drawn['digest']
+
+
+def test_the_record_digests_the_written_raster(restore_dnbr):
+    """Hashing the output, not the inputs: a path can change under you
+    and a seed of None describes no particular draw."""
+    from fire_impacts.bindings import Constant, InputBindings
+    from fire_impacts.pre.materialise import materialise_dnbr
+    ev = restore_dnbr
+    a = materialise_dnbr(ev, InputBindings(
+        dnbr=Constant(value=0.3, units='dnbr')))
+    b = materialise_dnbr(ev, InputBindings(
+        dnbr=Constant(value=0.4, units='dnbr')))
+    assert a['digest'].startswith('sha256:')
+    assert a['digest'] != b['digest']
+
+
+def test_a_uniform_dnbr_is_reported_as_degenerate(restore_dnbr, caplog):
+    """Not an error — a uniform severity scenario is legitimate — but the
+    downstream splits become all-or-nothing and look like faults."""
+    from fire_impacts.bindings import Constant, InputBindings
+    from fire_impacts.pre.materialise import materialise_dnbr
+    with caplog.at_level('WARNING'):
+        materialise_dnbr(restore_dnbr, InputBindings(
+            dnbr=Constant(value=300, units='dnbr_x1000')))
+    assert 'dNBR is uniform' in caplog.text
+    assert 'high- and low-severity' in caplog.text
+
+
+def test_bindings_resolve_through_the_persisted_layers(pipeline):
+    from fire_impacts.bindings import Constant, Derived
+    ev, proj, catchment = pipeline['ev'], pipeline['proj'], pipeline['catchment']
+    try:
+        assert isinstance(ev.bindings().dnbr, Derived)
+        proj.set_catchment_parameter_overrides(catchment, {})
+        ev.set_event_binding_overrides(
+            {'dnbr': {'source': 'constant', 'value': 300,
+                      'units': 'dnbr_x1000'}})
+        resolved = ev.bindings().dnbr
+        assert isinstance(resolved, Constant)
+        assert resolved.to_stored_scale() == pytest.approx(0.3)
+    finally:
+        ev.set_event_binding_overrides({})
+
+
 # --- Layer scoping -------------------------------------------------------
 
 def test_catchment_scope_layers_are_fire_independent(pipeline):

@@ -501,6 +501,57 @@ class RunContext:
         self._update_event_json({'parameters': data})
         return data
 
+    # -- Input bindings ------------------------------------------------------
+
+    def event_binding_overrides(self) -> dict:
+        """Return this event's input bindings from event.json."""
+        return self._read_event_json().get('bindings', {})
+
+    def set_event_binding_overrides(self, bindings) -> dict:
+        """Persist event-scope input bindings to event.json.
+
+        Parameters:
+        - bindings: an InputBindings instance, or a nested dict of
+          {input: {source: ..., ...}}.
+
+        Validated before writing, and merged into event.json alongside
+        the recovery breakpoints and parameter overrides.
+        """
+        from .bindings import InputBindings
+
+        if isinstance(bindings, InputBindings):
+            data = bindings.to_dict()
+        else:
+            data = dict(bindings or {})
+            InputBindings.from_dict(data)   # validate
+        self._update_event_json({'bindings': data})
+        return data
+
+    def bindings(self):
+        """Resolve this context's input bindings.
+
+        Merges the project, catchment and event layers, most specific
+        winning. Unlike :meth:`parameters` there is deliberately no
+        call-site layer: resolving a binding writes a raster, so an
+        override at simulation time would either rewrite a preprocessing
+        artefact mid-run or be silently ignored. Bindings are applied at
+        exactly one point, by the function that materialises them.
+
+        Returns:
+        - An :class:`fire_impacts.bindings.InputBindings`.
+        """
+        from .bindings import InputBindings
+
+        merged: dict = {}
+        for data in (
+            self.project.binding_overrides(),
+            self.project.catchment_binding_overrides(self.catchment),
+            self.event_binding_overrides() if self.event else {},
+        ):
+            for name, binding in (data or {}).items():
+                merged[name] = binding
+        return InputBindings.from_dict(merged)
+
     # -- Catchment-scope overrides (delegate to the project store) ----------
 
     def catchment_parameter_overrides(self) -> dict:

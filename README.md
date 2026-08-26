@@ -274,6 +274,53 @@ Writing one to the wrong file raises, and the error names the file to use
 instead. A one-off `ctx.parameters(...)` override is not restricted this way —
 it is explicit, transient, and recorded as such.
 
+#### Substituting an input
+
+Sometimes you want to drive the model with something other than the real
+data — a scenario run ("what if this catchment burned at high severity"), a
+supplied raster, or a uniform value. That is an **input binding**, which is
+kept separate from calibration parameters: a parameter says *what
+coefficient the model uses*, a binding says *where an input comes from*.
+
+Bindings live under a `"bindings"` key in the same files as parameters, and
+resolve project → catchment → event. dNBR is the only bindable input today:
+
+```json
+{
+  "bindings": {
+    "dnbr": { "source": "synthetic", "severity": "high" }
+  }
+}
+```
+
+| Source | Meaning |
+|---|---|
+| `derived` | the normal pipeline (default) |
+| `constant` | a uniform value; needs `units`, optional `domain` |
+| `file` | a raster you supply; needs `units` |
+| `synthetic` | sampled from a reference fire's dNBR distribution |
+
+`units` is **required** for `constant` and `file` — either `"dnbr"` (the
+stored band-ratio difference) or `"dnbr_x1000"` (the conventional scale
+thresholds are quoted on). The two differ by 1000×, and nothing about a
+value or a file reveals which it is.
+
+`domain` decides which cells a constant fills: `catchment`, `dem_valid`, or
+`mask:<section>/<file>` to borrow an existing layer's valid cells. The
+default fills the whole catchment, which for dNBR asserts that lakes and
+bare rock burned too.
+
+A binding is resolved **once**, at preprocessing time, by writing a real
+raster to the standard path — so everything downstream is unchanged and the
+input can be opened in QGIS. Resolving writes a `dnbr_binding.json` beside
+the raster recording the binding, the effective random seed, and the
+content hash of what was written.
+
+```python
+from fire_impacts.pre.materialise import materialise_dnbr
+materialise_dnbr(ctx)      # applies whatever the layers resolve to
+```
+
 #### A note on dNBR scale
 
 dNBR is **stored** as the raw band-ratio difference (pre-fire NBR minus

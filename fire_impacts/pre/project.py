@@ -214,6 +214,30 @@ class FireImpactsProject(object):
         )
 
     ###########################################################################
+    def binding_overrides(self) -> dict:
+        """
+        Return project-scope input bindings from parameters.json.
+        ----------------------------------------------------------------
+        Notes:
+        - Bindings share the file with parameters, under a separate
+          "bindings" key: they are the same kind of user-authored
+          configuration and splitting them across two files would mean
+          two places to look.
+        ----------------------------------------------------------------
+        """
+        return self._read_parameter_overrides(
+            self._parameters_fn()).get('bindings', {})
+
+    ###########################################################################
+    def catchment_binding_overrides(self, catchment: str) -> dict:
+        """
+        Return catchment-scope input bindings.
+        ----------------------------------------------------------------
+        """
+        return self._read_parameter_overrides(
+            self._catchment_parameters_fn(catchment)).get('bindings', {})
+
+    ###########################################################################
     def _catchment_parameters_fn(self, catchment: str):
         """
         Return the path to a catchment's parameters.json.
