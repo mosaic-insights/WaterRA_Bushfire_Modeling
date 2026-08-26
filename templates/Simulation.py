@@ -167,7 +167,8 @@ recorders = recorder_factory(ctx, rain_seq.index[0], rain_seq.index[-1])
 #
 # > **Status:** `erosion` is **live** — the RUSLE P factor, the dNBR
 # > severity split and the kinetic-energy rate all take effect here.
-# > `debris` is declared and recorded but not yet consumed. The
+# > `debris` is partly wired — its dNBR cutoff and lookup table take
+# > effect, its erosion/deposition coefficients do not yet. The
 # > preprocessing groups are live too, so the layers this run reads
 # > already reflect any overrides you set in PrepareData.
 

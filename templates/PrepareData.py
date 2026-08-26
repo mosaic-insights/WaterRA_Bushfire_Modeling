@@ -331,11 +331,13 @@ proj.plot_catchment_raster('Soils', 'Aridity')
 # tuning for your region. They are separate from unit conversions and from the
 # fixed coefficients of published equations, which are not user-editable.
 #
-# > **Status:** wiring is landing group by group. `fire_adjustment`,
-# > `delivery`, `topography` and `erosion` are **live** — changing them
-# > changes the layers the next cells build (and, for `erosion`, the
-# > simulation results). `debris` and `severity` are declared and
-# > recorded but not yet consumed.
+# > **Status:** every group except `debris` is live — changing it changes
+# > the layers the next cells build (and, for `erosion`, the simulation
+# > results). `debris` is partly wired: its dNBR cutoff and lookup table
+# > take effect, its erosion/deposition coefficients do not yet.
+# >
+# > `severity` is live too, so set it before running the fire-severity
+# > cell — re-running that invalidates every layer downstream of the dNBR.
 #
 # > **Set these BEFORE running the cells below.** Changing a parameter does
 # > not rebuild anything by itself — if you change one after building the

@@ -521,6 +521,73 @@ def test_a_deprecated_p_factor_kwarg_still_works_and_warns(pipeline):
     assert np.allclose(half[finite] / base[finite], 0.5)
 
 
+# --- Topography parameters (phase 5) -------------------------------------
+
+def test_the_headwater_threshold_reaches_the_delineation(pipeline):
+    """headwater_threshold_m2 was declared and recorded but unconsumed —
+    extract_headwaters still read the module constant, so a user could
+    set it, see it in the provenance record, and get no effect."""
+    prep = pipeline['prep']
+    try:
+        base = topography.extract_headwaters(prep)
+        coarser = topography.extract_headwaters(
+            prep,
+            params=prep.parameters(
+                topography__headwater_threshold_m2=60000),
+        )
+        # A larger contributing-area threshold means fewer, larger
+        # headwaters.
+        assert len(coarser) < len(base)
+    finally:
+        # The fixture's other tests read these layers.
+        topography.extract_headwaters(prep)
+
+
+def test_a_deprecated_threshold_kwarg_still_works_and_warns(pipeline):
+    prep = pipeline['prep']
+    try:
+        with pytest.warns(DeprecationWarning,
+                          match='topography__headwater_threshold_m2'):
+            coarser = topography.extract_headwaters(prep, threshold_m2=60000)
+        assert len(coarser) < len(topography.extract_headwaters(prep))
+    finally:
+        topography.extract_headwaters(prep)
+
+
+def test_catchment_provenance_merges_across_producers(pipeline):
+    """extract_headwaters and compute_adjusted_k_c both write catchment
+    scope. Each records only the groups it consumed, so the later run
+    must not erase what the earlier one recorded."""
+    prep = pipeline['prep']
+    try:
+        topography.extract_headwaters(
+            prep,
+            params=prep.parameters(
+                topography__headwater_threshold_m2=60000),
+        )
+        record = prep.read_provenance(scope='catchment')
+        # Its own group is updated...
+        assert record.parameters.topography.headwater_threshold_m2 == 60000
+        assert record.sources['topography.headwater_threshold_m2'] == 'call'
+        # ...and the groups written by compute_adjusted_k_c survive.
+        assert 'delivery.max_sdr' in record.sources
+        assert record.parameters.delivery.max_sdr == \
+            ModelParameters().delivery.max_sdr
+        # The digest stored in the file must describe the merged values,
+        # not the ones the earlier producer wrote. Read the raw JSON:
+        # ParameterRecord.digest() recomputes from the parsed values, so
+        # it cannot detect a stale stored digest.
+        import json
+        with open(prep.catchment_path(c.PROVENANCE_FILE_NAME)) as f:
+            raw = json.load(f)
+        assert raw['digest'] == record.parameters.digest()
+        assert raw['values']['topography'][
+            'headwater_threshold_m2'] == 60000
+        assert 'delivery' in raw['values']
+    finally:
+        topography.extract_headwaters(prep)
+
+
 # --- Layer scoping -------------------------------------------------------
 
 def test_catchment_scope_layers_are_fire_independent(pipeline):

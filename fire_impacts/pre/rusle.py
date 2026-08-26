@@ -243,7 +243,8 @@ def compute_adjusted_k_c(
     # file on every event and make its digest flip on purely event-scoped
     # changes — a false staleness positive on every event switch.
     ctx.write_provenance(
-        record.restricted_to_scope('catchment'), scope='catchment')
+        record.restricted_to_scope('catchment'), scope='catchment',
+        groups=('fire_adjustment', 'delivery', 'topography'))
     ctx.write_provenance(record, scope='event')
 
 def _warn_on_invalid_aridity(AI, nodata_mask):

@@ -622,7 +622,8 @@ class RunContext:
             )
         return as_record(params)
 
-    def write_provenance(self, record, *, scope: str, section=None) -> str:
+    def write_provenance(self, record, *, scope: str, section=None,
+                         groups=None) -> str:
         """Write a resolved parameter record beside the outputs it produced.
 
         Parameters:
@@ -631,6 +632,12 @@ class RunContext:
           step wrote to.
         - section: for run scope, the results sub-folder (e.g. 'Results').
           Ignored for catchment and event scope, which have no sections.
+        - groups: parameter groups this step actually consumed. When
+          given, only those groups are updated and the rest of an
+          existing record is preserved — several steps write catchment
+          scope (extract_headwaters, compute_lsi, the base C/K build) and
+          the last to run would otherwise erase what the others recorded.
+          None writes the whole record.
 
         Returns:
         - The path written.
@@ -644,9 +651,27 @@ class RunContext:
           record exists to preserve.
         """
         path = self._provenance_path(scope, section)
+        data = record.to_dict()
+        if groups is not None:
+            existing = self.read_provenance(scope=scope, section=section)
+            if existing is not None:
+                merged = existing.to_dict()
+                for group in groups:
+                    if group in data['values']:
+                        merged['values'][group] = data['values'][group]
+                prefixes = tuple(f'{g}.' for g in groups)
+                merged['sources'] = {
+                    **{k: v for k, v in merged['sources'].items()
+                       if not k.startswith(prefixes)},
+                    **{k: v for k, v in data['sources'].items()
+                       if k.startswith(prefixes)},
+                }
+                merged['resolved_at'] = data['resolved_at']
+                merged['digest'] = _digest_of(merged['values'])
+                data = merged
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as f:
-            json.dump(record.to_dict(), f, indent=2, default=str)
+            json.dump(data, f, indent=2, default=str)
         logger.info('Wrote parameter provenance to %s', path)
         return path
 
@@ -735,6 +760,12 @@ class RunContext:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _digest_of(values):
+    """Digest a plain values dict (used when merging provenance records)."""
+    from .params import _digest
+    return _digest(values)
+
 
 def _check_layer_scope(data, layer, where):
     """Scope-check one persisted override layer, naming the file on failure."""
