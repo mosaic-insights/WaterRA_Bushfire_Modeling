@@ -53,6 +53,51 @@ The library supports two different modes:
 
 We anticipated that the high level interface will suit most people, most of the time.
 
+### Starting a project, and keeping its notebooks current
+
+The `fire-impacts` command sets up a project directory and fills it with the starter notebooks:
+
+```
+fire-impacts new ./my-project
+```
+
+That creates the project folder structure and copies each template into it as a paired jupytext script and notebook (`PrepareData.py` + `PrepareData.ipynb`, and so on). Start with `PrepareData.ipynb`.
+
+The notebooks are yours once copied — you are expected to edit them. When a newer version of the library ships improved templates, pull them into an existing project with:
+
+```
+fire-impacts update ./my-project
+```
+
+`update` will not quietly discard your work. Before overwriting a notebook you have edited, it copies both halves of the pair into a dated folder:
+
+```
+my-project/
+└── notebook_backups/
+    └── 20260826-124505/
+        ├── PrepareData.py
+        └── PrepareData.ipynb
+```
+
+Notebooks you have *not* edited are simply replaced — there is nothing to keep — and notebooks that already match the shipped template are left untouched.
+
+To see where a project stands without changing anything:
+
+```
+fire-impacts status ./my-project      # per-notebook: up to date / out of date / edited here
+fire-impacts update ./my-project --dry-run
+```
+
+Useful options for `update`:
+
+| Option | Effect |
+|--------|--------|
+| `--only-new` | Add notebooks the project doesn't have yet; leave every existing one alone |
+| `--dry-run` | Report what would change, change nothing |
+| `--no-backup` | Overwrite edited notebooks without keeping a copy |
+
+**How "edited" is decided.** When notebooks are installed, their content is fingerprinted into `.fire_impacts_notebooks.json` in the project; a file that still matches its fingerprint has not been touched. Fingerprints cover cell *contents* only — outputs, execution counts and kernel metadata are excluded, so running a notebook does not make it look edited. In a project created before this file existed, anything differing from the current template is assumed to be your work and is backed up.
+
 ### Data requirements
 
 The following table lists the key data requirements for the library. The user must provide a catchment boundary and have local access to the DEM-H for their area. The hihg level interface automatically retrieves the other data sources from published web services.
@@ -522,10 +567,12 @@ The core library code is stored in `fire_impacts` directory. The code repository
 | `<top-level>` | |
 | `├── data` | Common parameter files (eg concentrations of pollutants in ash and debris) |
 | `├── examples` | Worked example notebooks (jupytext `.py` + `.ipynb`) |
-| `├── templates` | Copyable starter notebooks for a new study (PrepareData, Simulation, SimulationEnsemble, SourceIntegration) |
 | `├── test_data` | Small spatial datasets to support examples and unit tests |
 | `└── fire_impacts` | Library code |
 | `    ├── context.py` | `RunContext` + `EventDefinition` (project / catchment / event / ensemble addressing) |
+| `    ├── cli.py` | The `fire-impacts` command (`new`, `update`, `status`) |
+| `    ├── notebooks.py` | Copying the starter notebooks into a project, and backing up edited ones |
+| `    ├── templates` | Copyable starter notebooks for a new study (PrepareData, Simulation, SimulationEnsemble, SourceIntegration). Inside the package so they ship with an install |
 | `    ├── pre` | Data pre-processing (topography, severity, soils, RUSLE factors) |
 | `    ├── sim` | Simulation (RUSLE erosion, debris flow, ensembles, results I/O) |
 | `    ├── stochastic` | Stochastic rainfall replicate generation |

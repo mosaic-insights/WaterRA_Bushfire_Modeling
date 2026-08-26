@@ -61,9 +61,22 @@ zip-safe = false
 
 [tool.setuptools.packages.find]
 include = ["fire_impacts*"]
+# The starter notebooks live inside the package so that they survive
+# installation, but they are jupytext scripts, not importable modules -
+# they ship as package data below, not as a package.
+exclude = ["fire_impacts.templates"]
 
 [tool.setuptools.package-data]
-fire_impacts = ["data/*.csv", "data/*.tsv"]
+# templates/*.py are the starter notebooks copied into a user's project
+# by `fire-impacts new` and `fire-impacts update`; without them, both
+# commands fail on an installed (non-editable) copy. The paired .ipynb
+# files are generated from these on copy, so they are not shipped.
+fire_impacts = [
+    "data/*.csv",
+    "data/*.tsv",
+    "templates/*.py",
+    "templates/jupytext.toml",
+    ]
 
 [project.scripts]
 fire-impacts = "fire_impacts.cli:app"
