@@ -443,7 +443,7 @@ len(record.sources_for('default'))
 # %%
 # A digest identifying this exact parameter set, used to detect that derived
 # layers were built with different values than a later run resolves.
-record.digest
+record.digest()
 
 # %% [markdown]
 # ### C- and K-Factors
