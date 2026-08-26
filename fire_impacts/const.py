@@ -138,6 +138,14 @@ DEFAULT_DNBR_SATURATION = 400
 # stand for the foreseeable future.
 DEFAULT_I12_LOOKUP = 'HFlookup_b30pt27.csv'
 
+# Per-element concentrations (mg/kg) multiplied onto the debris sediment
+# mass, and onto the low/high-severity RUSLE loads respectively. Both are
+# regionally variable soil and ash chemistry, so both are selectable on
+# the same terms as the I12 lookup: a bare filename resolves against the
+# packaged tables, a path is used as given.
+DEFAULT_DEBRIS_CONSTITUENTS = 'debris-constituents.csv'
+DEFAULT_ASH_CONSTITUENTS = 'ash_constituents.csv'
+
 # Headwaters with a mean dNBR below this value are excluded from the
 # debris-flow analysis (they are considered insufficiently burnt).
 # Compared against the dNBR_mean column of summary_stats, which is on the

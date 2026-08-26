@@ -39,6 +39,7 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from .const import (
     DEFAULT_DNBR_SATURATION, DEFAULT_DNBR_SEVERITY_THRESHOLD,
+    DEFAULT_ASH_CONSTITUENTS, DEFAULT_DEBRIS_CONSTITUENTS,
     DEFAULT_DEBRIS_DNBR_THRESHOLD, DEFAULT_I12_LOOKUP,
     DEFAULT_KE_RATE_RUSLE2, UNSET,
 )
@@ -258,6 +259,10 @@ class ErosionParams:
     conventional 0-1000 scale — see ``const.DNBR_SCALE``, and read dNBR
     through ``pre.util.read_dnbr_*`` so the comparison is on that scale.
 
+    ``ash_constituents_table`` names the per-element ash concentrations
+    (mg/kg) multiplied onto the low- and high-severity delivered loads.
+    Resolved the same way as the debris tables.
+
     ``kinetic_energy_coefficient`` is the rate constant *k* in the unit
     kinetic-energy relation ``0.29 * [1 - 0.72 * exp(-k * i)]``. It governs
     only how fast energy climbs from the drizzle floor to the asymptote;
@@ -272,11 +277,16 @@ class ErosionParams:
 
     __scope__ = 'run'
 
+    ash_constituents_table: str = DEFAULT_ASH_CONSTITUENTS
     support_practice_factor: float = 1.0
     dnbr_severity_threshold: float = float(DEFAULT_DNBR_SEVERITY_THRESHOLD)
     kinetic_energy_coefficient: float = DEFAULT_KE_RATE_RUSLE2
 
     def __post_init__(self):
+        _require(
+            bool(self.ash_constituents_table),
+            'ash_constituents_table must name a lookup table.',
+        )
         _require(
             0 < self.support_practice_factor <= 1,
             'support_practice_factor (RUSLE P) must be greater than 0 and '
@@ -357,6 +367,7 @@ class DebrisFlowParams:
     dnbr_threshold: float = float(DEFAULT_DEBRIS_DNBR_THRESHOLD)
     num_sim_years: int = 2
     i12_lookup: str = DEFAULT_I12_LOOKUP
+    constituents_table: str = DEFAULT_DEBRIS_CONSTITUENTS
 
     def __post_init__(self):
         _require(
@@ -383,6 +394,10 @@ class DebrisFlowParams:
             bool(self.i12_lookup),
             'i12_lookup must name a lookup table; it is the debris-flow '
             'triggering model and has no meaningful empty value.',
+        )
+        _require(
+            bool(self.constituents_table),
+            'constituents_table must name a lookup table.',
         )
 
 

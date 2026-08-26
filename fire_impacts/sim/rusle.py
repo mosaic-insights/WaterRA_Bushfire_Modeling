@@ -1093,7 +1093,7 @@ def calculate_lumped_rusle(
 
     # Convert the results to a DataFrame and compute constituent loads
     RUSLE_df = pd.DataFrame(daily_erosion)
-    RUSLE_df = compute_particulates(RUSLE_df)
+    RUSLE_df = compute_particulates(RUSLE_df, erosion=erosion)
     RUSLE_df = RUSLE_df.round(1)
     logger.info('Done')
     return RUSLE_df
@@ -1374,7 +1374,8 @@ def generate_rusle_for_feature(
 # Constituent calculations
 # ---------------------------------------------------------------------------
 
-def compute_particulates(rusle_df, constituents_df=None):
+def compute_particulates(rusle_df, constituents_df=None,
+                         erosion: ErosionParams = None):
     """
     Add constituent load columns to a RUSLE results DataFrame.
 
@@ -1385,15 +1386,19 @@ def compute_particulates(rusle_df, constituents_df=None):
     Parameters:
     - rusle_df: DataFrame of RUSLE results containing 'RUSLE_SDR
       (Low severity)' and 'RUSLE_SDR (High severity)' columns.
-    - constituents_df: DataFrame of ash constituent ratios. If None,
-      the built-in ash_constituents.csv package data is used.
+    - constituents_df: DataFrame of ash constituent ratios. Takes
+      precedence over erosion.ash_constituents_table when given.
+    - erosion: ErosionParams naming the table to load when
+      constituents_df is None. Defaults to the package values.
 
     Returns:
     - The input DataFrame with additional columns for each constituent
       load in tonnes.
     """
     if constituents_df is None:
-        constituents_df = load_package_data('ash_constituents.csv')
+        if erosion is None:
+            erosion = ErosionParams()
+        constituents_df = load_package_data(erosion.ash_constituents_table)
 
     # Iterate through each constituent row and compute loads
     for _, row in constituents_df.iterrows():

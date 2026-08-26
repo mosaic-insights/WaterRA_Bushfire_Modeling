@@ -177,6 +177,30 @@ def get_clay_fraction(
 # Debris flow preparation
 # ---------------------------------------------------------------------------
 
+def load_debris_tables(debris: DebrisFlowParams):
+    """
+    Load the two lookup tables the debris-flow model runs on.
+
+    Split out of prep_debris_flow_simulation so the table *selection* is
+    testable without a fully prepared catchment: the prep needs soil clay
+    fractions and the summary-stats condition table before it reaches
+    this point, which put the parameter-to-filename hop out of reach of
+    any test.
+
+    Parameters:
+    - debris: DebrisFlowParams naming the tables. A bare filename
+      resolves against the packaged data; a path is used as given.
+
+    Returns:
+    - (hf_lookup, constituents) DataFrames. I12_crit_mean is rounded to
+      1 dp to match the precision the join expects.
+    """
+    hf_lookup = load_package_data(debris.i12_lookup)
+    hf_lookup[HF_I12_CRIT] = hf_lookup[HF_I12_CRIT].round(1)
+    constituents = load_package_data(debris.constituents_table)
+    return hf_lookup, constituents
+
+
 def prep_debris_flow_simulation(
     ctx: RunContext,
     dnbr_threshold=UNSET,
@@ -270,11 +294,7 @@ def prep_debris_flow_simulation(
                 label, extra_nans, clay_nan_count, slope_nan_count,
             )
 
-    # Load the HF lookup table (I12 critical rainfall thresholds) and
-    # the debris constituent proportions table from package data
-    hf_lookup = load_package_data(p.i12_lookup)
-    hf_lookup['I12_crit_mean'] = hf_lookup['I12_crit_mean'].round(1)
-    debris_lookup = load_package_data('debris-constituents.csv')
+    hf_lookup, debris_lookup = load_debris_tables(p)
 
     # Create the per-event DebrisFlow prep directory if needed
     out_path = ctx.event_path('DebrisFlow')

@@ -64,6 +64,7 @@ EXPECTED_DEFAULTS = {
         "max_slope_length_m": 141.0
     },
     "erosion": {
+        "ash_constituents_table": "ash_constituents.csv",
         "support_practice_factor": 1.0,
         "dnbr_severity_threshold": 400.0,
         "kinetic_energy_coefficient": 0.082
@@ -89,7 +90,8 @@ EXPECTED_DEFAULTS = {
         "rock_bulk_density": 2220.0,
         "dnbr_threshold": 100.0,
         "num_sim_years": 2,
-        "i12_lookup": "HFlookup_b30pt27.csv"
+        "i12_lookup": "HFlookup_b30pt27.csv",
+        "constituents_table": "debris-constituents.csv"
     },
     "severity": {
         "max_cloud_cover": 20.0,
@@ -105,7 +107,7 @@ EXPECTED_DEFAULTS = {
 # The digest of EXPECTED_DEFAULTS. Pinned separately because it also proves
 # the digest is stable across processes, platforms and Python versions —
 # comparing two instances in one process cannot show that.
-EXPECTED_DEFAULT_DIGEST = 'sha256:33ffb05d11382e2f0f7a238076bc65e4c78c36af762aa1d7721d700152f4e852'
+EXPECTED_DEFAULT_DIGEST = 'sha256:a5312eec62cea201bb8ad9069c29f26b689ae57fb5efb0d3fe5b44e3039c8ca7'
 
 
 class TestDefaults:

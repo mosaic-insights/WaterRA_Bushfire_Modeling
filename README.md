@@ -208,8 +208,8 @@ They are grouped by the pipeline stage that consumes them:
 | `fire_adjustment` | fire-adjusted C and K factors, and their recovery rates |
 | `delivery` | sediment delivery ratio and the connectivity index |
 | `topography` | headwater delineation and the LS factor |
-| `erosion` | the RUSLE simulation |
-| `debris` | debris-flow erosion, deposition and triggering |
+| `erosion` | the RUSLE simulation and the ash constituents table |
+| `debris` | debris-flow erosion, deposition, triggering and its lookup tables |
 | `severity` | fire-severity imagery acquisition |
 
 Unit conversions and the fixed coefficients of published equations (the McCool

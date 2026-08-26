@@ -155,11 +155,58 @@ class TestCalcI12CritColumns:
 
 
 class TestTableSelection:
-    """The table is overridable, though no tooling is provided to build
-    an alternative and the packaged default is expected to stand."""
+    """The lookup tables are overridable on the same terms, though no
+    tooling is provided to build alternatives and the packaged defaults
+    are expected to stand."""
 
     def test_the_default_names_the_packaged_table(self):
         assert DebrisFlowParams().i12_lookup == c.DEFAULT_I12_LOOKUP
+
+    def test_every_packaged_table_is_selectable(self):
+        from fire_impacts.params import ErosionParams
+        assert DebrisFlowParams().constituents_table == \
+            c.DEFAULT_DEBRIS_CONSTITUENTS
+        assert ErosionParams().ash_constituents_table == \
+            c.DEFAULT_ASH_CONSTITUENTS
+
+    @pytest.mark.parametrize('name', [
+        c.DEFAULT_I12_LOOKUP,
+        c.DEFAULT_DEBRIS_CONSTITUENTS,
+        c.DEFAULT_ASH_CONSTITUENTS,
+    ])
+    def test_each_default_table_loads(self, name):
+        assert len(load_package_data(name)) > 0
+
+    def test_an_empty_constituents_table_is_rejected(self):
+        from fire_impacts.params import ErosionParams
+        with pytest.raises(ValueError, match='constituents_table'):
+            DebrisFlowParams(constituents_table='')
+        with pytest.raises(ValueError, match='ash_constituents_table'):
+            ErosionParams(ash_constituents_table='')
+
+    def test_compute_particulates_reaches_the_table(self, tmp_path):
+        """It was called bare from calculate_lumped_rusle, so the
+        constituents_df argument existed but could not be supplied — the
+        last of the exposed-but-unreachable parameters."""
+        import inspect
+        import pandas as pd
+        from fire_impacts.params import ErosionParams
+        from fire_impacts.sim.rusle import compute_particulates
+
+        assert 'erosion' in inspect.signature(compute_particulates).parameters
+
+        table = tmp_path / 'ash.csv'
+        packaged = load_package_data(c.DEFAULT_ASH_CONSTITUENTS)
+        packaged.head(1).to_csv(table, index=False)
+        frame = pd.DataFrame({
+            'RUSLE_SDR (Low severity)': [1.0],
+            'RUSLE_SDR (High severity)': [2.0],
+        })
+        few = compute_particulates(
+            frame.copy(),
+            erosion=ErosionParams(ash_constituents_table=str(table)))
+        many = compute_particulates(frame.copy())
+        assert len(few.columns) < len(many.columns)
 
     def test_a_bare_filename_resolves_against_the_package(self):
         assert len(load_package_data(c.DEFAULT_I12_LOOKUP)) > 0
@@ -185,3 +232,58 @@ class TestTableSelection:
             debris__i12_lookup='/data/custom.csv')
         assert ModelParameters.from_dict(
             params.to_dict()).debris.i12_lookup == '/data/custom.csv'
+
+    def test_load_debris_tables_uses_the_configured_names(self, tmp_path):
+        """The parameter-to-filename hop, which prep_debris_flow_simulation
+        buries behind work needing a fully prepared catchment."""
+        from fire_impacts.sim.debris import load_debris_tables
+
+        trimmed = tmp_path / 'few_constituents.csv'
+        load_package_data(c.DEFAULT_DEBRIS_CONSTITUENTS).head(2).to_csv(
+            trimmed, index=False)
+        hf, constituents = load_debris_tables(
+            DebrisFlowParams(constituents_table=str(trimmed)))
+        assert len(constituents) == 2
+        assert len(hf) == len(load_package_data(c.DEFAULT_I12_LOOKUP))
+
+    def test_load_debris_tables_uses_the_configured_lookup(self, tmp_path):
+        from fire_impacts.sim.debris import load_debris_tables
+
+        trimmed = tmp_path / 'few_rows.csv'
+        load_package_data(c.DEFAULT_I12_LOOKUP).head(5).to_csv(
+            trimmed, index=False)
+        hf, _ = load_debris_tables(
+            DebrisFlowParams(i12_lookup=str(trimmed)))
+        assert len(hf) == 5
+
+    def test_the_lumped_path_forwards_the_erosion_group(self, monkeypatch):
+        """calculate_lumped_rusle called compute_particulates bare, so the
+        table could not be reached through it."""
+        from fire_impacts.params import ErosionParams
+        from fire_impacts.sim import rusle as simr
+
+        seen = {}
+
+        def _spy(frame, constituents_df=None, erosion=None):
+            seen['erosion'] = erosion
+            return frame
+
+        monkeypatch.setattr(simr, 'compute_particulates', _spy)
+        monkeypatch.setattr(
+            simr, 'generate_rusle_for_feature',
+            lambda *a, **k: iter(()))
+
+        import geopandas as gpd
+        from shapely.geometry import box
+        subcatchments = gpd.GeoDataFrame(
+            {'geometry': [box(0, 0, 1, 1)]}, crs='EPSG:4326')
+        erosion = ErosionParams(ash_constituents_table='/tmp/mine.csv')
+        simr.calculate_lumped_rusle(
+            subcatchments, None, None, None, None, 1.0, None,
+            erosion=erosion,
+        )
+        assert seen['erosion'] is erosion
+
+
+class _StopEarly(Exception):
+    """Sentinel so a spy can stop a function without running its body."""
