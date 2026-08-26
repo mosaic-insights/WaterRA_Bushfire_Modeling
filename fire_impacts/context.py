@@ -708,7 +708,7 @@ class RunContext:
         return as_record(params)
 
     def write_provenance(self, record, *, scope: str, section=None,
-                         groups=None) -> str:
+                         groups=None, extra=None) -> str:
         """Write a resolved parameter record beside the outputs it produced.
 
         Parameters:
@@ -723,6 +723,10 @@ class RunContext:
           scope (extract_headwaters, compute_lsi, the base C/K build) and
           the last to run would otherwise erase what the others recorded.
           None writes the whole record.
+        - extra: additional top-level keys to store alongside the record,
+          such as the run signature used to detect an overwrite. Kept
+          outside 'values' so the record's digest still describes exactly
+          the parameters.
 
         Returns:
         - The path written.
@@ -754,6 +758,8 @@ class RunContext:
                 merged['resolved_at'] = data['resolved_at']
                 merged['digest'] = _digest_of(merged['values'])
                 data = merged
+        if extra:
+            data = {**data, **extra}
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as f:
             json.dump(data, f, indent=2, default=str)

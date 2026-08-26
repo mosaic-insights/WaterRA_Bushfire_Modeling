@@ -167,3 +167,107 @@ def check_layers_fresh(layers, record, strict=True):
         if not check_layer_freshness(path, record, *paths, strict=strict):
             stale.append(path)
     return stale
+
+
+# ---------------------------------------------------------------------------
+# Run outputs
+# ---------------------------------------------------------------------------
+
+def layer_digests(layers):
+    """
+    Return {path: digest} for the tagged layers a run read.
+
+    A run's outputs depend on two things: the parameters the run itself
+    consumed, and the layers it was given. Recording only the former
+    would let a run overwrite outputs produced from *rebuilt* input
+    layers, since its own parameters would be unchanged.
+    """
+    import os
+
+    out = {}
+    for path, _paths in layers:
+        if not os.path.exists(path):
+            continue
+        tagged = read_parameter_tags(path)
+        out[os.path.basename(path)] = (
+            tagged['digest'] if tagged else 'untagged')
+    return out
+
+
+def run_signature(record, layers, *paths):
+    """
+    Describe what a run's outputs depend on.
+
+    Parameters:
+    - record: the ParameterRecord the run resolved.
+    - layers: (path, consumed_paths) pairs the run read.
+    - paths: the parameter groups the run itself consumed.
+
+    Returns:
+    - Dict with 'parameters' and 'inputs', JSON-serialisable.
+    """
+    return {
+        'parameters': record.parameters.subset(*paths),
+        'inputs': layer_digests(layers),
+    }
+
+
+def describe_signature_change(previous, current):
+    """Return a human-readable account of how two run signatures differ."""
+    reasons = []
+    reasons += [
+        f'{leaf}: was {was!r}, now {now!r}'
+        for leaf, was, now in _differing_leaves(
+            previous.get('parameters', {}), current.get('parameters', {}))
+    ]
+    old_inputs = previous.get('inputs', {})
+    new_inputs = current.get('inputs', {})
+    for name in sorted(set(old_inputs) | set(new_inputs)):
+        if old_inputs.get(name) != new_inputs.get(name):
+            reasons.append(
+                f'input layer {name} was rebuilt since those results were '
+                f'written'
+            )
+    return '; '.join(reasons) or 'the recorded inputs differ'
+
+
+def check_run_not_overwritten(path, signature, *, strict=True):
+    """
+    Refuse to replace results produced under a different configuration.
+
+    Parameters:
+    - path: the run's provenance record for this results section.
+    - signature: the current :func:`run_signature`.
+    - strict: raise on a mismatch (the default); False logs and continues.
+
+    Returns:
+    - True when the section is absent or matches, False on a mismatch
+      when not strict.
+
+    Notes:
+    - Results directories are keyed by (event, ensemble) only, so a
+      second run of the same pair replaces the first. Without this the
+      replacement is silent, and a parameter sweep quietly destroys every
+      result but the last.
+    """
+    import json
+    import os
+
+    if not os.path.exists(path):
+        return True
+    with open(path) as f:
+        stored = json.load(f)
+    previous = stored.get('run_signature')
+    if previous is None or previous == signature:
+        return True
+
+    message = (
+        f'{os.path.dirname(path)} already holds results produced under a '
+        f'different configuration — {describe_signature_change(previous, signature)}. '
+        f'Re-running would replace them. Pass overwrite=True to do that '
+        f'deliberately, or results_section= to write alongside them.'
+    )
+    if strict:
+        raise ValueError(message)
+    logger.warning('%s', message)
+    return False

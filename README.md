@@ -308,6 +308,33 @@ the raster being copied out of the project.
 > re-derive dNBR, or hand-edit a C factor and every digest still matches.
 > It is one edge of a dependency graph, not the whole of it.
 
+#### Re-running over existing results
+
+A run directory is keyed by `(event, ensemble)`, so a second run of the same
+pair lands on top of the first. Results carry a signature — the parameters
+the run consumed, plus the digests of the input layers it read — and a run
+that would replace results produced under a different configuration
+**raises**:
+
+```
+ValueError: .../Runs/2019_fire/historical/Results already holds results
+produced under a different configuration — erosion.support_practice_factor:
+was 1.0, now 0.5. Re-running would replace them. Pass overwrite=True to do
+that deliberately, or results_section= to write alongside them.
+```
+
+An identical re-run is idempotent and needs no escape. Rebuilt input layers
+count as a change even when the run's own parameters are untouched, since
+the outputs depend on both.
+
+To keep several variants, give each its own section:
+
+```python
+rusle.run_usle_simulation(ctx, rain, recorders=recorders,
+                          results_section='Results_maxsdr05',
+                          params=ctx.parameters(delivery__max_sdr=0.5))
+```
+
 #### Substituting an input
 
 Sometimes you want to drive the model with something other than the real

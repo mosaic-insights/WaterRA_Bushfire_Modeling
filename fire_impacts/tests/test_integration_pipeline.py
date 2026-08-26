@@ -957,6 +957,111 @@ def test_the_default_path_does_not_warn(restore_c_factor):
             compute_lsi_factor=False, compute_sdr=False)
 
 
+# --- Overwriting results (finding H) -------------------------------------
+
+def _rusle_run(run, rain, **kwargs):
+    factory = simr.default_rusle_recorders(
+        grid_variables=('RUSLE',), grid_fns=('sum',),
+        grid_timesteps=('total',), include_timeseries=True)
+    return simr.run_usle_simulation(
+        run, rain,
+        recorders=factory(run, rain.index[0], rain.index[-1]), **kwargs)
+
+
+def test_an_identical_rerun_is_allowed(pipeline):
+    """Re-running the same configuration is idempotent, so it must not
+    need an escape hatch — otherwise every ordinary re-run needs one."""
+    run, rain = pipeline['run'], pipeline['rain']
+    _rusle_run(run, rain)
+    _rusle_run(run, rain)
+
+
+def test_a_different_configuration_refuses_to_overwrite(pipeline):
+    """Run directories are keyed by (event, ensemble) only, so a second
+    run lands on top of the first. A parameter sweep would otherwise
+    destroy every result but the last, silently."""
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    _rusle_run(run, rain)
+    with pytest.raises(ValueError, match='different configuration'):
+        _rusle_run(run, rain, params=ev.parameters(
+            erosion__support_practice_factor=0.5))
+
+
+def test_the_refusal_names_what_changed(pipeline):
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    _rusle_run(run, rain)
+    with pytest.raises(ValueError) as excinfo:
+        _rusle_run(run, rain, params=ev.parameters(
+            erosion__support_practice_factor=0.5))
+    message = str(excinfo.value)
+    assert 'erosion.support_practice_factor' in message
+    assert 'was 1.0, now 0.5' in message
+    # And says what to do about it.
+    assert 'overwrite=True' in message
+    assert 'results_section=' in message
+
+
+def test_overwrite_proceeds_deliberately(pipeline):
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    _rusle_run(run, rain)
+    results = _rusle_run(
+        run, rain, overwrite=True,
+        params=ev.parameters(erosion__support_practice_factor=0.5))
+    assert 'RUSLE_sum_total' in results
+    # Restore the fixture's results for the tests that read them.
+    _rusle_run(run, rain, overwrite=True)
+
+
+def test_a_separate_section_writes_alongside(pipeline):
+    """The alternative to overwriting: keep both."""
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    _rusle_run(run, rain)
+    _rusle_run(run, rain, results_section='Results_probe_sweep',
+               params=ev.parameters(erosion__support_practice_factor=0.5))
+    assert Path(run.run_path(
+        'Results_probe_sweep', c.PROVENANCE_FILE_NAME)).exists()
+    assert Path(run.run_path(
+        c.RESULTS_FOLDER_NAME, c.PROVENANCE_FILE_NAME)).exists()
+
+
+def test_rebuilt_input_layers_count_as_a_change(pipeline):
+    """A run's outputs depend on the layers it was given as well as its
+    own parameters. Comparing only the parameters would let a run built
+    from rebuilt inputs silently replace one built from the old ones."""
+    ev, run, rain = pipeline['ev'], pipeline['run'], pipeline['rain']
+    _rusle_run(run, rain, overwrite=True)
+    try:
+        rusle.compute_adjusted_k_c(
+            ev, c_factor_fn=_data(C_FACTOR_FILE),
+            k_factor_fn=_data(K_FACTOR_FILE),
+            recovery_breakpoints=BREAKPOINTS,
+            params=ev.parameters(delivery__max_sdr=0.5))
+        with pytest.raises(ValueError, match='was rebuilt'):
+            _rusle_run(run, rain,
+                       params=ev.parameters(delivery__max_sdr=0.5))
+    finally:
+        rusle.compute_adjusted_k_c(
+            ev, c_factor_fn=_data(C_FACTOR_FILE),
+            k_factor_fn=_data(K_FACTOR_FILE),
+            recovery_breakpoints=BREAKPOINTS)
+        _rusle_run(run, rain, overwrite=True)
+
+
+def test_the_signature_is_stored_beside_the_results(pipeline):
+    import json
+    run, rain = pipeline['run'], pipeline['rain']
+    _rusle_run(run, rain, overwrite=True)
+    with open(run.run_path(
+            c.RESULTS_FOLDER_NAME, c.PROVENANCE_FILE_NAME)) as f:
+        stored = json.load(f)
+    assert 'run_signature' in stored
+    assert 'erosion' in stored['run_signature']['parameters']
+    assert stored['run_signature']['inputs']
+    # Kept outside 'values', so the record's digest still describes
+    # exactly the parameters and nothing else.
+    assert 'run_signature' not in stored['values']
+
+
 # --- Layer scoping -------------------------------------------------------
 
 def test_catchment_scope_layers_are_fire_independent(pipeline):

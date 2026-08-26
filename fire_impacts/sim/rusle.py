@@ -48,7 +48,8 @@ from fire_impacts.pre.util import (
     read_aligned, read_dnbr_aligned, read_raster)
 from fire_impacts.const import UNSET
 from fire_impacts.params import ErosionParams, deprecated_overrides
-from fire_impacts.provenance import check_layers_fresh
+from fire_impacts.provenance import (
+    check_layers_fresh, check_run_not_overwritten, run_signature)
 from fire_impacts.util import load_package_data, get_zonal_stats
 logger = logging.getLogger(__name__)
 
@@ -797,6 +798,7 @@ def run_usle_simulation(
     results_section: str = None,
     params=None,
     allow_stale: bool = False,
+    overwrite: bool = False,
 ):
     """
     Run the USLE simulation for the context and record outputs.
@@ -871,10 +873,19 @@ def run_usle_simulation(
     # it resolves. The layers are produced by a separate preprocessing
     # step, so nothing otherwise connects a parameter change to the
     # rasters built before it.
-    check_layers_fresh(
-        _layers_read_by(ctx, segments, use_fire_adjusted),
-        record, strict=not allow_stale,
-    )
+    layers = _layers_read_by(ctx, segments, use_fire_adjusted)
+    check_layers_fresh(layers, record, strict=not allow_stale)
+
+    # Refuse to land on top of results produced under a different
+    # configuration. The signature covers this run's own parameters and
+    # the digests of the layers it read, so rebuilt inputs count as a
+    # change even when the run's parameters are untouched.
+    signature = run_signature(record, layers, 'erosion')
+    if save_rasters or save_timeseries:
+        check_run_not_overwritten(
+            ctx.run_path(results_section, c.PROVENANCE_FILE_NAME),
+            signature, strict=not overwrite,
+        )
 
     # Reset each recorder once so they accumulate across every segment.
     for recorder in recorders.values():
@@ -961,7 +972,10 @@ def run_usle_simulation(
     # describe themselves — they resolve the same parameters today, but
     # a caller can pass params= to only one of them.
     if save_rasters or save_timeseries:
-        ctx.write_provenance(record, scope='run', section=results_section)
+        ctx.write_provenance(
+            record, scope='run', section=results_section,
+            extra={'run_signature': signature},
+        )
 
     # Attach a pointer to all the RUSLE parameters used for these calcs
     results['params'] = grids
