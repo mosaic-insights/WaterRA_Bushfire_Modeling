@@ -39,7 +39,8 @@ from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from .const import (
     DEFAULT_DNBR_SATURATION, DEFAULT_DNBR_SEVERITY_THRESHOLD,
-    DEFAULT_DEBRIS_DNBR_THRESHOLD, DEFAULT_KE_RATE_RUSLE2, UNSET,
+    DEFAULT_DEBRIS_DNBR_THRESHOLD, DEFAULT_I12_LOOKUP,
+    DEFAULT_KE_RATE_RUSLE2, UNSET,
 )
 
 __all__ = [
@@ -329,6 +330,16 @@ class DebrisFlowParams:
     ``num_sim_years`` is coupled to the Year1/Year2 structure of the I12
     critical-intensity lookup table, so raising it above 2 has no effect
     until that table is generalised.
+
+    ``i12_lookup`` names the hydrogeomorphic-hazard table that maps
+    (aridity, dNBR, years since fire, slope gradient) onto a critical
+    12-minute rainfall intensity — the debris-flow triggering model
+    itself. A bare filename resolves against the packaged tables; any
+    path containing a separator is used as given, so an alternative table
+    can be supplied without repackaging. It is a filename rather than a
+    DataFrame because parameters have to survive a JSON round trip and
+    appear in the provenance digest; callers holding a DataFrame can pass
+    it straight to ``debris_flow_load``.
     """
 
     __scope__ = 'run'
@@ -345,6 +356,7 @@ class DebrisFlowParams:
     rock_bulk_density: float = 2220.0
     dnbr_threshold: float = float(DEFAULT_DEBRIS_DNBR_THRESHOLD)
     num_sim_years: int = 2
+    i12_lookup: str = DEFAULT_I12_LOOKUP
 
     def __post_init__(self):
         _require(
@@ -366,6 +378,11 @@ class DebrisFlowParams:
         _require(
             self.num_sim_years >= 1,
             f'num_sim_years must be >= 1, got {self.num_sim_years}.',
+        )
+        _require(
+            bool(self.i12_lookup),
+            'i12_lookup must name a lookup table; it is the debris-flow '
+            'triggering model and has no meaningful empty value.',
         )
 
 

@@ -88,7 +88,8 @@ EXPECTED_DEFAULTS = {
         "sediment_bulk_density": 1270.0,
         "rock_bulk_density": 2220.0,
         "dnbr_threshold": 100.0,
-        "num_sim_years": 2
+        "num_sim_years": 2,
+        "i12_lookup": "HFlookup_b30pt27.csv"
     },
     "severity": {
         "max_cloud_cover": 20.0,
@@ -104,7 +105,7 @@ EXPECTED_DEFAULTS = {
 # The digest of EXPECTED_DEFAULTS. Pinned separately because it also proves
 # the digest is stable across processes, platforms and Python versions —
 # comparing two instances in one process cannot show that.
-EXPECTED_DEFAULT_DIGEST = 'sha256:7f72185e43ce9932805bbe4a94fe0011f3ace6505f8a48ea71ad119a280a8c37'
+EXPECTED_DEFAULT_DIGEST = 'sha256:33ffb05d11382e2f0f7a238076bc65e4c78c36af762aa1d7721d700152f4e852'
 
 
 class TestDefaults:

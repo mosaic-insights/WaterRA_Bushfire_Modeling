@@ -111,6 +111,14 @@ DEFAULT_DNBR_SEVERITY_THRESHOLD = 400
 # (params.FireAdjustmentParams.dnbr_saturation).
 DEFAULT_DNBR_SATURATION = 400
 
+# Default hydrogeomorphic-hazard lookup: critical 12-minute rainfall
+# intensity keyed on (aridity, dNBR, years since fire, slope gradient).
+# The filename encodes the fitted coefficient b = 30.27. This table *is*
+# the debris-flow triggering model, so it is overridable — but no tooling
+# is provided to build an alternative, and the default is expected to
+# stand for the foreseeable future.
+DEFAULT_I12_LOOKUP = 'HFlookup_b30pt27.csv'
+
 # Headwaters with a mean dNBR below this value are excluded from the
 # debris-flow analysis (they are considered insufficiently burnt).
 # Compared against the dNBR_mean column of summary_stats, which is on the

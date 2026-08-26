@@ -22,6 +22,7 @@ from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.context import RunContext
 from fire_impacts.pre.util import read_aligned, read_raster, write_raster
 from fire_impacts.util import load_package_data, unique_file_matching
+from fire_impacts.params import deprecated_overrides
 from pysheds.grid import Grid
 import os
 import tempfile
@@ -163,7 +164,8 @@ def get_clay_fraction(
 
 def prep_debris_flow_simulation(
     ctx: RunContext,
-    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+    dnbr_threshold=UNSET,
+    params=None,
 ):
     """
     Assemble all spatial inputs required to run the debris flow simulation.
@@ -174,9 +176,12 @@ def prep_debris_flow_simulation(
 
     Parameters:
     - ctx: event-level RunContext.
-    - dnbr_threshold: Headwaters with a mean dNBR below this value are
-      excluded from the debris-flow analysis. Defaults to
-      const.DEFAULT_DEBRIS_DNBR_THRESHOLD.
+    - dnbr_threshold: Deprecated. Use the debris parameter group
+      (debris.dnbr_threshold). Supplying it here is honoured as a
+      call-layer override.
+    - params: Calibration parameters — a ParameterRecord (from
+      ctx.parameters()) or a ModelParameters. Supplies the dNBR cutoff
+      and the I12 lookup table to use.
 
     Returns:
     - DataFrame of per-headwater debris flow inputs and results, as
@@ -189,6 +194,11 @@ def prep_debris_flow_simulation(
     ------------------------------------------------------------------------
     """
     ctx.validate()
+    p = ctx._resolved_params(
+        params,
+        **deprecated_overrides({'debris.dnbr_threshold': dnbr_threshold}),
+    ).parameters.debris
+    dnbr_threshold = p.dnbr_threshold
     project = ctx.project
     catchment = ctx.catchment
     id_field = project.headwater_id
@@ -247,7 +257,7 @@ def prep_debris_flow_simulation(
 
     # Load the HF lookup table (I12 critical rainfall thresholds) and
     # the debris constituent proportions table from package data
-    hf_lookup = load_package_data('HFlookup_b30pt27.csv')
+    hf_lookup = load_package_data(p.i12_lookup)
     hf_lookup['I12_crit_mean'] = hf_lookup['I12_crit_mean'].round(1)
     debris_lookup = load_package_data('debris-constituents.csv')
 
@@ -735,6 +745,45 @@ def calc_debris_constituent_cols(
     return None
 
 
+def _clip_to_lookup_bins(values, bins, label):
+    """
+    Round values onto the lookup's discrete bins, clipping out-of-range.
+
+    The join against the HF lookup is a left join on exact bin values, so
+    anything outside the tabulated range simply fails to match, leaving
+    I12_crit as NaN — and a headwater with a NaN threshold is skipped
+    entirely by the event count, silently dropping it from the results.
+
+    Clipping to the nearest tabulated bin makes that an explicit,
+    reported saturation instead. It matters for slope in particular:
+    gradients exceed the table's top bin of 1.0 above 45 degrees, which
+    is steep but reachable for a headwater mean in alpine terrain.
+
+    Parameters:
+    - values: Series of continuous values.
+    - bins: the lookup column holding the discrete bin values.
+    - label: name used in the warning.
+
+    Returns:
+    - Series rounded to 1 dp and clipped to the bin range.
+    """
+    low, high = float(np.min(bins)), float(np.max(bins))
+    rounded = values.round(1)
+    outside = (rounded < low) | (rounded > high)
+    n_outside = int(outside.sum())
+    if n_outside:
+        logger.warning(
+            '%d of %d headwaters have a %s outside the lookup range '
+            '[%.1f, %.1f] (min %.2f, max %.2f); clipping to the nearest '
+            'tabulated bin. Without clipping these would not match the '
+            'lookup and would be dropped from the debris-flow results '
+            'without further warning.',
+            n_outside, len(rounded), label, low, high,
+            float(values.min()), float(values.max()),
+        )
+    return rounded.clip(lower=low, upper=high)
+
+
 def calc_I12_crit_columns(
     fire_impact_data: pd.DataFrame,
     hf_lookup: pd.DataFrame,
@@ -766,11 +815,16 @@ def calc_I12_crit_columns(
     fire_impact_data[DNBR_MEAN_ADJ] = (
         fire_impact_data[DNBR_MEAN]
     ).round(-2).astype("int64")
-    # Slope in the lookup is expressed as tenths of 100 degrees
-    # (e.g. 26° → 0.3, 90° → 0.9)
-    fire_impact_data[SLOPE_DEG_MEAN_ADJ] = (
-        fire_impact_data[SLOPE_DEG_MEAN] / 100
-    ).round(1)
+    # The lookup's slope column holds dimensionless gradients (rise/run),
+    # so degrees must be converted with tan, not divided by 100. The old
+    # `/ 100` put every headwater in a flatter bin than it belonged to:
+    # a 26 degree slope became 0.3 instead of 0.5, and since I12_crit
+    # falls as slope rises, the critical intensity came out 1.2-1.4x too
+    # high across the usual range — debris flows were under-triggered.
+    gradient = np.tan(np.radians(fire_impact_data[SLOPE_DEG_MEAN]))
+    fire_impact_data[SLOPE_DEG_MEAN_ADJ] = _clip_to_lookup_bins(
+        gradient, hf_lookup[HF_GRADIENT_THRESH], 'slope gradient',
+    )
 
     join_keys_in_lookup = [
         HF_ARID_IDX_THRESH, HF_DNBR_THRESH, HF_GRADIENT_THRESH
@@ -1387,7 +1441,8 @@ def debris_flow(
     save: bool = True,
     save_daily_catchment_timeseries: bool = True,
     prepared=None,
-    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+    dnbr_threshold=UNSET,
+    params=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run the debris flow simulation for the context.
@@ -1407,9 +1462,11 @@ def debris_flow(
       for this context. Reusing prepared data is required when running
       multiple rainfall replicates concurrently to avoid scratch-raster
       write races.
-    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
-      excluded from the analysis. Only used when prepared is None (i.e.
-      when this call runs prep_debris_flow_simulation itself).
+    - dnbr_threshold: Deprecated. Use the debris parameter group. Only
+      used when prepared is None (i.e. when this call runs
+      prep_debris_flow_simulation itself).
+    - params: Calibration parameters, forwarded to
+      prep_debris_flow_simulation. Only used when prepared is None.
 
     Returns:
     - Tuple of (Debris_Flow_Data, event_ts) where Debris_Flow_Data is
@@ -1444,7 +1501,7 @@ def debris_flow(
         working_deb_flow_data = prepared.copy(deep=True)
     else:
         working_deb_flow_data = prep_debris_flow_simulation(
-            ctx, dnbr_threshold=dnbr_threshold
+            ctx, dnbr_threshold=dnbr_threshold, params=params
         )
 
     # --- Note: this section may be superseded by recorders ----------
@@ -1715,7 +1772,7 @@ def run_debris_flow_all_replicates(
             'dispatching replicates.', ctx.catchment,
         )
         prepared = _prepare_debris_flow_per_catchment(
-            ctx, dnbr_threshold=dnbr_threshold)
+            ctx, dnbr_threshold=dnbr_threshold, params=params)
 
     tasks = [
         dask.delayed(run_debris_flow_replicate)(
