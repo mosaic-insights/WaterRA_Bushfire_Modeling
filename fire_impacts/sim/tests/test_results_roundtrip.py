@@ -48,9 +48,10 @@ class StubProject:
         return str(self.root.joinpath(
             'Catchments', catchment, 'Ensembles', ensemble, *args))
 
-    def run_path(self, catchment, *args, event, ensemble):
+    def run_path(self, catchment, *args, event, ensemble, label=None):
         return str(self.root.joinpath(
-            'Catchments', catchment, 'Runs', event, ensemble, *args))
+            'Catchments', catchment, 'Runs', event,
+            label or ensemble, *args))
 
     def subcatchment_label_field(self, catchment):
         return 'SiteID'

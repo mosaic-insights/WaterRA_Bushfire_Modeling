@@ -158,6 +158,12 @@ class RunContext:
     catchment: str
     event: str | None = None
     ensemble: str | None = None
+    # Names this run's output directory. Defaults to the ensemble name,
+    # so a project that never labels a run has the paths it always had.
+    # A label lets several parameter variants of one (event, ensemble)
+    # sit side by side without a further level of nesting; the ensemble
+    # is recorded in run.json rather than encoded in the path.
+    label: str | None = None
 
     # -- Constructors --------------------------------------------------------
 
@@ -205,18 +211,23 @@ class RunContext:
         event: str,
         ensemble: str,
         catchment: str | None = None,
+        label: str | None = None,
     ) -> 'RunContext':
         """Convenience for the single-catchment case.
 
         Returns the unique (event, ensemble) run context. If ``catchment``
         is None and the project has exactly one catchment, that catchment
         is used; otherwise ``catchment`` must be supplied.
+
+        ``label`` names the output directory, defaulting to the ensemble
+        name. Give one to keep several parameter variants of the same
+        (event, ensemble) side by side.
         """
         catchment = _resolve_solo_catchment(project, catchment)
         _assert_catchment_registered(project, catchment)
         return cls(
             project=project, catchment=catchment,
-            event=event, ensemble=ensemble,
+            event=event, ensemble=ensemble, label=label,
         )
 
     @classmethod
@@ -382,10 +393,19 @@ class RunContext:
             self.catchment, *args, ensemble=self.ensemble,
         )
 
+    @property
+    def run_label(self) -> str:
+        """The name of this run's output directory.
+
+        The label when one is set, otherwise the ensemble name.
+        """
+        return self.label or self.ensemble
+
     def run_path(self, *args) -> str:
         """Resolve a path under this context's run folder.
 
-        Raises if this context has no ensemble.
+        Named by :attr:`run_label`. Raises if this context has no
+        ensemble.
         """
         if self.ensemble is None:
             raise ValueError(
@@ -394,7 +414,7 @@ class RunContext:
             )
         return self.project.run_path(
             self.catchment, *args,
-            event=self.event, ensemble=self.ensemble,
+            event=self.event, ensemble=self.ensemble, label=self.label,
         )
 
     # -- Event definition (fire dates + recovery breakpoints) ----------------
@@ -500,6 +520,66 @@ class RunContext:
         check_scope(data, 'event')
         self._update_event_json({'parameters': data})
         return data
+
+    # -- Run identity --------------------------------------------------------
+
+    def ensure_run_directory(self) -> str:
+        """Create this run's output directory and record what it is.
+
+        The directory is named by :attr:`run_label`, which need not be
+        the ensemble name, so the ensemble cannot be read back off the
+        path. ``run.json`` carries it, and is written here — when the
+        directory is created — rather than by save_ensemble_run, which
+        only runs on success. A run that crashes midway would otherwise
+        leave a directory nothing could identify.
+
+        Raises if the directory already belongs to a different
+        (event, ensemble): two ensembles given the same label would
+        otherwise write into each other's results.
+
+        Returns:
+        - The run directory path.
+        """
+        root = self.run_path()
+        os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, const.RUN_DEFINITION_NAME)
+
+        identity = {
+            'event': self.event,
+            'ensemble': self.ensemble,
+            'label': self.run_label,
+        }
+        if os.path.exists(path):
+            with open(path) as f:
+                existing = json.load(f)
+            clash = {
+                key: (existing.get(key), identity[key])
+                for key in ('event', 'ensemble')
+                if existing.get(key) != identity[key]
+            }
+            if clash:
+                detail = '; '.join(
+                    f'{key}: directory belongs to {was!r}, this run is {now!r}'
+                    for key, (was, now) in sorted(clash.items())
+                )
+                raise ValueError(
+                    f'{root} already holds a different run — {detail}. Two '
+                    f'runs cannot share a label unless they are the same '
+                    f'(event, ensemble); give this one a different label.'
+                )
+            return root
+
+        with open(path, 'w') as f:
+            json.dump(identity, f, indent=2)
+        return root
+
+    def run_identity(self) -> dict | None:
+        """Return this run directory's recorded identity, or None."""
+        path = os.path.join(self.run_path(), const.RUN_DEFINITION_NAME)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return json.load(f)
 
     # -- Input bindings ------------------------------------------------------
 

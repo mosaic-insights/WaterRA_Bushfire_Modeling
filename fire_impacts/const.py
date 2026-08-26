@@ -188,6 +188,19 @@ PARAMETERS_FILE_NAME = 'parameters.json'
 #   Catchments/<c>/Runs/<event>/<ensemble>/<section>/provenance.json
 PROVENANCE_FILE_NAME = 'provenance.json'
 
+# Written at Runs/<event>/<label>/ when the run directory is created,
+# recording which event and ensemble the run belongs to.
+#
+# The run directory is named by a free-form label rather than by the
+# ensemble, so several parameter variants of one (event, ensemble) can
+# sit side by side without a further nesting level. That means the
+# ensemble is no longer recoverable from the path, and the manifest
+# cannot supply it: the manifest is written only by save_ensemble_run,
+# at the end, so a run that crashes — or one that only calls
+# run_usle_simulation — would leave a directory whose ensemble is
+# unknowable. This file is written up front instead.
+RUN_DEFINITION_NAME = 'run.json'
+
 
 def recovery_time_suffix(recovery_time: float) -> str:
     """

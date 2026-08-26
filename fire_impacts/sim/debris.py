@@ -1562,6 +1562,7 @@ def debris_flow(
     ------------------------------------------------------------------------
     """
     ctx.validate()
+    ctx.ensure_run_directory()
     # Resolved here as well as in the prep step, because num_sim_years is
     # used by this function's own event loop even when `prepared` is
     # supplied and prep_debris_flow_simulation never runs.

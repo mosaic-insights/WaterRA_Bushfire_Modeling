@@ -499,29 +499,35 @@ class FireImpactsProject(object):
         *args,
         event: str,
         ensemble: str,
+        label: str = None,
         ):
         """
-        Resolve a path under a catchment's (event, ensemble) run folder.
+        Resolve a path under a catchment's run folder.
 
         Parameters:
         - catchment: Name of the catchment.
         - args: Path components appended below the run folder.
         - event: Event name (required).
         - ensemble: Ensemble name (required).
+        - label: Name for this run's outputs. Defaults to the ensemble
+          name, so a project that never uses labels has exactly the
+          paths it always had.
 
         Returns:
-        - Catchments/<catchment>/Runs/<event>/<ensemble>/<args>.
+        - Catchments/<catchment>/Runs/<event>/<label or ensemble>/<args>.
         ----------------------------------------------------------------
         Notes:
-        - A run is the cartesian product of one event and one ensemble.
-          Simulation outputs (RUSLE grids, debris flow summaries,
-          combined timeseries) live here. Input fire-side data is read
-          from event_path; input rainfall is read from ensemble_path.
+        - A run pairs one event with one ensemble. Simulation outputs
+          (RUSLE grids, debris flow summaries, combined timeseries) live
+          here. Input fire-side data is read from event_path; input
+          rainfall is read from ensemble_path — which is keyed by the
+          ensemble, not the label, so every labelled variant of a run
+          shares one copy of the rainfall.
         ----------------------------------------------------------------
         """
         return os.path.join(
             self.catchment_path(catchment),
-            'Runs', event, ensemble,
+            'Runs', event, label or ensemble,
             *args,
             )
 

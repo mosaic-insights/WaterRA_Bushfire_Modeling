@@ -1062,6 +1062,129 @@ def test_the_signature_is_stored_beside_the_results(pipeline):
     assert 'run_signature' not in stored['values']
 
 
+# --- Run labels (finding H) ----------------------------------------------
+
+def test_an_unlabelled_run_keeps_the_old_path(pipeline):
+    """The migration property: existing projects are unchanged, and a
+    run whose label is unset is named by its ensemble exactly as before."""
+    run = pipeline['run']
+    assert run.run_label == run.ensemble
+    assert Path(run.run_path()).name == run.ensemble
+
+
+def test_a_label_names_the_run_directory(pipeline):
+    proj, run = pipeline['proj'], pipeline['run']
+    labelled = RunContext.solo_run(
+        proj, event=run.event, ensemble=run.ensemble, label='probe_label')
+    assert Path(labelled.run_path()).name == 'probe_label'
+    # The rainfall is still keyed by the ensemble, so every labelled
+    # variant shares one copy — the point of the events/ensembles split.
+    assert labelled.ensemble_path() == run.ensemble_path()
+
+
+def test_labelled_variants_do_not_overwrite_each_other(pipeline):
+    """The whole point: a sweep keeps every result instead of the last."""
+    proj, ev, run, rain = (pipeline['proj'], pipeline['ev'],
+                           pipeline['run'], pipeline['rain'])
+    totals = {}
+    for value, label in ((0.5, 'probe_p05'), (0.9, 'probe_p09')):
+        ctx = RunContext.solo_run(
+            proj, event=run.event, ensemble=run.ensemble, label=label)
+        results = _rusle_run(
+            ctx, rain,
+            params=ev.parameters(erosion__support_practice_factor=value))
+        totals[label] = float(np.nansum(
+            np.asarray(results['RUSLE_sum_total'])))
+    # Both directories survive, with different contents.
+    assert totals['probe_p05'] != totals['probe_p09']
+    for label in totals:
+        assert Path(RunContext.solo_run(
+            proj, event=run.event, ensemble=run.ensemble, label=label
+        ).run_path(c.RESULTS_FOLDER_NAME)).exists()
+
+
+def test_the_run_directory_records_its_identity(pipeline):
+    """The ensemble is no longer readable off the path, so it has to be
+    written down — and written when the directory is created, not at the
+    end, or a crashed run leaves a directory nothing can identify."""
+    proj, run = pipeline['proj'], pipeline['run']
+    ctx = RunContext.solo_run(
+        proj, event=run.event, ensemble=run.ensemble, label='probe_identity')
+    ctx.ensure_run_directory()
+    identity = ctx.run_identity()
+    assert identity == {
+        'event': run.event, 'ensemble': run.ensemble,
+        'label': 'probe_identity',
+    }
+
+
+def test_running_a_simulation_records_the_run_identity(pipeline):
+    """The hop that matters: the writers have to create the record, not
+    just ensure_run_directory called on its own."""
+    proj, ev, run, rain = (pipeline['proj'], pipeline['ev'],
+                           pipeline['run'], pipeline['rain'])
+    ctx = RunContext.solo_run(
+        proj, event=run.event, ensemble=run.ensemble,
+        label='probe_written_by_sim')
+    _rusle_run(ctx, rain,
+               params=ev.parameters(erosion__support_practice_factor=0.6))
+    assert Path(ctx.run_path(c.RUN_DEFINITION_NAME)).exists()
+    assert ctx.run_identity()['ensemble'] == run.ensemble
+
+
+def test_two_ensembles_cannot_share_a_label(pipeline):
+    """Impossible under the old layout, where the directory *was* the
+    ensemble. They would otherwise write into each other's results."""
+    proj, run = pipeline['proj'], pipeline['run']
+    RunContext.solo_run(
+        proj, event=run.event, ensemble=run.ensemble,
+        label='probe_clash').ensure_run_directory()
+    intruder = RunContext.solo_run(
+        proj, event=run.event, ensemble='a_different_ensemble',
+        label='probe_clash')
+    with pytest.raises(ValueError, match='already holds a different run'):
+        intruder.ensure_run_directory()
+
+
+def test_re_entering_the_same_run_directory_is_fine(pipeline):
+    proj, run = pipeline['proj'], pipeline['run']
+    ctx = RunContext.solo_run(
+        proj, event=run.event, ensemble=run.ensemble, label='probe_reenter')
+    ctx.ensure_run_directory()
+    ctx.ensure_run_directory()
+    assert ctx.run_identity()['label'] == 'probe_reenter'
+
+
+def test_list_runs_reads_the_ensemble_from_the_record(pipeline):
+    from fire_impacts.sim.results import list_runs
+    proj, run = pipeline['proj'], pipeline['run']
+    RunContext.solo_run(
+        proj, event=run.event, ensemble=run.ensemble,
+        label='probe_listed').ensure_run_directory()
+    # Labelled variants of one ensemble collapse to a single pair...
+    pairs = list_runs(proj, run.catchment)
+    assert (run.event, run.ensemble) in pairs
+    assert len(pairs) == len(set(pairs))
+    # ...and are distinguishable when asked for.
+    triples = list_runs(proj, run.catchment, with_labels=True)
+    assert (run.event, run.ensemble, 'probe_listed') in triples
+
+
+def test_a_directory_without_a_record_is_read_as_the_old_layout(pipeline):
+    """Projects predating run labelling have no run.json; the directory
+    name was the ensemble."""
+    from fire_impacts.sim.results import list_runs
+    proj, run = pipeline['proj'], pipeline['run']
+    legacy = (Path(proj.catchment_path(run.catchment)) / 'Runs'
+              / run.event / 'probe_legacy_ensemble')
+    legacy.mkdir(parents=True, exist_ok=True)
+    try:
+        assert (run.event, 'probe_legacy_ensemble') in list_runs(
+            proj, run.catchment)
+    finally:
+        legacy.rmdir()
+
+
 # --- Layer scoping -------------------------------------------------------
 
 def test_catchment_scope_layers_are_fire_independent(pipeline):

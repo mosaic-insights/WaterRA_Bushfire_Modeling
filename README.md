@@ -327,13 +327,41 @@ An identical re-run is idempotent and needs no escape. Rebuilt input layers
 count as a change even when the run's own parameters are untouched, since
 the outputs depend on both.
 
-To keep several variants, give each its own section:
+To keep several variants side by side, give each run a **label**. The label
+names the run's output directory in place of the ensemble, so a sweep is
+just several runs:
 
 ```python
-rusle.run_usle_simulation(ctx, rain, recorders=recorders,
-                          results_section='Results_maxsdr05',
-                          params=ctx.parameters(delivery__max_sdr=0.5))
+for value in (0.5, 0.7, 0.9):
+    ctx = RunContext.solo_run(proj, event='2019_fire', ensemble='historical',
+                              label=f'maxsdr{int(value * 100)}')
+    rusle.run_usle_simulation(ctx, rain, recorders=recorders,
+                              params=ctx.parameters(delivery__max_sdr=value))
 ```
+
+```
+Runs/2019_fire/
+├── historical/     # label defaults to the ensemble name
+├── maxsdr50/
+├── maxsdr70/
+└── maxsdr90/
+```
+
+The label defaults to the ensemble name, so a project that never uses one
+has exactly the paths it always had. Rainfall stays keyed by the ensemble,
+so every labelled variant shares one `Ensembles/<ensemble>/rainfall.nc`.
+
+Because the directory is no longer named by the ensemble, each run records
+its identity in a `run.json` written when the directory is created:
+
+```json
+{"event": "2019_fire", "ensemble": "historical", "label": "maxsdr50"}
+```
+
+`list_runs()` reads that. Pass `with_labels=True` to distinguish variants;
+without it, labelled runs of one ensemble collapse to a single
+`(event, ensemble)` pair. Two different ensembles cannot share a label —
+that raises, since they would write into each other's results.
 
 #### Substituting an input
 

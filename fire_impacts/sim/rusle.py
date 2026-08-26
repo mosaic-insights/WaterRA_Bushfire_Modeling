@@ -940,6 +940,7 @@ def run_usle_simulation(
 
     run_results_dir = ctx.run_path(results_section)
     if save_rasters or save_timeseries:
+        ctx.ensure_run_directory()
         os.makedirs(run_results_dir, exist_ok=True)
 
     if save_rasters:
