@@ -14,7 +14,7 @@ readme = {file = "README.md", content-type = "text/markdown"}
 # pre/project.py), which is evaluated at import time and needs 3.10+.
 # 3.10 reaches end of life in October 2026, so the supported floor is 3.11.
 requires-python = ">=3.11"
-dependencies = ["numpy", "pandas"]
+dependencies = ["numpy>=2", "pandas"]
 authors = [
     {name = "Joel Rahman", email = "joel@flowmatters.com.au"}
 ]

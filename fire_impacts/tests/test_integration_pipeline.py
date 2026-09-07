@@ -1383,3 +1383,141 @@ def test_baseline_sdr_survives_a_coarse_c_factor(pipeline):
     with rio.open(sdr_path) as src:
         data = src.read(1)
     assert np.isfinite(data).any()
+
+
+# --- Collapsed vs. eager engine -------------------------------------------
+
+def _rich_recorders():
+    """
+    A recorder set wide enough to be worth diffing.
+
+    The pipeline fixture's own set is one variable, one function and one
+    period, which would exercise almost none of the collapsed paths.
+    """
+    return simr.default_rusle_recorders(
+        grid_variables=('RUSLE', 'delivered', 'RUSLE_above_threshold'),
+        grid_fns=('sum', 'max', 'mean'),
+        grid_timesteps=('total', 'yearly'),
+        timeseries_variables=('RUSLE',),
+        timeseries_fn='sum',
+        timeseries_timestep='24h',
+    )
+
+
+@pytest.fixture(scope='module')
+def both_ways(pipeline):
+    """
+    The same fire-adjusted run through both engines.
+
+    save_rasters and save_timeseries are off because the module-scoped
+    pipeline fixture has already written provenance for this run
+    directory, and check_run_not_overwritten would reject a second write.
+    """
+    run, rain = pipeline['run'], pipeline['rain']
+    factory = _rich_recorders()
+    start, end = rain.index[0], rain.index[-1]
+    out = {}
+    for label, eager in (('collapsed', False), ('eager', True)):
+        out[label] = simr.run_usle_simulation(
+            run, rain,
+            recorders=factory(run, start, end),
+            save_rasters=False, save_timeseries=False,
+            materialise_grids=eager,
+        )
+    return out['collapsed'], out['eager']
+
+
+def test_the_collapsed_and_eager_engines_agree(both_ways):
+    """The keystone: one engine must not drift from the other."""
+    collapsed, eager = both_ways
+    assert set(collapsed) == set(eager)
+
+    for key in collapsed:
+        if key == 'params':
+            continue
+        got, want = collapsed[key], eager[key]
+        if got is None:
+            assert want is None
+            continue
+        got = np.asarray(getattr(got, 'values', got), dtype=float)
+        want = np.asarray(getattr(want, 'values', want), dtype=float)
+        assert np.array_equal(np.isnan(got), np.isnan(want)), key
+        scale = np.nanmax(np.abs(want)) or 1.0
+        assert np.nanmax(np.abs(got - want)) / scale < 1e-6, key
+
+
+def test_the_collapsed_engine_materialises_nothing_in_the_loop(pipeline):
+    """
+    The assertion with teeth. Correctness tests would still pass if a
+    future change quietly fell back to per-timestep grid work; this one
+    would not.
+    """
+    run, rain = pipeline['run'], pipeline['rain']
+    factory = _rich_recorders()
+    counter = simr.MaterialisationCounter()
+
+    klscp, sdr, dnbr, cell_area_ha, transform = simr._rusle_parameter_grids(
+        run, use_fire_adjusted=False)
+    recorders = factory(run, rain.index[0], rain.index[-1])
+    for recorder in recorders.values():
+        recorder.reset()
+
+    for timestep, data in simr.generate_rusle(
+            rain, klscp, sdr, dnbr, cell_area_ha, counter=counter):
+        for recorder in recorders.values():
+            recorder(timestep, **data, catchment=run.catchment,
+                     transform=transform)
+
+    assert counter.count == 0
+
+
+def test_params_and_transform_survive_the_collapse(both_ways):
+    """Downstream code unpacks results['params'] as five plain values."""
+    collapsed, eager = both_ways
+    klscp, sdr, dnbr, cell_area_ha, transform = collapsed['params']
+
+    assert klscp.ndim == 2 and sdr.ndim == 2 and dnbr.ndim == 2
+    assert float(cell_area_ha) > 0
+    assert transform == eager['params'][4]
+    assert collapsed['the_transform'] == eager['the_transform']
+
+
+def test_each_run_gets_its_own_materialisation_counter(pipeline,
+                                                       monkeypatch):
+    """
+    Replicates run concurrently on threads by default, so a counter
+    shared between runs would mix their tallies and blame the wrong
+    recorder.
+    """
+    made = []
+    real = simr.MaterialisationCounter
+
+    def spy():
+        counter = real()
+        made.append(counter)
+        return counter
+
+    monkeypatch.setattr(simr, 'MaterialisationCounter', spy)
+    run, rain = pipeline['run'], pipeline['rain']
+    factory = _rich_recorders()
+    for _ in range(2):
+        simr.run_usle_simulation(
+            run, rain,
+            recorders=factory(run, rain.index[0], rain.index[-1]),
+            save_rasters=False, save_timeseries=False)
+
+    assert len(made) == 2
+    assert made[0] is not made[1]
+    # The teeth: this drives the real run_usle_simulation entry point -
+    # probe timestep, main loop and finalize() included - rather than
+    # calling generate_rusle directly the way
+    # test_the_collapsed_engine_materialises_nothing_in_the_loop does.
+    # A future change that slipped materialising work inside
+    # run_usle_simulation itself (e.g. an np.asarray(data['RUSLE'])
+    # added to the per-timestep loop) would leave every other test
+    # green but show up here. Every recorder in _rich_recorders()
+    # collapses fully for this run - uniform rainfall (rain_index is
+    # None), so 'max' collapses too, and finalize() only ever spreads
+    # an accumulated scale, never a ScaledGrid - so zero is the correct
+    # value, not a merely-hoped-for one.
+    assert made[0].count == 0

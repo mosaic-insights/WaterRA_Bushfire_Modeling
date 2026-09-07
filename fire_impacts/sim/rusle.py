@@ -50,12 +50,27 @@ from fire_impacts.const import UNSET
 from fire_impacts.params import ErosionParams, deprecated_overrides
 from fire_impacts.provenance import (
     check_layers_fresh, check_run_not_overwritten, run_signature)
+from fire_impacts.sim.scaled_grid import MaterialisationCounter, ScaledGrid
 from fire_impacts.util import load_package_data, get_zonal_stats
 logger = logging.getLogger(__name__)
 
 from fire_impacts.pre import FireImpactsProject
 from fire_impacts.pre.project import save_catchment_raster
 from fire_impacts.context import RunContext
+
+# Recorders moved to their own module; re-exported so existing imports
+# (including the private helpers the tests reach for) keep working.
+from fire_impacts.sim.recorders import (  # noqa: F401
+    _calendar_floor,
+    _compute_periods,
+    _PERIOD_OFFSETS,
+    _spatial_coords_from_transform,
+    default_rusle_recorders,
+    record_grid_transform,
+    record_multi_period_grid,
+    record_subcatchment_timeseries,
+    record_timestep_grid,
+)
 
 DNBR_SEVERITY_THRESHOLD = c.DEFAULT_DNBR_SEVERITY_THRESHOLD
 # Rate constant of the unit kinetic-energy relation — the RUSLE2 value.
@@ -67,7 +82,7 @@ EMPIRICAL_COEFFICIENT = c.DEFAULT_KE_RATE_RUSLE2
 # the conversion is depth / 0.5 — derived here rather than written as a
 # literal, which previously appeared twice and silently encoded the
 # timestep in two places.
-_MODEL_TIMESTEP = pd.Timedelta(minutes=30)
+_MODEL_TIMESTEP = c.MODEL_TIMESTEP
 _MODEL_TIMESTEP_HOURS = _MODEL_TIMESTEP.total_seconds() / 3600.0
 
 
@@ -329,239 +344,6 @@ def lumped_daily_rusle(
 
 
 # ---------------------------------------------------------------------------
-# Recorder closures
-# ---------------------------------------------------------------------------
-
-def record_subcatchment_timeseries(
-    ctx: RunContext,
-    variable_name: str,
-    fn="sum",
-    label_field=None,
-    agg_count=1,
-):
-    """
-    Build a RUSLE recorder that summarises a raster variable over
-    subcatchments and accumulates a spatial time series.
-
-    Parameters:
-    - ctx: RunContext identifying the catchment whose subcatchments
-      are aggregated.
-    - variable_name: Name of the raster variable to summarise (key in
-      the timestep data dict).
-    - fn: Spatial aggregation function: 'sum', 'mean', or 'max'.
-      Default is 'sum'.
-    - label_field: Column in the subcatchment GeoDataFrame to use as
-      zone labels. If None, the integer index is used.
-    - agg_count: Number of model timesteps to accumulate before
-      recording one output row. Default is 1.
-
-    Returns:
-    - A recorder closure compatible with run_usle_simulation, with
-      .reset() and .finalize() methods attached.
-    ------------------------------------------------------------------------
-    Notes:
-    - While the time series can always be resampled after the simulation,
-      agg_count allows aggregation during the run, which is significantly
-      faster for large ensembles.
-    - agg_count of 1 is appropriate when each model row already
-      represents the desired output interval.
-    - Timesteps flagged dry are counted but not accumulated; a window of
-      nothing but dry timesteps records a row of zeros.
-    ------------------------------------------------------------------------
-    """
-    result = None
-    index = None
-    zone_indices = None
-    zone_names = None
-
-    intermediate = None
-    intermediate_count = 0
-
-    # -----------------------------------------------------------------------
-    def timeseries_recorder(timestep, catchment, transform, **kwargs):
-        """
-        Accumulate one timestep of raster data into the running result.
-
-        Parameters:
-        - timestep: Datetime label for the current model timestep.
-        - catchment: Name of the catchment being processed.
-        - transform: Rasterio Affine transform for converting polygon
-          geometries to raster masks.
-
-        Returns:
-        - None until agg_count timesteps have been accumulated; then a
-          dict mapping zone names to lists of aggregated values.
-        """
-        # Declare the variables from the outer scope so this closure
-        # remembers their values between calls
-        nonlocal result, index
-        nonlocal zone_indices, zone_names
-        nonlocal intermediate, intermediate_count
-
-        data = kwargs.get(variable_name)
-        # Raise an error if the requested variable isn't in the data
-        if data is None:
-            raise ValueError(
-                f"Variable {variable_name} not found in simulation data."
-            )
-        dry = kwargs.get('dry', False)
-
-        # On the first call, build zone masks from the subcatchment
-        # boundaries. Fall back to the whole catchment boundary if no
-        # subcatchments have been registered.
-        if zone_indices is None:
-            try:
-                boundaries_v = ctx.project.get_subcatchments(ctx.catchment)
-            except FileNotFoundError:
-                boundaries_v = ctx.project.catchment_boundary(ctx.catchment)
-            resolved_label = label_field
-            if resolved_label is None:
-                resolved_label = ctx.project.subcatchment_label_field(
-                    ctx.catchment,
-                )
-            # Rasterise each subcatchment polygon separately, then keep
-            # only the flat positions of the cells it covers. Holding
-            # indices rather than one full-grid mask per zone turns the
-            # aggregation below from a pass over the whole grid per zone
-            # into a single pass over the catchment.
-            zone_indices = [
-                np.flatnonzero(
-                    ~np.isnan(
-                        rasterio.features.rasterize(
-                            [g],
-                            transform=transform,
-                            fill=np.nan,
-                            dtype=np.float32,
-                            out_shape=data.shape,
-                        )
-                    )
-                ) for g in boundaries_v.geometry
-            ]
-            if resolved_label is None:
-                zone_names = boundaries_v.index.values
-            elif resolved_label not in boundaries_v.columns:
-                logger.warning(
-                    "Subcatchment label field '%s' is configured for "
-                    "catchment '%s' but is not present in the saved "
-                    "subcatchments shapefile (columns: %s). Falling "
-                    "back to integer indices. Re-run "
-                    "FireImpactsProject.add_subcatchments(..., "
-                    "label_field='%s') to rewrite the shapefile with "
-                    "the label column retained.",
-                    resolved_label, ctx.catchment,
-                    list(boundaries_v.columns), resolved_label,
-                )
-                zone_names = boundaries_v.index.values
-            else:
-                zone_names = boundaries_v[resolved_label].values
-
-        # Accumulate data into the current aggregation cycle. A dry
-        # timestep contributes an all-zero grid, so there is nothing to
-        # add - and the grid it carries is shared and read-only. It
-        # still advances the cycle, so the output cadence is unchanged.
-        intermediate_count += 1
-        if not dry:
-            if intermediate is None:
-                # Copy: the simulation reuses the buffer it handed us.
-                intermediate = data.copy()
-            else:
-                intermediate += data
-
-        # Return early if we haven't reached the requested agg_count yet
-        if intermediate_count < agg_count:
-            return result
-
-        # Flush the accumulated data and reset the intermediate state
-        data = intermediate
-        intermediate = None
-        intermediate_count = 0
-
-        if index is None:
-            index = []
-        index.append(timestep)
-
-        def agg(d):
-            """Apply the requested spatial aggregation to one zone."""
-            if fn == "sum":
-                return np.nansum(d)
-            elif fn == "mean":
-                return np.nanmean(d)
-            elif fn == "max":
-                return np.nanmax(d)
-            else:
-                raise ValueError(f"Function {fn} not recognized.")
-
-        if result is None:
-            result = {name: [] for name in zone_names}
-
-        if data is None:
-            # Every timestep in this window was dry, so every zone
-            # eroded nothing.
-            grouped = [0.0] * len(zone_indices)
-        else:
-            flat = data.reshape(-1)
-            grouped = [agg(flat[positions]) for positions in zone_indices]
-        for ix, name in enumerate(zone_names):
-            result[name].append(grouped[ix])
-
-        return result
-
-    # -----------------------------------------------------------------------
-    def reset():
-        """Reset all accumulated state back to initial values."""
-        nonlocal result, index
-        nonlocal zone_indices, zone_names
-        nonlocal intermediate, intermediate_count
-        index = None
-        zone_indices = None
-        zone_names = None
-        result = None
-        intermediate = None
-        intermediate_count = 0
-
-    # -----------------------------------------------------------------------
-    def finalize():
-        """Convert accumulated lists to arrays and return a DataFrame."""
-        nonlocal result, index
-        for key in result:
-            result[key] = np.array(result[key])
-        return pd.DataFrame(result, index=index)
-
-    timeseries_recorder.reset = reset
-    timeseries_recorder.finalize = finalize
-    return timeseries_recorder
-
-
-def record_grid_transform():
-    """
-    Build a recorder that captures the raster transform at each timestep.
-
-    Returns:
-    - A recorder closure with .reset() and .finalize() methods; finalize
-      returns the most recently captured affine transform object.
-    """
-    t = None
-
-    def get_transform(timestep, transform, **kwargs):
-        nonlocal t
-        t = transform
-        return t
-
-    def r():
-        """Reset the captured transform."""
-        pass
-
-    def f():
-        """Return the most recently captured transform."""
-        return t
-
-    get_transform.reset = r
-    get_transform.finalize = f
-
-    return get_transform
-
-
-# ---------------------------------------------------------------------------
 # Subcatchment aggregation
 # ---------------------------------------------------------------------------
 
@@ -806,6 +588,35 @@ def _layers_read_by(ctx, segments, use_fire_adjusted):
     return layers
 
 
+def _warn_about_materialising(recorders, timestep, data, counter):
+    """
+    Log which recorders force a full grid, using one probe timestep.
+
+    Parameters:
+    - recorders: the run's recorder dict.
+    - timestep: the timestep to probe with - the first wet one.
+    - data: that timestep's data dict.
+    - counter: the run's MaterialisationCounter.
+    ------------------------------------------------------------------------
+    Notes:
+    - Called once per run. The recorders are invoked here and must not be
+      invoked again for this timestep.
+    ------------------------------------------------------------------------
+    """
+    greedy = []
+    for name, recorder in recorders.items():
+        before = counter.count
+        recorder(timestep, **data)
+        if counter.count > before:
+            greedy.append(name)
+    if greedy:
+        logger.warning(
+            'Recorder(s) %s materialise a full grid every timestep; this '
+            'run will be substantially slower than a collapsed one.',
+            ', '.join(sorted(greedy)),
+        )
+
+
 def run_usle_simulation(
     ctx: RunContext,
     rainfall,
@@ -817,6 +628,7 @@ def run_usle_simulation(
     params=None,
     allow_stale: bool = False,
     overwrite: bool = False,
+    materialise_grids: bool = False,
 ):
     """
     Run the USLE simulation for the context and record outputs.
@@ -854,6 +666,12 @@ def run_usle_simulation(
       silently mixes two calibrations — changing max_sdr and re-running
       the simulation used to reuse the old SDR rasters with no signal at
       all. Set True when the mismatch is understood and deliberate.
+    - materialise_grids: escape hatch that forces every ScaledGrid to
+      compute a real array on every timestep, bypassing the collapsed
+      (scale-only) code path. Off by default. Use it for debugging and
+      for the differential test that compares collapsed against
+      uncollapsed results; a run with any recorder that already forces
+      materialisation gets a logged warning regardless of this flag.
 
     Returns:
     - Dict of finalised recorder outputs keyed by recorder name, with
@@ -915,6 +733,11 @@ def run_usle_simulation(
 
     results = dict()
     grids = None
+    # Created fresh per call (never shared module state): replicates run
+    # concurrently on threads by default, and a shared counter or probe
+    # flag would mix deltas across runs, blaming the wrong recorder.
+    counter = MaterialisationCounter()
+    probed = materialise_grids
     for recovery_time, segment_rain in segments:
         # Load the RUSLE parameter grids for this segment's recovery window
         grids = _rusle_parameter_grids(
@@ -947,7 +770,18 @@ def run_usle_simulation(
             dnbr_masked,
             cell_area_ha,
             erosion=erosion,
+            materialise_grids=materialise_grids,
+            counter=counter,
         ):
+            if not probed and not data['dry']:
+                _warn_about_materialising(
+                    recorders, timestep,
+                    {**data, 'catchment': ctx.catchment,
+                     'transform': transform},
+                    counter,
+                )
+                probed = True
+                continue
             for recorder in recorders.values():
                 recorder(
                     timestep,
@@ -1140,6 +974,33 @@ def calculate_lumped_rusle(
 # RUSLE generators
 # ---------------------------------------------------------------------------
 
+def _log_progress(iteration_count, total_timesteps, start_time,
+                  current_time, timestep):
+    """Log simulation progress at the configured interval."""
+    progress_pct = (iteration_count / total_timesteps) * 100
+    elapsed_time = current_time - start_time
+    avg_time_per_iteration = elapsed_time / iteration_count
+    remaining_iterations = total_timesteps - iteration_count
+    estimated_time_remaining = (
+        avg_time_per_iteration * remaining_iterations
+    )
+
+    # Format time remaining as HH:MM:SS or MM:SS
+    hours, remainder = divmod(int(estimated_time_remaining), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    else:
+        time_str = f"{minutes:02d}:{seconds:02d}"
+
+    logger.info(
+        f"Progress: {iteration_count}/{total_timesteps} "
+        f"timesteps ({progress_pct:.1f}%) - "
+        f"Current timestep: {timestep} - "
+        f"Estimated time remaining: {time_str}"
+    )
+
+
 def generate_rusle(
     rainfall: pd.Series,
     klscp: np.array,
@@ -1147,6 +1008,8 @@ def generate_rusle(
     dnbr: np.array,
     cell_area_ha: float,
     erosion: ErosionParams = None,
+    materialise_grids: bool = False,
+    counter: MaterialisationCounter = None,
 ):
     """
     Yield per-timestep RUSLE erosion and delivery results as a generator.
@@ -1162,6 +1025,13 @@ def generate_rusle(
       kinetic-energy rate constant. Defaults to the package values. A
       plain parameter group rather than a RunContext, so this stays a
       data-in/data-out generator.
+    - materialise_grids: When True, yield plain float arrays instead of
+      ScaledGrid — the eager path used to check the deferred one agrees.
+      May be forced True internally regardless of the argument; see
+      Notes.
+    - counter: optional MaterialisationCounter passed through to every
+      yielded ScaledGrid, so a caller can tally how many of them a
+      recorder ends up forcing.
 
     Returns:
     - Generator yielding (timestep, data_dict) tuples. Each data_dict
@@ -1170,8 +1040,9 @@ def generate_rusle(
       - 'intensity': 30-min rainfall intensity in mm/hr (float).
       - 'erosivity': kinetic energy × intensity erosivity (float).
       - 'dry': True when the timestep had no rainfall (bool).
-      - 'RUSLE': per-cell erosion array (float32 numpy array).
-      - 'delivered': RUSLE × SDR delivered sediment array.
+      - 'RUSLE': per-cell erosion, ScaledGrid, or a plain float array
+        when materialise_grids is set.
+      - 'delivered': RUSLE × SDR delivered sediment, same type as above.
       - 'RUSLE_below_threshold': erosion at low-severity cells.
       - 'RUSLE_above_threshold': erosion at high-severity cells.
       - 'delivered_below_threshold': delivered at low-severity cells.
@@ -1181,10 +1052,16 @@ def generate_rusle(
     - klscp, sdr, and dnbr must share the same shape and transform.
     - This is a generator function; results are produced one timestep at
       a time rather than all at once to keep memory usage manageable.
-    - A dry timestep yields all-zero grids, and every one of its grids is
-      the same shared read-only array — recorders must branch on 'dry'
-      rather than accumulating it, and must never write into a grid they
-      were handed without copying it first.
+    - A dry timestep's grids are `0.0 * unit`, not an exact-zero array:
+      outside the catchment mask (where the unit layers are NaN) they
+      materialise as NaN, the same as a wet timestep. This is consistent
+      but is a change from a prior version that yielded exact zeros
+      everywhere on dry timesteps via a shared zero buffer.
+    - A negative static layer cell or a negative rainfall value forces
+      materialise_grids to True for the whole segment, regardless of
+      the argument, because deferring a maximum across timesteps is
+      only valid when both are non-negative. A warning is logged when
+      this happens.
     ------------------------------------------------------------------------
     """
     # Convert to Series if we've got a DataFrame, to ensure consistency
@@ -1196,111 +1073,79 @@ def generate_rusle(
     if erosion is None:
         erosion = ErosionParams()
 
-    # Pre-compute severity masks based on dNBR thresholds
-    dnbr_below_threshold = dnbr < erosion.dnbr_severity_threshold
-    dnbr_above_threshold = dnbr >= erosion.dnbr_severity_threshold
+    # The static half of the model. Erosion in a cell is this layer times
+    # the timestep's erosivity, so it is built once per segment rather
+    # than rebuilt every timestep.
+    below = dnbr < erosion.dnbr_severity_threshold
+    above = dnbr >= erosion.dnbr_severity_threshold
+    # cell_area_ha must be a strong (numpy) float64 here: under NEP 50 a
+    # plain Python float is a weak scalar, so klscp (float32) * a Python
+    # float stays float32 — the old code's accumulation was float64
+    # throughout because R (np.float64) was the strong operand.
+    unit_rusle = klscp * np.float64(cell_area_ha)
+    unit_delivered = unit_rusle * sdr
+    units = {
+        'RUSLE': unit_rusle,
+        'delivered': unit_delivered,
+        'RUSLE_below_threshold': np.where(below, unit_rusle, 0),
+        'RUSLE_above_threshold': np.where(above, unit_rusle, 0),
+        'delivered_below_threshold': np.where(below, unit_delivered, 0),
+        'delivered_above_threshold': np.where(above, unit_delivered, 0),
+    }
 
-    # One shared zeros grid stands in for every dry timestep. Around
-    # three quarters of timesteps produce no erosion, and allocating six
-    # fresh grids for each of them was the single largest cost in a run.
-    # It is read-only because it is shared: a recorder accumulating into
-    # it in place would corrupt every other dry timestep, so that has to
-    # raise rather than quietly produce wrong numbers.
-    dry_grid = np.zeros_like(klscp, dtype=np.float32)
-    dry_grid.flags.writeable = False
+    # Deferring a maximum assumes a layer times a scale is monotone in
+    # the scale, which holds only while both are non-negative. A noisy
+    # DEM can produce a negative LS cell, and that must not silently
+    # produce a wrong maximum - nor stop a run that works today.
+    negative_layer = any(
+        np.nanmin(unit) < 0 for unit in units.values() if unit.size
+    )
+    negative_rain = bool(np.nanmin(rainfall.values) < 0) \
+        if len(rainfall.values) else False
+    if negative_layer or negative_rain:
+        logger.warning(
+            'Negative %s in this segment, so its grids cannot be '
+            'deferred; computing them in full instead. Results are '
+            'unaffected, but this segment will be slower.',
+            'erosion layer' if negative_layer else 'rainfall',
+        )
+        materialise_grids = True
 
-    # Initialise timing variables for progress logging
     total_timesteps = len(rainfall.index)
     start_time = time.time()
     last_log_time = start_time
     iteration_count = 0
 
-    # Loop over each 30-min timestep
     for timestep, delta_v_r in zip(rainfall.index, rainfall.values):
         iteration_count += 1
 
-        # Skip RUSLE calculations for dry timesteps. They still have to
-        # be yielded so recorders keep their cadence, but every grid is
-        # zero and recorders short-circuit on the 'dry' flag.
         if delta_v_r == 0:
-            yield (timestep, {
-                'total_rain': delta_v_r,
-                'intensity': 0.0,
-                'erosivity': 0.0,
-                'dry': True,
-                'RUSLE': dry_grid,
-                'delivered': dry_grid,
-                'RUSLE_below_threshold': dry_grid,
-                'RUSLE_above_threshold': dry_grid,
-                'delivered_below_threshold': dry_grid,
-                'delivered_above_threshold': dry_grid,
-            })
-            continue
+            intensity = 0.0
+            R = 0.0
+        else:
+            intensity, R = rainfall_erosivity(
+                delta_v_r, rate=erosion.kinetic_energy_coefficient)
 
-        # Rainfall intensity (∆V_r / ∆t_r) in mm/hr, and the erosivity
-        # factor (R) derived from it.
-        intensity, R = rainfall_erosivity(
-            delta_v_r, rate=erosion.kinetic_energy_coefficient)
+        # One scale array shared by all six grids of this timestep. It is
+        # an array, not a float, so that spatially varying rainfall widens
+        # it without any accumulator needing a second code path.
+        scale = np.array([R], dtype=np.float64)
         result = {
             'total_rain': delta_v_r,
             'intensity': intensity,
             'erosivity': R,
-            'dry': False,
+            'dry': bool(delta_v_r == 0),
         }
+        for key, unit in units.items():
+            if materialise_grids:
+                result[key] = scale[0] * unit
+            else:
+                result[key] = ScaledGrid(scale, unit, counter=counter)
 
-        # Total erosion in tonnes per hectare
-        # TODO: sediment eroded? kg? t?
-        RUSLE = (R * klscp) * cell_area_ha
-        result['RUSLE'] = RUSLE
-
-        # Sediment delivered to streams: erosion × SDR ratio
-        # TODO: confirm units (tonnes?)
-        delivered = RUSLE * sdr
-        result['delivered'] = delivered
-
-        # Apply dNBR severity masks
-        result['RUSLE_below_threshold'] = np.where(
-            dnbr_below_threshold, RUSLE, 0
-        )
-        result['RUSLE_above_threshold'] = np.where(
-            dnbr_above_threshold, RUSLE, 0
-        )
-        result['delivered_below_threshold'] = np.where(
-            dnbr_below_threshold, delivered, 0
-        )
-        result['delivered_above_threshold'] = np.where(
-            dnbr_above_threshold, delivered, 0
-        )
-
-        # Log progress at the configured interval
         current_time = time.time()
         if current_time - last_log_time >= LOG_INTERVAL_SECONDS:
-            progress_pct = (iteration_count / total_timesteps) * 100
-            elapsed_time = current_time - start_time
-            avg_time_per_iteration = elapsed_time / iteration_count
-            remaining_iterations = total_timesteps - iteration_count
-            estimated_time_remaining = (
-                avg_time_per_iteration * remaining_iterations
-            )
-
-            # Format time remaining as HH:MM:SS or MM:SS
-            hours, remainder = divmod(
-                int(estimated_time_remaining), 3600
-            )
-            minutes, seconds = divmod(remainder, 60)
-            if hours > 0:
-                time_str = (
-                    f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-                )
-            else:
-                time_str = f"{minutes:02d}:{seconds:02d}"
-
-            logger.info(
-                f"Progress: {iteration_count}/{total_timesteps} "
-                f"timesteps ({progress_pct:.1f}%) - "
-                f"Current timestep: {timestep} - "
-                f"Estimated time remaining: {time_str}"
-            )
+            _log_progress(iteration_count, total_timesteps, start_time,
+                          current_time, timestep)
             last_log_time = current_time
 
         yield (timestep, result)
@@ -1579,454 +1424,3 @@ def run_rusle_all_replicates(
         *tasks, scheduler=scheduler, num_workers=n_workers
     )
     return {i: result for i, result in zip(replicate_indices, computed)}
-
-
-# ---------------------------------------------------------------------------
-# Period helpers and recorder factory
-# ---------------------------------------------------------------------------
-
-_PERIOD_OFFSETS = {
-    'yearly': pd.DateOffset(years=1),
-    'quarterly': pd.DateOffset(months=3),
-    'monthly': pd.DateOffset(months=1),
-    'weekly': pd.DateOffset(weeks=1),
-    'daily': pd.DateOffset(days=1),
-}
-
-
-def _calendar_floor(ts, granularity):
-    """
-    Snap a timestamp down to the start of its calendar period.
-
-    yearly -> Jan 1; quarterly -> quarter start; monthly -> 1st;
-    weekly -> Monday; daily -> midnight.
-    """
-    ts = pd.Timestamp(ts)
-    if granularity == 'yearly':
-        return pd.Timestamp(year=ts.year, month=1, day=1)
-    if granularity == 'quarterly':
-        month = ((ts.month - 1) // 3) * 3 + 1
-        return pd.Timestamp(year=ts.year, month=month, day=1)
-    if granularity == 'monthly':
-        return pd.Timestamp(year=ts.year, month=ts.month, day=1)
-    if granularity == 'weekly':
-        return ts.normalize() - pd.Timedelta(days=ts.weekday())
-    if granularity == 'daily':
-        return ts.normalize()
-    raise ValueError(f"Cannot calendar-floor granularity '{granularity}'.")
-
-
-def _compute_periods(start, end, timestep_type, origin='calendar'):
-    """
-    Compute non-overlapping time-period boundaries for a simulation span.
-
-    Parameters:
-    - start: Start of the simulation period (pd.Timestamp).
-    - end: End of the simulation period (pd.Timestamp).
-    - timestep_type: Period granularity: 'total', 'yearly', 'quarterly',
-      'monthly', 'weekly', or 'daily'.
-    - origin: 'calendar' (default) snaps the first period to the calendar
-      boundary for the granularity (so bins are calendar-aligned; the
-      first bin may be partial); 'fire' starts the first period at
-      ``start`` and steps by the offset (e.g. year-since-fire).
-
-    Returns:
-    - List of (period_start, period_end) tuples. The period_start is used
-      as the time coordinate label, so calendar bins are labelled by their
-      calendar boundary even when the first bin is partial. For non-final
-      periods period_end is offset by -1 second so boundary timesteps are
-      not double-counted across adjacent periods.
-    """
-    start = pd.Timestamp(start)
-    end = pd.Timestamp(end)
-
-    if timestep_type == 'total':
-        return [(start, end)]
-
-    offset = _PERIOD_OFFSETS.get(timestep_type)
-    if offset is None:
-        raise ValueError(
-            f"Unsupported grid_timestep '{timestep_type}'. Use one of: "
-            f"'total', {', '.join(repr(k) for k in _PERIOD_OFFSETS)}."
-        )
-    if origin not in ('calendar', 'fire'):
-        raise ValueError(
-            f"origin must be 'calendar' or 'fire'; got {origin!r}."
-        )
-
-    period_start = (
-        start if origin == 'fire'
-        else _calendar_floor(start, timestep_type)
-    )
-
-    periods = []
-    while period_start < end:
-        period_end = period_start + offset
-        periods.append((period_start, min(period_end, end)))
-        period_start = period_end
-
-    # Offset non-final period ends by 1 s to avoid double-counting
-    return [
-        (ps, pe - pd.Timedelta(seconds=1))
-        if i < len(periods) - 1 else (ps, pe)
-        for i, (ps, pe) in enumerate(periods)
-    ]
-
-
-def _spatial_coords_from_transform(transform, shape):
-    """Build easting/northing coordinate arrays from an affine transform."""
-    if transform is None:
-        return {}
-    rows, cols = shape
-    easting = np.array(
-        [transform.c + (col + 0.5) * transform.a for col in range(cols)]
-    )
-    northing = np.array(
-        [transform.f + (row + 0.5) * transform.e for row in range(rows)]
-    )
-    return {'easting': easting, 'northing': northing}
-
-
-def record_timestep_grid(variable):
-    """
-    Build a recorder that captures a grid variable at every model timestep.
-
-    Finalises to a 3-D xarray.DataArray (time, northing, easting) whose time
-    coordinate holds the actual model timesteps. This keeps one grid slice
-    per 30-minute timestep, so it is memory-heavy — intended for short
-    windows or diagnostics.
-
-    Parameters:
-    - variable: Key to extract from the per-timestep data dict.
-
-    Returns:
-    - A recorder closure with .reset() and .finalize() methods.
-    """
-    grids = []
-    times = []
-    captured_transform = [None]
-
-    def recorder(timestep, **kwargs):
-        if captured_transform[0] is None and 'transform' in kwargs:
-            captured_transform[0] = kwargs['transform']
-        grids.append(kwargs[variable].copy())
-        times.append(pd.Timestamp(timestep))
-
-    def reset():
-        grids.clear()
-        times.clear()
-        captured_transform[0] = None
-
-    def finalize():
-        import xarray as xr
-        if not grids:
-            return None
-        spatial = _spatial_coords_from_transform(
-            captured_transform[0], grids[0].shape)
-        stacked = np.stack(grids, axis=0)
-        return xr.DataArray(
-            stacked,
-            dims=['time', 'northing', 'easting'],
-            coords={'time': times, **spatial},
-        )
-
-    recorder.reset = reset
-    recorder.finalize = finalize
-    return recorder
-
-
-def record_multi_period_grid(variable, fn, periods):
-    """
-    Build a recorder that accumulates a summary grid for each time period.
-
-    The finalised result is an xarray.DataArray with georeferenced
-    easting and northing coordinates derived from the affine transform
-    passed at each timestep. Single-period results are 2-D
-    (northing, easting); multi-period results add a time dimension.
-
-    Parameters:
-    - variable: Key to extract from the per-timestep data dict.
-    - fn: Summary function: 'sum', 'max', or 'mean'.
-    - periods: List of (start, end) pd.Timestamp pairs defining each
-      non-overlapping accumulation window.
-
-    Returns:
-    - A recorder closure with .reset() and .finalize() methods; finalize
-      returns an xarray.DataArray of accumulated grids.
-    ------------------------------------------------------------------------
-    Notes:
-    - A timestep flagged dry contributes an all-zero grid, which changes
-      neither a sum nor a max of non-negative erosion. It is counted but
-      not accumulated, so it still divides a mean correctly.
-    ------------------------------------------------------------------------
-    """
-    # One accumulator array and count per period
-    grids = [None] * len(periods)
-    counts = [0] * len(periods)
-    captured_transform = [None]  # mutable container for nonlocal capture
-    captured_shape = [None]
-
-    def recorder(timestep, **kwargs):
-        data = kwargs[variable]
-        dry = kwargs.get('dry', False)
-        if captured_transform[0] is None and 'transform' in kwargs:
-            captured_transform[0] = kwargs['transform']
-        if captured_shape[0] is None:
-            captured_shape[0] = data.shape
-        for i, (ps, pe) in enumerate(periods):
-            if timestep < ps or timestep > pe:
-                continue
-            counts[i] += 1
-            # A dry timestep contributes an all-zero grid, which changes
-            # neither a sum nor a max of non-negative erosion. Its only
-            # effect on a mean is through the count incremented above,
-            # so there is nothing left to do with the array itself -
-            # and it is shared and read-only, so touching it would be a
-            # mistake anyway.
-            if dry:
-                continue
-            if grids[i] is None:
-                grids[i] = data.copy()
-            elif fn == 'max':
-                np.maximum(grids[i], data, out=grids[i])
-            else:
-                grids[i] += data
-
-    def reset():
-        for i in range(len(periods)):
-            grids[i] = None
-            counts[i] = 0
-        captured_transform[0] = None
-        captured_shape[0] = None
-
-    def finalize():
-        import xarray as xr
-
-        # Find the grid shape from the first populated accumulator,
-        # falling back to the shape seen at the first timestep - every
-        # period can be dry, and that is still a result of zeros rather
-        # than no result at all.
-        shape = None
-        for g in grids:
-            if g is not None:
-                shape = g.shape
-                break
-        if shape is None:
-            shape = captured_shape[0]
-        if shape is None:
-            return None
-
-        arrays = []
-        for i in range(len(periods)):
-            g = grids[i]
-            if g is None:
-                g = np.zeros(shape, dtype=np.float32)
-            elif fn == 'mean' and counts[i] > 0:
-                g = g / counts[i]
-            arrays.append(g)
-
-        spatial = _spatial_coords_from_transform(captured_transform[0], shape)
-
-        if len(arrays) == 1:
-            return xr.DataArray(
-                arrays[0],
-                dims=['northing', 'easting'],
-                coords=spatial,
-            )
-
-        time_coords = [ps for ps, _ in periods]
-        stacked = np.stack(arrays, axis=0)
-        coords = {'time': time_coords, **spatial}
-        return xr.DataArray(
-            stacked,
-            dims=['time', 'northing', 'easting'],
-            coords=coords,
-        )
-
-    recorder.reset = reset
-    recorder.finalize = finalize
-    return recorder
-
-
-# Model timestep used to convert timeseries_timestep to an agg_count
-
-
-def default_rusle_recorders(
-    include_grids=True,
-    grid_variables=('RUSLE',),
-    grid_fns=('sum', 'max'),
-    grid_timesteps=('yearly',),
-    grid_period_origin='calendar',
-    include_timeseries=True,
-    timeseries_variables=('RUSLE',),
-    timeseries_fn='sum',
-    timeseries_timestep='24h',
-    timeseries_label_field=None,
-    timeseries_mode='full',
-    include_transform=True,
-):
-    """
-    Configure RUSLE output recorders and return a factory function.
-
-    The returned factory creates a fresh set of recorder closures each
-    time it is called, so every simulation run or Dask task gets
-    independent state. Because the factory closure captures only plain
-    Python values, it is trivially serialisable for Dask.
-
-    Grid recorders are built from the Cartesian product of
-    grid_variables × grid_fns × grid_timesteps. Each combination
-    produces one entry keyed as '{variable}_{fn}_{timestep}'
-    (e.g. 'RUSLE_sum_yearly'). All grid results are xarray.DataArray
-    objects with georeferenced easting and northing coordinates.
-
-    Parameters:
-    - include_grids: Whether to include grid summary recorders.
-      Default True.
-    - grid_variables: Variables from the RUSLE generator to record in
-      summary grids. Default ('RUSLE',).
-    - grid_fns: Summary functions per period. Supported: 'sum', 'max',
-      'mean'. Default ('sum', 'max').
-    - grid_timesteps: Temporal aggregation levels. Supported: 'total',
-      'yearly', 'monthly'. Default ('yearly',).
-    - include_timeseries: Whether to include subcatchment timeseries
-      recorders. Default True.
-    - timeseries_variables: Variables to record as subcatchment
-      timeseries. One recorder per variable. Default ('RUSLE',).
-    - timeseries_fn: Spatial aggregation function for the timeseries.
-      Default 'sum'.
-    - timeseries_timestep: Output timestep for timeseries rows, e.g.
-      '24h', '1h', '12h'. Converted to an aggregation count using the
-      30-min model timestep. Default '24h' (daily).
-    - timeseries_label_field: Column in subcatchment boundaries to use
-      as zone labels. If None, the integer index is used.
-    - timeseries_mode: 'full' returns the complete DataFrame;
-      'percentiles' finalises to a DataFrame of 101 percentiles per
-      subcatchment; 'none' skips timeseries entirely.
-    - include_transform: Whether to include the transform recorder.
-      Default True.
-
-    Returns:
-    - factory: Callable (ctx, start, end) → dict of recorder
-      closures ready for use with run_usle_simulation().
-    ------------------------------------------------------------------------
-    Notes:
-    - Typical usage: make_recorders = default_rusle_recorders(), then
-      recorders = make_recorders(project, '2020-01-01', '2021-12-31').
-    - For ensemble runs with Dask, use timeseries_mode='percentiles' to
-      avoid storing full daily timeseries per replicate.
-    - timeseries_mode='none' is equivalent to include_timeseries=False.
-    ------------------------------------------------------------------------
-    """
-    if timeseries_mode == 'none':
-        include_timeseries = False
-
-    # Convert timeseries_timestep to an agg_count
-    ts_delta = pd.Timedelta(timeseries_timestep)
-    agg_count = max(1, int(ts_delta / _MODEL_TIMESTEP))
-
-    def factory(ctx, start, end):
-        """Build and return a fresh dict of recorders for one simulation."""
-        start = pd.Timestamp(start)
-        end = pd.Timestamp(end)
-
-        recorders = {}
-
-        # Grid recorders: Cartesian product of variables × fns × timesteps.
-        # A grid_timesteps entry is either a granularity string ('yearly')
-        # using grid_period_origin, or a (granularity, origin) tuple. The
-        # special granularity 'timestep' records every model timestep.
-        if include_grids:
-            for ts_entry in grid_timesteps:
-                if isinstance(ts_entry, (tuple, list)):
-                    ts_type, origin = ts_entry[0], ts_entry[1]
-                else:
-                    ts_type, origin = ts_entry, grid_period_origin
-
-                # Origin only qualifies periodic grids; suffix the key only
-                # when the origin differs from the default so common keys
-                # stay clean.
-                if ts_type in ('total', 'timestep') or origin == grid_period_origin:
-                    origin_suffix = ''
-                else:
-                    origin_suffix = f'_{origin}'
-
-                periods = (
-                    None if ts_type == 'timestep'
-                    else _compute_periods(start, end, ts_type, origin=origin)
-                )
-                for variable in grid_variables:
-                    for fn in grid_fns:
-                        key = f'{variable}_{fn}_{ts_type}{origin_suffix}'
-                        if ts_type == 'timestep':
-                            recorders[key] = record_timestep_grid(variable)
-                        else:
-                            recorders[key] = record_multi_period_grid(
-                                variable, fn, periods,
-                            )
-
-        # Transform recorder
-        if include_transform:
-            recorders['the_transform'] = record_grid_transform()
-
-        # Subcatchment timeseries recorders
-        if include_timeseries:
-            _add_timeseries_recorders(ctx, recorders)
-
-        return recorders
-
-    def _add_timeseries_recorders(ctx, recorders):
-        """Add subcatchment timeseries recorders to the recorders dict."""
-        for ts_var in timeseries_variables:
-            base_ts = record_subcatchment_timeseries(
-                ctx,
-                ts_var,
-                fn=timeseries_fn,
-                label_field=timeseries_label_field,
-                agg_count=agg_count,
-            )
-            # Use the standard constant key when there is only one
-            # variable, for backward compatibility; otherwise qualify
-            # the key with the variable name
-            if len(timeseries_variables) == 1:
-                ts_key = c.RUSLE_OP_TIMESERIES_NAME
-            else:
-                ts_key = f'{ts_var}_{c.RUSLE_OP_TIMESERIES_NAME}'
-
-            if timeseries_mode == 'full':
-                recorders[ts_key] = base_ts
-
-            elif timeseries_mode == 'percentiles':
-                def _make_percentiles(base):
-                    def pct_recorder(timestep, **data):
-                        return base(timestep, **data)
-
-                    def _reset():
-                        base.reset()
-
-                    def _finalize():
-                        df = base.finalize()
-                        if df is None or df.empty:
-                            return pd.DataFrame()
-                        pctiles = np.arange(101)
-                        result = df.apply(
-                            lambda col: np.percentile(col, pctiles)
-                        )
-                        result.index = pctiles
-                        result.index.name = 'percentile'
-                        return result
-
-                    pct_recorder.reset = _reset
-                    pct_recorder.finalize = _finalize
-                    return pct_recorder
-
-                recorders[ts_key + '_percentiles'] = (
-                    _make_percentiles(base_ts)
-                )
-
-            else:
-                raise ValueError(
-                    f"Unsupported timeseries_mode='{timeseries_mode}'. "
-                    "Use 'full', 'percentiles', or 'none'."
-                )
-
-    return factory

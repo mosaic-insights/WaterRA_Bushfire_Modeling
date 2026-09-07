@@ -3,6 +3,8 @@ Shared constants, conversion factors, file names, and field names
 used throughout the fire_impacts package.
 """
 
+import pandas as pd
+
 # ------- Conversions: -------------------------------------------------
 # Basic units:
 M_TO_KM = 1e-3
@@ -407,3 +409,7 @@ PER_CATCHMENT_FOLDERS = [
     DELIVERY_FOLDER_NAME,
     SUBCATCHMENTS_FOLDER_NAME,
     ]
+
+# The simulation's fixed model timestep. Lives here so both rusle.py and
+# recorders.py can reach it without importing each other.
+MODEL_TIMESTEP = pd.Timedelta(minutes=30)

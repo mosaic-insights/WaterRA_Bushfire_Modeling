@@ -16,6 +16,7 @@ from affine import Affine
 from shapely.geometry import box
 
 from fire_impacts.sim.rusle import record_subcatchment_timeseries
+from fire_impacts.sim.scaled_grid import ScaledGrid
 
 
 TS = pd.Timestamp
@@ -79,6 +80,24 @@ def feed(rec, samples):
 
 def stamps(n):
     return list(pd.date_range('2020-01-01', periods=n, freq='30min'))
+
+
+def feed_deferred(rec, samples):
+    """Push (timestep, scale, unit) triples through as deferred grids."""
+    for timestep, scale, unit in samples:
+        rec(timestep, catchment='Catchment', transform=TRANSFORM,
+            RUSLE=deferred(scale, unit))
+
+
+def zone_positions():
+    """Flat cell positions of each subcatchment, for brute-force checks."""
+    import rasterio.features
+    return [
+        np.flatnonzero(~np.isnan(rasterio.features.rasterize(
+            [g], transform=TRANSFORM, fill=np.nan, dtype=np.float32,
+            out_shape=SHAPE)))
+        for g in SUBCATCHMENTS.geometry
+    ]
 
 
 class TestZoneAggregation:
@@ -185,3 +204,235 @@ class TestCallerGrid:
 
         assert np.allclose(first, 1.0)
         assert rec.finalize()['left'].iloc[0] == pytest.approx(24.0)
+
+
+def deferred(value, unit):
+    return ScaledGrid(np.array([float(value)]), unit)
+
+
+def layer(value=1.0):
+    return np.full(SHAPE, value, dtype=np.float32)
+
+
+class TestDeferredInput:
+
+    @pytest.mark.parametrize('fn', ['sum', 'mean', 'max'])
+    def test_matches_the_materialised_path(self, fn):
+        unit = np.arange(16, dtype=np.float32).reshape(SHAPE)
+        lazy, eager = recorder(fn=fn, agg_count=2), recorder(fn=fn,
+                                                            agg_count=2)
+        t = stamps(2)
+        for stamp, scale in zip(t, [1.0, 3.0]):
+            lazy(stamp, catchment='Catchment', transform=TRANSFORM,
+                 RUSLE=deferred(scale, unit))
+            eager(stamp, catchment='Catchment', transform=TRANSFORM,
+                  RUSLE=scale * unit)
+
+        assert np.allclose(lazy.finalize().to_numpy(),
+                           eager.finalize().to_numpy())
+
+    def test_cells_outside_the_catchment_stay_excluded(self):
+        unit = layer(2.0)
+        unit[:, 0] = np.nan
+        rec = recorder(agg_count=1)
+        feed_deferred(rec, [(stamps(1)[0], 3.0, unit)])
+        row = rec.finalize()
+
+        # 4 cells per zone survive on the left, 8 on the right.
+        assert row['left'].iloc[0] == pytest.approx(24.0)
+        assert row['right'].iloc[0] == pytest.approx(48.0)
+
+    def test_dry_timesteps_add_nothing_but_advance_the_window(self):
+        unit = layer(1.0)
+        rec = recorder(agg_count=2)
+        t = stamps(4)
+        rec(t[0], catchment='Catchment', transform=TRANSFORM,
+            RUSLE=deferred(0.0, unit), dry=True)
+        rec(t[1], catchment='Catchment', transform=TRANSFORM,
+            RUSLE=deferred(2.0, unit))
+        rec(t[2], catchment='Catchment', transform=TRANSFORM,
+            RUSLE=deferred(2.0, unit))
+        rec(t[3], catchment='Catchment', transform=TRANSFORM,
+            RUSLE=deferred(0.0, unit), dry=True)
+        result = rec.finalize()
+
+        assert list(result.index) == [t[1], t[3]]
+        assert list(result['left']) == pytest.approx([16.0, 16.0])
+
+    @pytest.mark.parametrize('fn', ['sum', 'mean', 'max'])
+    def test_an_all_dry_window_records_zero_not_nan(self, fn):
+        # W is NaN for a zone whose cells are all NaN, so multiplying a
+        # zero scale through it would put a silent NaN in the column.
+        unit = layer(1.0)
+        unit[:] = np.nan
+        rec = recorder(fn=fn, agg_count=2)
+        t = stamps(2)
+        for stamp in t:
+            rec(stamp, catchment='Catchment', transform=TRANSFORM,
+                RUSLE=deferred(0.0, unit), dry=True)
+
+        assert rec.finalize()['left'].iloc[0] == pytest.approx(0.0)
+
+    def test_mean_ignores_nan_cells_within_the_zone(self):
+        # A collapsed mean divides by the zone's valid-cell count, not
+        # by len(positions) - an implementation that forgot to exclude
+        # the masked column would divide by 8 instead of 4 and return
+        # 3.0 rather than 6.0.
+        unit = layer(2.0)
+        unit[:, 0] = np.nan
+        rec = recorder(fn='mean', agg_count=1)
+        feed_deferred(rec, [(stamps(1)[0], 3.0, unit)])
+
+        assert rec.finalize()['left'].iloc[0] == pytest.approx(6.0)
+
+    def test_max_ignores_nan_cells_within_the_zone(self):
+        # An implementation that took max() over the raw zone values
+        # instead of values[keep] would return NaN here, since the
+        # masked column's NaN would win the comparison.
+        unit = layer(2.0)
+        unit[:, 0] = np.nan
+        rec = recorder(fn='max', agg_count=1)
+        feed_deferred(rec, [(stamps(1)[0], 3.0, unit)])
+
+        assert rec.finalize()['left'].iloc[0] == pytest.approx(6.0)
+
+    @pytest.mark.parametrize('fn', ['sum', 'mean', 'max'])
+    def test_a_shared_unit_is_never_materialised_mid_window(self, fn):
+        # A value check alone can't tell "accumulate the scale" apart
+        # from "materialise a grid every timestep and combine those" -
+        # ScaledGrid duck-types through the old eager path and gives the
+        # same numbers either way. The counter is the only thing that
+        # can see the difference. agg_count=4 means the flush - and any
+        # collapse-vs-materialise decision - happens on the fourth call,
+        # inside the loop; asserting immediately after the loop already
+        # covers that flush, and asserting again after finalize()
+        # confirms finalize() forces no further materialisation either,
+        # since the window is empty by then.
+        from fire_impacts.sim.scaled_grid import MaterialisationCounter
+
+        unit = np.arange(16, dtype=np.float32).reshape(SHAPE)
+        counter = MaterialisationCounter()
+        rec = recorder(fn=fn, agg_count=4)
+        t = stamps(4)
+        for stamp, scale in zip(t, [1.0, 2.0, 3.0, 4.0]):
+            rec(stamp, catchment='Catchment', transform=TRANSFORM,
+                RUSLE=ScaledGrid(np.array([scale]), unit,
+                                  counter=counter))
+
+        assert counter.count == 0
+        rec.finalize()
+        assert counter.count == 0
+
+
+class TestSharedScaleNonMutation:
+
+    def test_two_recorders_do_not_corrupt_the_shared_scale(self):
+        # Every recorder in a run - and every one of a timestep's six
+        # grid keys - holds the SAME scale array object. That is only
+        # safe because the seeding site here copies it (.astype(),
+        # which copies by default) rather than aliasing it the way
+        # np.asarray(..., dtype=...) would when the dtype already
+        # matches. An aliasing bug would let one recorder's += mutate
+        # the shared array in place, corrupting whatever else is still
+        # reading it.
+        unit, scale = layer(2.0), np.array([3.0])
+        a, b = recorder(agg_count=2), recorder(agg_count=2)
+        t = stamps(2)
+        for rec in (a, b):
+            rec(t[0], catchment='Catchment', transform=TRANSFORM,
+                RUSLE=ScaledGrid(scale, unit))
+            rec(t[1], catchment='Catchment', transform=TRANSFORM,
+                RUSLE=ScaledGrid(scale, unit))
+
+        assert scale[0] == 3.0
+        # 8 cells per zone; accumulated scale (3.0 + 3.0) * unit (2.0)
+        # = 12.0 per cell, summed over 8 cells in the 'left' zone.
+        assert a.finalize()['left'].iloc[0] == pytest.approx(96.0)
+        assert b.finalize()['left'].iloc[0] == pytest.approx(96.0)
+
+
+class TestWindowStraddlingARecoveryBoundary:
+
+    @pytest.mark.parametrize('fn', ['sum', 'mean', 'max'])
+    def test_a_window_spanning_two_layers_is_exact(self, fn):
+        first = np.arange(16, dtype=np.float32).reshape(SHAPE)
+        second = first * 10.0
+        lazy, eager = recorder(fn=fn, agg_count=2), recorder(fn=fn,
+                                                            agg_count=2)
+        t = stamps(2)
+        lazy(t[0], catchment='Catchment', transform=TRANSFORM,
+             RUSLE=deferred(2.0, first))
+        lazy(t[1], catchment='Catchment', transform=TRANSFORM,
+             RUSLE=deferred(3.0, second))
+        eager(t[0], catchment='Catchment', transform=TRANSFORM,
+              RUSLE=2.0 * first)
+        eager(t[1], catchment='Catchment', transform=TRANSFORM,
+              RUSLE=3.0 * second)
+
+        assert np.allclose(lazy.finalize().to_numpy(),
+                           eager.finalize().to_numpy())
+
+
+class TestSpatiallyVaryingRainfall:
+    """
+    The seam for rainfall coarser than the DEM. Nothing produces this yet;
+    these tests are what stop the weight matrix rotting before it does.
+    """
+
+    RAIN_INDEX = np.array([[0, 0, 1, 1]] * 4)
+
+    def brute_force(self, scales, unit, fn, rain_index=None):
+        """Zonal aggregation the slow, obviously-correct way."""
+        if rain_index is None:
+            rain_index = self.RAIN_INDEX
+        total = None
+        for scale in scales:
+            step = scale[rain_index] * unit
+            total = step if total is None else total + step
+        flat = total.reshape(-1)
+        agg = {'sum': np.nansum, 'mean': np.nanmean, 'max': np.nanmax}[fn]
+        return [agg(flat[z]) for z in zone_positions()]
+
+    @pytest.mark.parametrize('fn', ['sum', 'mean', 'max'])
+    def test_matches_a_brute_force_loop(self, fn):
+        unit = np.arange(16, dtype=np.float32).reshape(SHAPE)
+        scales = [np.array([2.0, 10.0]), np.array([1.0, 4.0])]
+        rec = recorder(fn=fn, agg_count=2)
+        for stamp, scale in zip(stamps(2), scales):
+            rec(stamp, catchment='Catchment', transform=TRANSFORM,
+                RUSLE=ScaledGrid(scale, unit, self.RAIN_INDEX))
+
+        assert np.allclose(rec.finalize().to_numpy()[0],
+                           self.brute_force(scales, unit, fn))
+
+    def test_a_shared_unit_with_a_different_rain_index_is_not_cached(self):
+        # The zonal-weights cache is keyed on identity of BOTH unit and
+        # rain_index. Two windows sharing a unit object but carrying
+        # different rain_index maps must each get their own weights -
+        # reusing the first window's weights for the second would
+        # silently mix up which rain cell feeds which zone.
+        unit = np.arange(16, dtype=np.float32).reshape(SHAPE)
+        other_index = np.array([[1, 1, 0, 0]] * 4)
+        scale = np.array([2.0, 10.0])
+        rec = recorder(fn='sum', agg_count=1)
+        t = stamps(2)
+        rec(t[0], catchment='Catchment', transform=TRANSFORM,
+            RUSLE=ScaledGrid(scale, unit, self.RAIN_INDEX))
+        rec(t[1], catchment='Catchment', transform=TRANSFORM,
+            RUSLE=ScaledGrid(scale, unit, other_index))
+        result = rec.finalize()
+
+        expected_first = self.brute_force(
+            [scale], unit, 'sum', self.RAIN_INDEX)
+        expected_second = self.brute_force(
+            [scale], unit, 'sum', other_index)
+
+        assert np.allclose(result.to_numpy()[0], expected_first)
+        assert np.allclose(result.to_numpy()[1], expected_second)
+
+
+class TestInvalidAggregationFunction:
+
+    def test_an_unrecognised_fn_raises_at_construction(self):
+        with pytest.raises(ValueError):
+            recorder(fn='median')
