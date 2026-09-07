@@ -600,7 +600,7 @@ def insert_colourbar(axes, normaliser, vis_params):
         # Build a discrete colourmap and compute tick positions at
         # the centre of each colour band:
         num_colours = normaliser.N - 1
-        boundary_cmap = plt.cm.get_cmap(cmap_name, num_colours)
+        boundary_cmap = plt.get_cmap(cmap_name, num_colours)
         mappable = ScalarMappable(norm=normaliser, cmap=boundary_cmap)
 
         max_ticks = 10
@@ -855,7 +855,7 @@ def plot_spatial_vector(
         # Use a discrete colourmap for boundary norm:
         if norm_type == 'boundary':
             num_colours = normer.N - 1
-            boundary_cmap = plt.cm.get_cmap(cmap_name, num_colours)
+            boundary_cmap = plt.get_cmap(cmap_name, num_colours)
             use_this_cmap = boundary_cmap
         else:
             use_this_cmap = cmap_name
