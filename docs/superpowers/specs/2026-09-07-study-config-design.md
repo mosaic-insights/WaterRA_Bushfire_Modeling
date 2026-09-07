@@ -112,7 +112,9 @@ most of the discoverability:
 
 [project]
 directory = "."        # project data root, relative to this file
-# clear = true         # PrepareData wipes existing project data first
+# clear = false        # Leave this out and PrepareData starts from
+#                      # scratch, wiping existing project data. Set it
+#                      # false once the project holds work worth keeping.
 
 [catchment]
 name     = "EgSmallCatchment_7899"
@@ -147,6 +149,26 @@ tern_api_key = ""
 ```
 
 ### Notes on specific settings
+
+- **`project.clear` is tri-state, and the destructive default belongs to the
+  notebook rather than the schema.** The setting defaults to *unset* (`None`)
+  rather than to a boolean. Any library consumer treats unset as "do not
+  clear" — the safe reading. `PrepareData` is the one notebook that builds a
+  project from scratch, so its settings block resolves unset to `True`
+  explicitly:
+
+  ```python
+  # PrepareData builds a project from scratch, so it clears by default.
+  # Set clear = false in study.toml to keep data already in the project.
+  CLEAR = True if study.project.clear is None else study.project.clear
+  ```
+
+  This keeps today's behaviour for a fresh example project, but the
+  most destructive action in the system is now stated in the block the
+  user reads first, and turning it off is a config edit rather than a
+  notebook edit. It also means an explicit `clear = false` and a silent
+  omission are distinguishable, which a plain boolean default could not
+  express.
 
 - **`catchment.dem` fixes a live defect.** `PrepareData` currently sets
   `optional_DEM_filename` and then passes `None` to `extract_catchment_dems()`.
@@ -259,9 +281,13 @@ EVENT       = study.event.name
 FIRE_START  = study.event.fire_start
 FIRE_END    = study.event.fire_end
 BREAKPOINTS = study.event.recovery_breakpoints
+
+# PrepareData builds a project from scratch, so it clears by default.
+# Set clear = false in study.toml to keep data already in the project.
+CLEAR = True if study.project.clear is None else study.project.clear
 ```
 
-Body cells then read `FireImpactsProject(PROJECT_DIR, clear=study.project.clear)`,
+Body cells then read `FireImpactsProject(PROJECT_DIR, clear=CLEAR)`,
 `proj.add_catchment(BOUNDARY)`, `topography.extract_catchment_dems(prep_ctx, DEM)`,
 `severity.calculate_fire_severity(ctx, fire_start_date=FIRE_START, fire_end_date=FIRE_END)`
 and `rusle.compute_adjusted_k_c(ctx, recovery_breakpoints=BREAKPOINTS)`.
