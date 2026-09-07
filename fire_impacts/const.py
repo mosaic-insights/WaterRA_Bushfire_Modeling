@@ -54,8 +54,102 @@ CHANNEL_PARAMETERS = dict(
     )
 NUM_SIM_YEARS = 2
 
+# Length of a debris-flow simulation year, in days.
+#
+# Deliberately 365, not 365.25. The two are not interchangeable here and
+# neither is unambiguously right: 365 is exact for three years in four,
+# while 365.25 is the better long-run average — and which applies depends
+# on whether the driving rainfall contains leap days at all. Stochastic
+# replicates (pyraingen) may not; historical series do. See
+# issues/debris-flow-year-length.md — this is parked, not settled.
+DAYS_PER_SIM_YEAR = 365
+
+# The I12 lookup tabulates thresholds at discrete times since fire — for
+# the packaged table, 0.434 and 1.434 years (roughly 5 and 17 months).
+# These are treated as REPRESENTATIVE OF THEIR WHOLE YEAR: the threshold
+# fitted at 0.434 years is applied across the entire first year after the
+# fire, and the one at 1.434 across the second. The model is therefore
+# piecewise-constant in time since fire, with one step per year, rather
+# than varying continuously. A table with more `years` bins would give
+# more steps; the code reads the bins rather than assuming two.
+
+# ------- Rainfall kinetic energy: --------------------------------------
+# Unit kinetic energy follows the exponential KE-intensity form
+#
+#     e_r = 0.29 * [1 - 0.72 * exp(-k * i_r)]
+#
+# with e_r in MJ/ha/mm and i_r in mm/h. 0.29 is the asymptotic maximum
+# (drops reach terminal velocity, so energy per mm saturates) and 0.72
+# fixes the drizzle floor at 0.29*(1-0.72) = 0.0812 MJ/ha/mm. Both are
+# fixed by the equation's form; only the rate constant k varies between
+# published versions:
+#
+#   0.05   Brown & Foster (1987), as used in RUSLE (Renard et al. 1997).
+#   0.082  McGregor et al. (1995), adopted by USDA-ARS (2013) in RUSLE2.
+#
+# We use the RUSLE2 value. It is the one supported by Australian
+# evidence: RUSLE's 0.05 was found to underestimate unit energy here
+# (Yu 1999), and the exponential form itself derives from Rosewell
+# (1986), measured in eastern Australia.
+#
+# Changing k selects a model version rather than tuning one, so it is not
+# a free parameter — but the literature does report regional KE-I
+# relationships, so it stays exposed as
+# params.ErosionParams.kinetic_energy_coefficient. Reference:
+# Yin, Nearing, Borrelli & Xue (2017), "Rainfall Erosivity: An Overview
+# of Methodologies and Applications", Vadose Zone Journal, eqs. [2], [3].
+KE_ASYMPTOTE = 0.29           # MJ/ha/mm
+KE_FLOOR_FRACTION = 0.72
+DEFAULT_KE_RATE_RUSLE2 = 0.082    # McGregor et al. (1995) / RUSLE2
+DEFAULT_KE_RATE_RUSLE = 0.05      # Brown & Foster (1987) / RUSLE
+
+# ------- dNBR scale: ---------------------------------------------------
+# dNBR is *stored* as the raw band-ratio difference (pre-fire NBR minus
+# post-fire NBR, negatives clipped), which lands in roughly [0, 1]. It is
+# *quoted and thresholded* on the conventional 0-1000 scale used
+# throughout the fire-severity literature, and so are every threshold and
+# lookup table in this package.
+#
+# DNBR_SCALE converts stored -> conventional. Read dNBR through
+# pre.util.read_dnbr_* rather than applying it by hand: consumers
+# previously each remembered (or forgot) to multiply, and one that forgot
+# compared a [0, 1] raster against a 400 threshold, so the whole
+# high-severity branch was unreachable.
+#
+# Every threshold below, and params.FireAdjustmentParams.dnbr_saturation /
+# params.ErosionParams.dnbr_severity_threshold, are on the conventional
+# scale. Keep them here beside the factor: a threshold that drifts onto
+# the other scale is silent, not loud.
+DNBR_SCALE = 1000
+
+# Cells at or above this are "high severity" when splitting erosion
+# outputs for reporting (params.ErosionParams.dnbr_severity_threshold).
+DEFAULT_DNBR_SEVERITY_THRESHOLD = 400
+
+# dNBR at which the fire-adjusted C factor saturates at its peak value
+# (params.FireAdjustmentParams.dnbr_saturation).
+DEFAULT_DNBR_SATURATION = 400
+
+# Default hydrogeomorphic-hazard lookup: critical 12-minute rainfall
+# intensity keyed on (aridity, dNBR, years since fire, slope gradient).
+# The filename encodes the fitted coefficient b = 30.27. This table *is*
+# the debris-flow triggering model, so it is overridable — but no tooling
+# is provided to build an alternative, and the default is expected to
+# stand for the foreseeable future.
+DEFAULT_I12_LOOKUP = 'HFlookup_b30pt27.csv'
+
+# Per-element concentrations (mg/kg) multiplied onto the debris sediment
+# mass, and onto the low/high-severity RUSLE loads respectively. Both are
+# regionally variable soil and ash chemistry, so both are selectable on
+# the same terms as the I12 lookup: a bare filename resolves against the
+# packaged tables, a path is used as given.
+DEFAULT_DEBRIS_CONSTITUENTS = 'debris-constituents.csv'
+DEFAULT_ASH_CONSTITUENTS = 'ash_constituents.csv'
+
 # Headwaters with a mean dNBR below this value are excluded from the
 # debris-flow analysis (they are considered insufficiently burnt).
+# Compared against the dNBR_mean column of summary_stats, which is on the
+# conventional scale.
 DEFAULT_DEBRIS_DNBR_THRESHOLD = 100
 
 # ------- Fire recovery time and intervals: ---------------------------------------------
@@ -74,6 +168,38 @@ DEFAULT_RECOVERY_INTERVAL_YEARS = 0.5
 
 # Per-event definition file, written at Events/<event>/event.json.
 EVENT_DEFINITION_NAME = 'event.json'
+
+# Project-scope calibration parameter overrides, written at
+# <project>/parameters.json. Hand-editable and user-owned: deliberately kept
+# out of settings.json, which is machine-written (_write() rewrites it
+# wholesale whenever a catchment is added) and would drop the key.
+PARAMETERS_FILE_NAME = 'parameters.json'
+
+# Resolved parameter provenance record — the values a step actually used,
+# where each came from, and a digest. Deliberately a different name from
+# parameters.json: that file is the sparse *override input* a user edits,
+# this one is the full *resolved output* the library writes. Conflating them
+# would turn every package default into an explicit user setting on first
+# run, destroying the default/chosen distinction the record exists for.
+#
+# Written at whichever scope the step produced outputs for:
+#   Catchments/<c>/provenance.json
+#   Catchments/<c>/Events/<event>/provenance.json
+#   Catchments/<c>/Runs/<event>/<ensemble>/<section>/provenance.json
+PROVENANCE_FILE_NAME = 'provenance.json'
+
+# Written at Runs/<event>/<label>/ when the run directory is created,
+# recording which event and ensemble the run belongs to.
+#
+# The run directory is named by a free-form label rather than by the
+# ensemble, so several parameter variants of one (event, ensemble) can
+# sit side by side without a further nesting level. That means the
+# ensemble is no longer recoverable from the path, and the manifest
+# cannot supply it: the manifest is written only by save_ensemble_run,
+# at the end, so a run that crashes — or one that only calls
+# run_usle_simulation — would leave a directory whose ensemble is
+# unknowable. This file is written up front instead.
+RUN_DEFINITION_NAME = 'run.json'
 
 
 def recovery_time_suffix(recovery_time: float) -> str:
@@ -138,6 +264,37 @@ def breakpoints_from_times_and_interval(recovery_times, interval):
     if not times:
         raise ValueError("recovery_times is empty.")
     return times + [times[-1] + interval]
+
+
+# ------- Sentinels: ---------------------------------------------------
+
+class _Unset:
+    """Sentinel for 'this argument was not supplied'.
+
+    Needed wherever a default is a real, meaningful value: the deprecated
+    calibration kwargs (max_sdr, ic0, k, threshold_m2, ...) default to the
+    same numbers as the ModelParameters defaults, so `if max_sdr == 0.8`
+    cannot distinguish "the user asked for 0.8" from "the user said
+    nothing". Without this, an explicit value equal to the default is
+    silently dropped and a lower resolution layer wins instead.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self):
+        return 'UNSET'
+
+    def __bool__(self):
+        return False
+
+
+UNSET = _Unset()
+
 
 # ------- Dtype standards: ---------------------------------------------
 

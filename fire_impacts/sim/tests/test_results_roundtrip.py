@@ -48,12 +48,21 @@ class StubProject:
         return str(self.root.joinpath(
             'Catchments', catchment, 'Ensembles', ensemble, *args))
 
-    def run_path(self, catchment, *args, event, ensemble):
+    def run_path(self, catchment, *args, event, ensemble, label=None):
         return str(self.root.joinpath(
-            'Catchments', catchment, 'Runs', event, ensemble, *args))
+            'Catchments', catchment, 'Runs', event,
+            label or ensemble, *args))
 
     def subcatchment_label_field(self, catchment):
         return 'SiteID'
+
+    def events(self, catchment=None):
+        base = self.root / 'Catchments' / (catchment or 'c') / 'Events'
+        return sorted(p.name for p in base.iterdir()) if base.exists() else []
+
+    def ensembles(self, catchment=None):
+        base = self.root / 'Catchments' / (catchment or 'c') / 'Ensembles'
+        return sorted(p.name for p in base.iterdir()) if base.exists() else []
 
 
 @pytest.fixture()

@@ -23,6 +23,8 @@ import xarray as xr
 from shapely.geometry import box
 
 from ..context import RunContext  # noqa: F401  (used in type-only annotation)
+from ..const import UNSET
+from ..params import deprecated_overrides
 
 import rasterio as rio
 
@@ -182,8 +184,9 @@ def mask_dnbr(
     dea_level: str = DEFAULT_DEA_LEVEL,
     dea_start_year: Optional[int] = None,
     dea_lookback: int = 6,
-    natural_code: int = 112,
+    natural_code=UNSET,
     quiet: bool = False,
+    params=None,
 ) -> None:
     """
     Mask dNBR so only pixels over DEA natural vegetation are retained.
@@ -199,9 +202,11 @@ def mask_dnbr(
     - dea_start_year: most recent year to try for the DEA mosaic;
       defaults to current year minus 1.
     - dea_lookback: number of years back to search before giving up.
-    - natural_code: DEA Land Cover class code for natural vegetation
-      (default 112 = Natural Terrestrial Vegetation).
+    - natural_code: Deprecated. Use severity.natural_veg_code (default
+      112 = Natural Terrestrial Vegetation).
     - quiet: if True, suppress INFO-level log output.
+    - params: Calibration parameters — a ParameterRecord or a
+      ModelParameters.
 
     Returns:
     - None.  Writes masked_dNBR.tif and DEA_LC_<year>.tif into the
@@ -211,6 +216,10 @@ def mask_dnbr(
         logger.setLevel(logging.WARNING)
 
     ctx.validate(require_event_dir=False)
+    natural_code = ctx._resolved_params(
+        params,
+        **deprecated_overrides({'severity.natural_veg_code': natural_code}),
+    ).parameters.severity.natural_veg_code
     catchment = ctx.catchment
 
     # -------------------------------

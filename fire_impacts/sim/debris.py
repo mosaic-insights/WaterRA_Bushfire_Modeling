@@ -4,8 +4,10 @@ Debris flow simulation for post-fire catchments.
 Computes pixel-level net erosion from slope and clay fraction inputs,
 accumulates erosion along the flow network, and applies rainfall-
 intensity thresholds to determine debris flow events at each headwater.
-Constants (HILLSLOPE_PARAMETERS, CHANNEL_PARAMETERS, etc.) are imported
-from fire_impacts.const via wildcard import.
+Constants are imported explicitly from fire_impacts.const. Not via
+wildcard: a star import makes every undefined name look plausible to
+pyflakes, which is how a reference to a local belonging to a different
+function survived review here once already.
 """
 
 import xarray as xr
@@ -16,12 +18,26 @@ from numpy.typing import ArrayLike
 import rasterio
 from rasterio.warp import Resampling
 from rasterio.transform import from_origin, Affine, rowcol
-from fire_impacts.const import *
+from fire_impacts.const import (
+    ARID_MEAN, ARID_MEAN_ADJ, AVG_CTUENT_MGPKG, CATCH_TOTAL_DEBRIS_TONNES,
+    CLY_M_ACC_KG, D8_FLOW_DIRECTIONS, DAYS_PER_SIM_YEAR,
+    DEBRIS_MASS_FIELD, DEBRIS_OP_TIMESERIES_NAME, DEBRIS_SC_SUMMARY_NAME,
+    DNBR_MEAN, DNBR_MEAN_ADJ, ERO_CUM_M_ALL_FN, ERO_CUM_M_CLY_FN,
+    ERO_CUM_M_SED_FN, FLOW_ACCUMULATION_FN, FLOW_DIRECTION_FN,
+    HF_ARID_IDX_THRESH, HF_DNBR_THRESH, HF_GRADIENT_THRESH, HF_I12_CRIT,
+    HF_YEARS_THRESH, HW_ENDP_X, HW_ENDP_Y, HW_ID, I12_CRIT_Y,
+    KG_TO_TONNES, M2_TO_HA, MILLIGRAMS_TO_KILOGRAMS, NODATA_VAL_INT,
+    PCLE_CTUENT_NAME, PERCENT_TO_FRACTION, RESULTS_FOLDER_NAME, SC_ID,
+    SED_M_ACC_KG, SLOPE_DEG_MEAN, SLOPE_DEG_MEAN_ADJ, TOT_EM_ACC_KG,
+    TOT_EM_ACC_KG_HA, UNSET,
+)
 from fire_impacts.pre import topography
 from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.context import RunContext
 from fire_impacts.pre.util import read_aligned, read_raster, write_raster
 from fire_impacts.util import load_package_data, unique_file_matching
+from fire_impacts.params import DebrisFlowParams, deprecated_overrides
+import dataclasses
 from pysheds.grid import Grid
 import os
 import tempfile
@@ -161,9 +177,34 @@ def get_clay_fraction(
 # Debris flow preparation
 # ---------------------------------------------------------------------------
 
+def load_debris_tables(debris: DebrisFlowParams):
+    """
+    Load the two lookup tables the debris-flow model runs on.
+
+    Split out of prep_debris_flow_simulation so the table *selection* is
+    testable without a fully prepared catchment: the prep needs soil clay
+    fractions and the summary-stats condition table before it reaches
+    this point, which put the parameter-to-filename hop out of reach of
+    any test.
+
+    Parameters:
+    - debris: DebrisFlowParams naming the tables. A bare filename
+      resolves against the packaged data; a path is used as given.
+
+    Returns:
+    - (hf_lookup, constituents) DataFrames. I12_crit_mean is rounded to
+      1 dp to match the precision the join expects.
+    """
+    hf_lookup = load_package_data(debris.i12_lookup)
+    hf_lookup[HF_I12_CRIT] = hf_lookup[HF_I12_CRIT].round(1)
+    constituents = load_package_data(debris.constituents_table)
+    return hf_lookup, constituents
+
+
 def prep_debris_flow_simulation(
     ctx: RunContext,
-    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+    dnbr_threshold=UNSET,
+    params=None,
 ):
     """
     Assemble all spatial inputs required to run the debris flow simulation.
@@ -174,9 +215,12 @@ def prep_debris_flow_simulation(
 
     Parameters:
     - ctx: event-level RunContext.
-    - dnbr_threshold: Headwaters with a mean dNBR below this value are
-      excluded from the debris-flow analysis. Defaults to
-      const.DEFAULT_DEBRIS_DNBR_THRESHOLD.
+    - dnbr_threshold: Deprecated. Use the debris parameter group
+      (debris.dnbr_threshold). Supplying it here is honoured as a
+      call-layer override.
+    - params: Calibration parameters — a ParameterRecord (from
+      ctx.parameters()) or a ModelParameters. Supplies the dNBR cutoff
+      and the I12 lookup table to use.
 
     Returns:
     - DataFrame of per-headwater debris flow inputs and results, as
@@ -189,6 +233,11 @@ def prep_debris_flow_simulation(
     ------------------------------------------------------------------------
     """
     ctx.validate()
+    p = ctx._resolved_params(
+        params,
+        **deprecated_overrides({'debris.dnbr_threshold': dnbr_threshold}),
+    ).parameters.debris
+    dnbr_threshold = p.dnbr_threshold
     project = ctx.project
     catchment = ctx.catchment
     id_field = project.headwater_id
@@ -245,11 +294,7 @@ def prep_debris_flow_simulation(
                 label, extra_nans, clay_nan_count, slope_nan_count,
             )
 
-    # Load the HF lookup table (I12 critical rainfall thresholds) and
-    # the debris constituent proportions table from package data
-    hf_lookup = load_package_data('HFlookup_b30pt27.csv')
-    hf_lookup['I12_crit_mean'] = hf_lookup['I12_crit_mean'].round(1)
-    debris_lookup = load_package_data('debris-constituents.csv')
+    hf_lookup, debris_lookup = load_debris_tables(p)
 
     # Create the per-event DebrisFlow prep directory if needed
     out_path = ctx.event_path('DebrisFlow')
@@ -332,6 +377,7 @@ def prep_debris_flow_simulation(
         dem_data, slope_h_ratio, transform, flow_acc_data,
         flow_dir_data, clay0_5, clay5_15, out_path,
         fire_impact_data, hf_lookup, debris_lookup, dem_meta, id_field,
+        debris=p,
     )
 
 
@@ -350,6 +396,8 @@ def net_erosion(
     flow_area: np.ndarray,
     gradient_arr: np.ndarray,
     pixel_area: float,
+    sediment_bulk_density: float = None,
+    rock_bulk_density: float = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute net erosion mass per pixel using empirical depth equations.
@@ -369,22 +417,31 @@ def net_erosion(
     - flow_area: 2-D array of upstream contributing area in m².
     - gradient_arr: 2-D array of slope gradient (rise/run ratio).
     - pixel_area: Area of each raster pixel in m².
+    - sediment_bulk_density: Density of the non-rock fraction in kg/m³.
+      Defaults to the package value.
+    - rock_bulk_density: Density of the rock fraction in kg/m³. Defaults
+      to the package value.
 
     Returns:
     - e_net_mass: 2-D array of total net erosion mass (kg) per pixel.
     - e_clay_mass: 2-D array of clay fraction of erosion mass (kg).
     - e_sediment_mass: 2-D array of non-clay sediment mass (kg).
     """
+    if sediment_bulk_density is None:
+        sediment_bulk_density = DebrisFlowParams().sediment_bulk_density
+    if rock_bulk_density is None:
+        rock_bulk_density = DebrisFlowParams().rock_bulk_density
+
     e0 = np.where(threshold_met, flow_area, 0)  # Erosion
     e = ae * (gradient_arr * e0) ** be  # erosion depth (m)
     d = ad * (gradient_arr * e0) ** bd  # deposition depth (m)
     e_net = e - d  # net erosion depth (m)
     e_net_vol = e_net * pixel_area  # erosion volume (m³)
     e_sediment_mass = (
-        e_net_vol * (1 - rock) * SEDIMENT_BULK_DENSITY
+        e_net_vol * (1 - rock) * sediment_bulk_density
     )  # sediment only (kg)
     e_rock_mass = (
-        e_net_vol * rock * ROCK_BULK_DENSITY
+        e_net_vol * rock * rock_bulk_density
     )  # rock only (kg)
     e_net_mass = e_sediment_mass + e_rock_mass  # net erosion mass (kg)
     e_clay_mass = e_sediment_mass * clay_fraction
@@ -397,6 +454,7 @@ def compute_net_erosion(
     clay_frac_05_15: np.ndarray,
     gradient_arr: np.ndarray,
     pixel_area: float,
+    debris: DebrisFlowParams = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute net erosion layers for both hillslope and channelised flow.
@@ -411,32 +469,46 @@ def compute_net_erosion(
     - clay_frac_05_15: Clay fraction array for the 5–15 cm depth layer.
     - gradient_arr: 2-D slope gradient array (rise/run).
     - pixel_area: Area of each raster pixel in m².
+    - debris: DebrisFlowParams supplying the two regimes' depth
+      coefficients, the zone thresholds and the bulk densities. Defaults
+      to the package values. A plain parameter group rather than a
+      RunContext, so this stays data-in/data-out.
 
     Returns:
     - erosion_mass_all: Total net erosion mass (kg) per pixel.
     - erosion_mass_clay: Clay component of erosion mass (kg) per pixel.
     - Sediment_mass: Non-clay sediment mass (kg) per pixel.
     """
+    if debris is None:
+        debris = DebrisFlowParams()
+
+    densities = dict(
+        sediment_bulk_density=debris.sediment_bulk_density,
+        rock_bulk_density=debris.rock_bulk_density,
+    )
+
     # Hillslope erosion — pixels with small upstream area
     er_mass_hs_total, er_mass_hs_clay, er_mass_hs_sediment = net_erosion(
-        threshold_met=flow_acc_area <= HILLSLOPE_AREA,
-        **HILLSLOPE_PARAMETERS,
+        threshold_met=flow_acc_area <= debris.hillslope_area_m2,
+        **dataclasses.asdict(debris.hillslope),
         clay_fraction=clay_frac_0_05,
         flow_area=flow_acc_area,
         gradient_arr=gradient_arr,
         pixel_area=pixel_area,
+        **densities,
     )
     # Channelised flow erosion — pixels in the channelised zone
     er_mass_ch_total, er_mass_ch_clay, er_mass_ch_sediment = net_erosion(
         threshold_met=(
-            (flow_acc_area > HILLSLOPE_AREA)
-            & (flow_acc_area <= CHANNELISED_FLOW_THRESHOLD)
+            (flow_acc_area > debris.hillslope_area_m2)
+            & (flow_acc_area <= debris.channelised_flow_threshold_m2)
         ),
-        **CHANNEL_PARAMETERS,
+        **dataclasses.asdict(debris.channel),
         clay_fraction=clay_frac_05_15,
         flow_area=flow_acc_area,
         gradient_arr=gradient_arr,
         pixel_area=pixel_area,
+        **densities,
     )
 
     erosion_mass_all = er_mass_hs_total + er_mass_ch_total
@@ -735,6 +807,45 @@ def calc_debris_constituent_cols(
     return None
 
 
+def _clip_to_lookup_bins(values, bins, label):
+    """
+    Round values onto the lookup's discrete bins, clipping out-of-range.
+
+    The join against the HF lookup is a left join on exact bin values, so
+    anything outside the tabulated range simply fails to match, leaving
+    I12_crit as NaN — and a headwater with a NaN threshold is skipped
+    entirely by the event count, silently dropping it from the results.
+
+    Clipping to the nearest tabulated bin makes that an explicit,
+    reported saturation instead. It matters for slope in particular:
+    gradients exceed the table's top bin of 1.0 above 45 degrees, which
+    is steep but reachable for a headwater mean in alpine terrain.
+
+    Parameters:
+    - values: Series of continuous values.
+    - bins: the lookup column holding the discrete bin values.
+    - label: name used in the warning.
+
+    Returns:
+    - Series rounded to 1 dp and clipped to the bin range.
+    """
+    low, high = float(np.min(bins)), float(np.max(bins))
+    rounded = values.round(1)
+    outside = (rounded < low) | (rounded > high)
+    n_outside = int(outside.sum())
+    if n_outside:
+        logger.warning(
+            '%d of %d headwaters have a %s outside the lookup range '
+            '[%.1f, %.1f] (min %.2f, max %.2f); clipping to the nearest '
+            'tabulated bin. Without clipping these would not match the '
+            'lookup and would be dropped from the debris-flow results '
+            'without further warning.',
+            n_outside, len(rounded), label, low, high,
+            float(values.min()), float(values.max()),
+        )
+    return rounded.clip(lower=low, upper=high)
+
+
 def calc_I12_crit_columns(
     fire_impact_data: pd.DataFrame,
     hf_lookup: pd.DataFrame,
@@ -747,6 +858,12 @@ def calc_I12_crit_columns(
     Rounds aridity index, dNBR, and slope values to match the lookup
     table's discrete bins, then left-joins the HF lookup twice —
     once for years < 1 and once for years >= 1.
+
+    The lookup tabulates each threshold at one time since fire (0.434
+    and 1.434 years in the packaged table, i.e. roughly 5 and 17
+    months). Those are taken as representative of their whole year: the
+    0.434-year threshold applies across the entire first post-fire year
+    and the 1.434-year one across the second.
 
     Parameters:
     - fire_impact_data: DataFrame of per-headwater debris inputs.
@@ -766,11 +883,16 @@ def calc_I12_crit_columns(
     fire_impact_data[DNBR_MEAN_ADJ] = (
         fire_impact_data[DNBR_MEAN]
     ).round(-2).astype("int64")
-    # Slope in the lookup is expressed as tenths of 100 degrees
-    # (e.g. 26° → 0.3, 90° → 0.9)
-    fire_impact_data[SLOPE_DEG_MEAN_ADJ] = (
-        fire_impact_data[SLOPE_DEG_MEAN] / 100
-    ).round(1)
+    # The lookup's slope column holds dimensionless gradients (rise/run),
+    # so degrees must be converted with tan, not divided by 100. The old
+    # `/ 100` put every headwater in a flatter bin than it belonged to:
+    # a 26 degree slope became 0.3 instead of 0.5, and since I12_crit
+    # falls as slope rises, the critical intensity came out 1.2-1.4x too
+    # high across the usual range — debris flows were under-triggered.
+    gradient = np.tan(np.radians(fire_impact_data[SLOPE_DEG_MEAN]))
+    fire_impact_data[SLOPE_DEG_MEAN_ADJ] = _clip_to_lookup_bins(
+        gradient, hf_lookup[HF_GRADIENT_THRESH], 'slope gradient',
+    )
 
     join_keys_in_lookup = [
         HF_ARID_IDX_THRESH, HF_DNBR_THRESH, HF_GRADIENT_THRESH
@@ -830,6 +952,7 @@ def debris_flow_load(
     debris_flow_constituents: pd.DataFrame,
     raster_meta,
     id_field: str,
+    debris: DebrisFlowParams = None,
 ):
     """
     Calculate per-pixel debris flow erosion and populate headwater results.
@@ -855,6 +978,9 @@ def debris_flow_load(
       values.
     - raster_meta: Rasterio metadata dict for output rasters.
     - id_field: Column name used as the headwater ID key.
+    - debris: DebrisFlowParams supplying the erosion/deposition
+      coefficients, zone thresholds and bulk densities. Defaults to the
+      package values.
 
     Returns:
     - Updated fire_impact_data DataFrame with all debris load and
@@ -873,7 +999,7 @@ def debris_flow_load(
     erosion_mass_all, erosion_mass_clay, Sediment_mass = (
         compute_net_erosion(
             flow_acc_area, clay0_5_fraction, clay5_15_fraction,
-            slope_ratio, pixel_area,
+            slope_ratio, pixel_area, debris=debris,
         )
     )
 
@@ -1276,6 +1402,7 @@ def postprocess_debris_flow(
 def aggregate_debris_flow_summary_to_subcatchments(
     ctx: RunContext,
     debris_flow_data: pd.DataFrame,
+    params=None,
 ) -> 'pd.DataFrame | None':
     """
     Aggregate headwater-level debris flow summary statistics to
@@ -1312,14 +1439,16 @@ def aggregate_debris_flow_summary_to_subcatchments(
         )
         return None
 
+    num_years = ctx._resolved_params(params).parameters.debris.num_sim_years
+
     # Build column lists, checking each column actually exists
     count_cols = [
-        f'Year{y}_num_events' for y in range(1, NUM_SIM_YEARS + 1)
+        f'Year{y}_num_events' for y in range(1, num_years + 1)
     ]
     mass_cols = [CLY_M_ACC_KG, TOT_EM_ACC_KG, SED_M_ACC_KG]
     # I12 threshold columns — aggregate min (most vulnerable) and mean
     thresh_cols = [
-        I12_CRIT_Y + str(y) for y in range(1, NUM_SIM_YEARS + 1)
+        I12_CRIT_Y + str(y) for y in range(1, num_years + 1)
     ]
 
     avail_count = [
@@ -1387,13 +1516,21 @@ def debris_flow(
     save: bool = True,
     save_daily_catchment_timeseries: bool = True,
     prepared=None,
-    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+    dnbr_threshold=UNSET,
+    params=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Run the debris flow simulation for the context.
 
     Iterates over rainfall timesteps to count events exceeding each
     headwater's I12 critical threshold for Year 1 and Year 2 post-fire.
+
+    Year windows are measured from the fire end date, matching how
+    recovery time is defined everywhere else in the package. Each
+    window's threshold comes from a single tabulated time since fire
+    (0.434 and 1.434 years in the packaged lookup) which is treated as
+    representative of that whole year, so the threshold is
+    piecewise-constant in time rather than varying continuously.
 
     Parameters:
     - ctx: run-level RunContext. Outputs land under
@@ -1407,9 +1544,11 @@ def debris_flow(
       for this context. Reusing prepared data is required when running
       multiple rainfall replicates concurrently to avoid scratch-raster
       write races.
-    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
-      excluded from the analysis. Only used when prepared is None (i.e.
-      when this call runs prep_debris_flow_simulation itself).
+    - dnbr_threshold: Deprecated. Use the debris parameter group. Only
+      used when prepared is None (i.e. when this call runs
+      prep_debris_flow_simulation itself).
+    - params: Calibration parameters, forwarded to
+      prep_debris_flow_simulation. Only used when prepared is None.
 
     Returns:
     - Tuple of (Debris_Flow_Data, event_ts) where Debris_Flow_Data is
@@ -1423,6 +1562,15 @@ def debris_flow(
     ------------------------------------------------------------------------
     """
     ctx.validate()
+    ctx.ensure_run_directory()
+    # Resolved here as well as in the prep step, because num_sim_years is
+    # used by this function's own event loop even when `prepared` is
+    # supplied and prep_debris_flow_simulation never runs.
+    record = ctx._resolved_params(
+        params,
+        **deprecated_overrides({'debris.dnbr_threshold': dnbr_threshold}),
+    )
+    debris_params = record.parameters.debris
     out_path = ctx.run_path('DebrisFlow')
     os.makedirs(out_path, exist_ok=True)
 
@@ -1444,7 +1592,7 @@ def debris_flow(
         working_deb_flow_data = prepared.copy(deep=True)
     else:
         working_deb_flow_data = prep_debris_flow_simulation(
-            ctx, dnbr_threshold=dnbr_threshold
+            ctx, params=record
         )
 
     # --- Note: this section may be superseded by recorders ----------
@@ -1457,7 +1605,27 @@ def debris_flow(
         columns=working_deb_flow_data[HW_ID],
     )
 
-    years = range(1, NUM_SIM_YEARS + 1)
+    years = range(1, debris_params.num_sim_years + 1)
+    # num_sim_years is bounded by the lookup, not by the simulation: the
+    # per-year critical-intensity columns come from the table's `years`
+    # bins, so asking for a year it has no bin for used to fail with a
+    # bare KeyError on a column name the user never chose.
+    missing_years = [
+        year for year in years
+        if I12_CRIT_Y + str(year) not in working_deb_flow_data.columns
+    ]
+    if missing_years:
+        available = [
+            col for col in working_deb_flow_data.columns
+            if str(col).startswith(I12_CRIT_Y)
+        ]
+        raise ValueError(
+            f'debris.num_sim_years is {debris_params.num_sim_years}, but '
+            f'the I12 lookup supplies thresholds only for '
+            f'{sorted(available)}. The simulation horizon is bounded by '
+            f'the years the lookup table was fitted for; supply a table '
+            f'covering more years (debris.i12_lookup) before raising it.'
+        )
     year_results = {
         year: {
             "event_counts": [],
@@ -1466,11 +1634,31 @@ def debris_flow(
         }
         for year in years
     }
-    t0 = rainfall.index[0]
+    # Windows are measured from the END OF THE FIRE, not from the first
+    # rainfall timestamp. Recovery time is defined from fire_end_date
+    # everywhere else (see context.EventDefinition), and keying off the
+    # rainfall instead silently offset the debris windows from the
+    # recovery clock the rest of the model runs on whenever the series
+    # did not happen to start at the fire end.
+    t0 = pd.Timestamp(ctx.fire_end_date)
+    if rainfall.index[0] < t0:
+        logger.info(
+            'Rainfall starts %s, before the fire end (%s); the '
+            'pre-fire portion is outside every debris-flow window and '
+            'is ignored.',
+            rainfall.index[0], t0.date(),
+        )
+    elif rainfall.index[0] > t0 + pd.Timedelta(days=DAYS_PER_SIM_YEAR):
+        logger.warning(
+            'Rainfall starts %s, more than a year after the fire end '
+            '(%s), so the first debris-flow year window is empty. Check '
+            'the rainfall period against the event dates.',
+            rainfall.index[0], t0.date(),
+        )
 
     # Iterate through each simulated year
     for year in years:
-        t1 = t0 + pd.Timedelta(days=365)
+        t1 = t0 + pd.Timedelta(days=DAYS_PER_SIM_YEAR)
         threshold_col = I12_CRIT_Y + str(year)
         rain_year = rainfall[
             (rainfall.index >= t0) & (rainfall.index < t1)
@@ -1538,7 +1726,7 @@ def debris_flow(
         )
         # Aggregate summary stats to subcatchments (skipped if none)
         aggregate_debris_flow_summary_to_subcatchments(
-            ctx, Debris_Flow_Data,
+            ctx, Debris_Flow_Data, params=record,
         )
 
     if save_daily_catchment_timeseries:
@@ -1594,7 +1782,8 @@ def event_ts_to_mass(
 
 def _prepare_debris_flow_per_catchment(
     ctx: RunContext,
-    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+    dnbr_threshold=UNSET,
+    params=None,
 ):
     """
     Run prep_debris_flow_simulation() once for the context.
@@ -1606,15 +1795,16 @@ def _prepare_debris_flow_per_catchment(
 
     Parameters:
     - ctx: event-level RunContext.
-    - dnbr_threshold: Mean-dNBR cutoff below which headwaters are
-      excluded from the analysis.
+    - dnbr_threshold: Deprecated. Use the debris parameter group.
+    - params: Calibration parameters, forwarded to
+      prep_debris_flow_simulation.
 
     Returns:
     - The prepared DataFrame returned by prep_debris_flow_simulation();
       pass straight through to debris_flow(prepared=...).
     """
     return prep_debris_flow_simulation(
-        ctx, dnbr_threshold=dnbr_threshold)
+        ctx, dnbr_threshold=dnbr_threshold, params=params)
 
 
 def run_debris_flow_replicate(
@@ -1671,7 +1861,8 @@ def run_debris_flow_all_replicates(
     save: bool = False,
     save_daily_catchment_timeseries: bool = False,
     prepared=None,
-    dnbr_threshold: float = DEFAULT_DEBRIS_DNBR_THRESHOLD,
+    dnbr_threshold=UNSET,
+    params=None,
 ) -> dict:
     """
     Run the debris flow simulation across all replicates in parallel.
@@ -1715,7 +1906,7 @@ def run_debris_flow_all_replicates(
             'dispatching replicates.', ctx.catchment,
         )
         prepared = _prepare_debris_flow_per_catchment(
-            ctx, dnbr_threshold=dnbr_threshold)
+            ctx, dnbr_threshold=dnbr_threshold, params=params)
 
     tasks = [
         dask.delayed(run_debris_flow_replicate)(

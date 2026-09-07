@@ -75,6 +75,9 @@ CATCHMENT
 # RunContext. The event must match a directory produced by PrepareData;
 # the ensemble names this climate realisation. CATCHMENT is still kept
 # as a separate variable for the plotting helpers.
+# Pass label='...' to name this run's output directory, so several
+# parameter variants of one (event, ensemble) can sit side by side.
+# It defaults to the ensemble name.
 ctx = RunContext.solo_run(
     proj, event='2019_fire', ensemble='stochastic',
     catchment=CATCHMENT,

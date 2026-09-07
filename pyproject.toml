@@ -9,6 +9,11 @@ keywords = ["hydrology", "bushfire", "water quality", "catchment"]
 license = {text = "ISC License"}
 version = "0.1"
 readme = {file = "README.md", content-type = "text/markdown"}
+# 3.11 floor: `str | None` appears in signatures without
+# `from __future__ import annotations` (e.g. sim/rainfall.py,
+# pre/project.py), which is evaluated at import time and needs 3.10+.
+# 3.10 reaches end of life in October 2026, so the supported floor is 3.11.
+requires-python = ">=3.11"
 dependencies = ["numpy", "pandas"]
 authors = [
     {name = "Joel Rahman", email = "joel@flowmatters.com.au"}
@@ -21,6 +26,11 @@ classifiers = [
     "License :: OSI Approved :: ISC License (ISCL)",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Topic :: Software Development :: Libraries :: Python Modules"
 ]
@@ -42,13 +52,31 @@ markers = [
 # eg `pytest -m network` or `pytest -m 'network or not network'`.
 addopts = "-m 'not network and not veneer'"
 
-[tool.setuptools.packages.find]
-
-[tools.setuptools]
+# Note: this table was previously spelled [tools.setuptools] (plural), which
+# setuptools silently ignores — so include-package-data never took effect and
+# the lookup tables were absent from the built wheel.
+[tool.setuptools]
 include-package-data = true
-zip-safe = true
-packages = ["fire_impacts"]
-py_modules=['fire_impacts']
+zip-safe = false
+
+[tool.setuptools.packages.find]
+include = ["fire_impacts*"]
+# The starter notebooks live inside the package so that they survive
+# installation, but they are jupytext scripts, not importable modules -
+# they ship as package data below, not as a package.
+exclude = ["fire_impacts.templates"]
+
+[tool.setuptools.package-data]
+# templates/*.py are the starter notebooks copied into a user's project
+# by `fire-impacts new` and `fire-impacts update`; without them, both
+# commands fail on an installed (non-editable) copy. The paired .ipynb
+# files are generated from these on copy, so they are not shipped.
+fire_impacts = [
+    "data/*.csv",
+    "data/*.tsv",
+    "templates/*.py",
+    "templates/jupytext.toml",
+    ]
 
 [project.scripts]
 fire-impacts = "fire_impacts.cli:app"

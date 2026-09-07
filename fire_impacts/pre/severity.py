@@ -24,6 +24,8 @@ from .util import metres_to_approx_degrees, clip_raster
 from fire_impacts import util as toputil
 from . import mask_dnbr as mdnbr
 from fire_impacts.util import date_rel
+from ..const import UNSET
+from ..params import deprecated_overrides
 from .data_sources import (
     DEA_STAC,
     DEA_STATUS_URL,
@@ -502,10 +504,11 @@ def calculate_fire_severity(
     fire_end_date,
     start_date_pre=None,
     end_date_post=None,
-    max_cloud_cover=20,
-    resolution_input=20,
+    max_cloud_cover=UNSET,
+    resolution_input=UNSET,
     bbox=None,
-    force_sensor=None,
+    force_sensor=UNSET,
+    params=None,
 ):
     """
     Calculate fire severity (NBR, dNBR) before and after the fire.
@@ -519,24 +522,41 @@ def calculate_fire_severity(
     - fire_start_date: date string for the start of the fire.
     - fire_end_date: date string for the end of the fire.
     - start_date_pre: start date for pre-fire imagery; defaults to
-      90 days before fire_start_date.
+      severity.pre_fire_window_days before fire_start_date.
     - end_date_post: end date for post-fire imagery; defaults to
-      90 days after fire_end_date.
-    - max_cloud_cover: maximum cloud cover percentage filter.
-    - resolution_input: pixel resolution in metres.
+      severity.post_fire_window_days after fire_end_date.
+    - max_cloud_cover: Deprecated. Use severity.max_cloud_cover.
+    - resolution_input: Deprecated. Use severity.resolution_m.
     - bbox: bounding box for the catchment area; calculated from the
-      catchment boundary if not supplied.
-    - force_sensor: 'landsat' or 'sentinel' to force both the pre- and
-      post-fire NBR onto a single sensor. Recommended for fires near the
-      Landsat/Sentinel-2 changeover, where the default auto-split would
-      otherwise produce an uncalibrated cross-sensor dNBR. None (default)
-      keeps the automatic split.
+      catchment boundary with a severity.bbox_buffer_km buffer if not
+      supplied.
+    - force_sensor: Deprecated. Use severity.force_sensor. 'landsat' or
+      'sentinel' forces both the pre- and post-fire NBR onto a single
+      sensor. Recommended for fires near the Landsat/Sentinel-2
+      changeover, where the default auto-split would otherwise produce an
+      uncalibrated cross-sensor dNBR. None keeps the automatic split.
+    - params: Calibration parameters — a ParameterRecord (from
+      ctx.parameters()) or a ModelParameters. Supplies the acquisition
+      settings above. These do not change the equations, but they change
+      the dNBR the whole pipeline is built on, so they are recorded.
 
     Returns:
     - None.  Saves NBR, dNBR, and metadata files to the event's
       FireSeverity folder under Events/<event>/FireSeverity/.
     """
     ctx.validate(require_event_dir=False)
+    record = ctx._resolved_params(
+        params,
+        **deprecated_overrides({
+            'severity.max_cloud_cover': max_cloud_cover,
+            'severity.resolution_m': resolution_input,
+            'severity.force_sensor': force_sensor,
+        }),
+    )
+    sev = record.parameters.severity
+    max_cloud_cover = sev.max_cloud_cover
+    resolution_input = sev.resolution_m
+    force_sensor = sev.force_sensor
     project = ctx.project
     catchment = ctx.catchment
 
@@ -548,28 +568,31 @@ def calculate_fire_severity(
     end_date_pre = date_rel(fire_start_date, -1)
     start_date_post = date_rel(fire_end_date, 1)
 
-    # If the user hasn't specified a pre-fire period, default to 90 days
+    # Imagery windows and the search bounding box were previously buried
+    # here as literals; they come from the severity parameter group now,
+    # so they are settable and land in the provenance record.
     if start_date_pre is None:
         logger.info(
             "No start date for pre-fire data provided. "
-            "Defaulting to 90 days before fire start date."
+            "Defaulting to %d days before fire start date.",
+            sev.pre_fire_window_days,
         )
-        start_date_pre = date_rel(fire_start_date, -90)
+        start_date_pre = date_rel(fire_start_date, -sev.pre_fire_window_days)
 
-    # If the user hasn't specified a post-fire period, default to 90 days
     if end_date_post is None:
         logger.info(
             "No end date for post-fire data provided. "
-            "Defaulting to 90 days after fire end date."
+            "Defaulting to %d days after fire end date.",
+            sev.post_fire_window_days,
         )
-        end_date_post = date_rel(fire_end_date, 90)
+        end_date_post = date_rel(fire_end_date, sev.post_fire_window_days)
 
     if bbox is None:
         logger.info(
             "Bounding box not provided. Calculating from shapefile "
-            "with 10 km buffer."
+            "with %g km buffer.", sev.bbox_buffer_km,
         )
-        bbox = project.catchment_bounds(catchment, 10)
+        bbox = project.catchment_bounds(catchment, sev.bbox_buffer_km)
 
     # Define the filter for cloud cover
     filter_query = f"eo:cloud_cover < {max_cloud_cover}"

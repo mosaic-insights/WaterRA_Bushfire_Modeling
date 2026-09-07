@@ -53,6 +53,51 @@ The library supports two different modes:
 
 We anticipated that the high level interface will suit most people, most of the time.
 
+### Starting a project, and keeping its notebooks current
+
+The `fire-impacts` command sets up a project directory and fills it with the starter notebooks:
+
+```
+fire-impacts new ./my-project
+```
+
+That creates the project folder structure and copies each template into it as a paired jupytext script and notebook (`PrepareData.py` + `PrepareData.ipynb`, and so on). Start with `PrepareData.ipynb`.
+
+The notebooks are yours once copied — you are expected to edit them. When a newer version of the library ships improved templates, pull them into an existing project with:
+
+```
+fire-impacts update ./my-project
+```
+
+`update` will not quietly discard your work. Before overwriting a notebook you have edited, it copies both halves of the pair into a dated folder:
+
+```
+my-project/
+└── notebook_backups/
+    └── 20260826-124505/
+        ├── PrepareData.py
+        └── PrepareData.ipynb
+```
+
+Notebooks you have *not* edited are simply replaced — there is nothing to keep — and notebooks that already match the shipped template are left untouched.
+
+To see where a project stands without changing anything:
+
+```
+fire-impacts status ./my-project      # per-notebook: up to date / out of date / edited here
+fire-impacts update ./my-project --dry-run
+```
+
+Useful options for `update`:
+
+| Option | Effect |
+|--------|--------|
+| `--only-new` | Add notebooks the project doesn't have yet; leave every existing one alone |
+| `--dry-run` | Report what would change, change nothing |
+| `--no-backup` | Overwrite edited notebooks without keeping a copy |
+
+**How "edited" is decided.** When notebooks are installed, their content is fingerprinted into `.fire_impacts_notebooks.json` in the project; a file that still matches its fingerprint has not been touched. Fingerprints cover cell *contents* only — outputs, execution counts and kernel metadata are excluded, so running a notebook does not make it look edited. In a project created before this file existed, anything differing from the current template is assumed to be your work and is backed up.
+
 ### Data requirements
 
 The following table lists the key data requirements for the library. The user must provide a catchment boundary and have local access to the DEM-H for their area. The hihg level interface automatically retrieves the other data sources from published web services.
@@ -91,14 +136,14 @@ Data is stored at the **narrowest scope it depends on**. Fire-independent work (
 
 ```mermaid
 flowchart TD
-    P["my-project/"] --> C["Catchments/&lt;catchment&gt;/"]
+    P["my-project/<br/><br/>settings.json · parameters.json"] --> C["Catchments/&lt;catchment&gt;/"]
 
-    C --> CAT["<b>catchment scope</b><br/>(fire-independent, computed once)<br/><br/>Topography · Soils · Subcatchments<br/>Erodibility: base C/K/LS factors<br/>Delivery: SDR_baseline"]
+    C --> CAT["<b>catchment scope</b><br/>(fire-independent, computed once)<br/><br/>parameters.json (overrides)<br/>Topography · Soils · Subcatchments<br/>Erodibility: base C/K/LS factors<br/>Delivery: SDR_baseline"]
     C --> EV["Events/&lt;event&gt;/"]
     C --> EN["Ensembles/&lt;ensemble&gt;/"]
     C --> RU["Runs/&lt;event&gt;/&lt;ensemble&gt;/"]
 
-    EV --> EVS["<b>event scope</b><br/>(per fire, per recovery window)<br/><br/>event.json (recovery breakpoints)<br/>FireSeverity: dNBR, masked_dNBR, FireMeta<br/>Erodibility: C/K_factor_adjusted_t*<br/>Delivery: SDR_t*"]
+    EV --> EVS["<b>event scope</b><br/>(per fire, per recovery window)<br/><br/>event.json (breakpoints + overrides)<br/>FireSeverity: dNBR, masked_dNBR, FireMeta<br/>Erodibility: C/K_factor_adjusted_t*<br/>Delivery: SDR_t*"]
     EN --> ENS["<b>ensemble scope</b><br/>(one climate realisation)<br/><br/>stochastic rainfall replicates"]
     RU --> RUS["<b>run scope</b><br/>(one event × one ensemble)<br/><br/>Results · Results_baseline<br/>DebrisFlow · manifest.json"]
 ```
@@ -107,9 +152,12 @@ The same structure, as it appears on disk:
 
 ```
 my-project/
-├── settings.json
+├── settings.json                           # written by the library — don't hand-edit
+├── parameters.json                         # calibration overrides (yours, optional)
 └── Catchments/
     └── Big-River/
+        ├── parameters.json                 # calibration overrides for this catchment
+        ├── provenance.json                 # what the catchment-scope steps used
         ├── Topography/                     # catchment scope: DEM, slope,
         ├── Soils/                          #   headwaters, aridity, soil props
         ├── Erodibility/                    #   base C_factor, K_factor, LS_factor
@@ -117,7 +165,8 @@ my-project/
         ├── Subcatchments/
         ├── Events/
         │   └── 2019_fire/                  # event scope (one fire)
-        │       ├── event.json              #   recovery breakpoints
+        │       ├── event.json              #   recovery breakpoints + overrides
+        │       ├── provenance.json         #   what the event-scope steps used
         │       ├── FireSeverity/           #   dNBR, masked_dNBR, FireMeta.csv
         │       ├── Erodibility/            #   C/K_factor_adjusted_t0, _t0_5, ...
         │       └── Delivery/               #   SDR_t0, SDR_t0_5, ...
@@ -129,8 +178,35 @@ my-project/
                     ├── Results/            #   RUSLE grids, timeseries, summaries
                     ├── Results_baseline/   #   no-fire comparison
                     ├── DebrisFlow/         #   debris-flow outputs
-                    └── manifest.json
+                    └── manifest.json        #   (run-scope provenance.json:
+                                             #    planned, see const.py)
 ```
+
+Two file names carry the calibration story, and they are **not**
+interchangeable:
+
+| File | Who writes it | What it holds |
+|---|---|---|
+| `parameters.json` | **you** | a *sparse* set of overrides — only what you want to change |
+| `provenance.json` | the library | the *full* resolved set actually used, plus where each value came from |
+
+See [Calibration parameters](#calibration-parameters) below.
+
+#### What exists in a project
+
+`proj.catchments` lists the registered catchments. Events and ensembles are
+discovered from disk per catchment, so they are methods rather than an
+attribute — there is nothing to read without knowing which catchment:
+
+```python
+proj.catchments              # ['Big-River']
+proj.events('Big-River')     # ['2019_fire', '2020_fire']
+proj.ensembles('Big-River')  # ['historical']
+```
+
+The catchment may be omitted when the project has only one.
+`list_events` / `list_ensembles` in `fire_impacts.sim` are thin wrappers
+around these.
 
 #### Addressing data with a `RunContext`
 
@@ -177,6 +253,310 @@ The high level interface automatically harmonises data wherever possible, bringi
 
 Internally, the high level interface calls the underlying functionality from the low level interface.
 
+### Calibration parameters
+
+> **Status:** every group is **live** — changing a value changes the
+> layers and results the pipeline produces, and the values used are
+> recorded in a `provenance.json` beside the outputs.
+
+Values like the post-fire cover factor, the sediment delivery ratio ceiling,
+or the debris-flow erosion coefficients are **calibration parameters**: the
+literature reports ranges for them, and they may need tuning for your region.
+They are grouped by the pipeline stage that consumes them:
+
+| Group | Controls |
+|---|---|
+| `fire_adjustment` | fire-adjusted C and K factors, and their recovery rates |
+| `delivery` | sediment delivery ratio and the connectivity index |
+| `topography` | headwater delineation and the LS factor |
+| `erosion` | the RUSLE simulation and the ash constituents table |
+| `debris` | debris-flow erosion, deposition, triggering and its lookup tables |
+| `severity` | fire-severity imagery acquisition |
+
+Unit conversions and the fixed coefficients of published equations (the McCool
+slope factors, the Brown & Foster kinetic-energy form) are **not** parameters
+and stay in `fire_impacts.const` — changing one means running a different
+model, not a tuned one.
+
+#### Where to set them
+
+Overrides resolve through five layers, **most specific winning**:
+
+```
+package defaults                                    (fire_impacts/params.py)
+  └─ my-project/parameters.json                     "this study uses these values"
+      └─ Catchments/<c>/parameters.json             "this catchment differs"
+          └─ Events/<e>/event.json  ("parameters")  "this fire differs"
+              └─ ctx.parameters(delivery__max_sdr=0.9)   one call
+```
+
+Each file is **sparse** — write only what you are changing:
+
+```json
+{
+  "fire_adjustment": { "c_peak": 0.40 },
+  "delivery":        { "max_sdr": 0.75 }
+}
+```
+
+Write them from Python rather than by hand if you prefer — this validates
+before it writes:
+
+```python
+proj.set_parameter_overrides({'delivery': {'max_sdr': 0.75}})
+proj.set_catchment_parameter_overrides(
+    'Big-River', {'topography': {'max_slope_length_m': 200.0}})
+ctx.set_event_parameter_overrides({'fire_adjustment': {'c_peak': 0.40}})   # event
+```
+
+A typo is refused, not ignored — `"mx_sdr"` raises with a suggestion, and so
+does a value out of range or of the wrong type. This is deliberate: a
+silently-ignored override would let you believe you had calibrated the model
+when you had not.
+
+#### Not every parameter can be set at every level
+
+A parameter may only be set at a level **at least as broad as the output it
+controls**. `topography` and `delivery` write layers that are built once per
+catchment and shared by every fire, so they cannot be set per event — an
+event-level value would either be ignored, or would overwrite a file the
+other events depend on.
+
+| Group | Settable at | Because it writes |
+|---|---|---|
+| `topography` | project, catchment | `Topography/Headwaters.*`, `Erodibility/LS_factor.tif` |
+| `delivery` | project, catchment | `Delivery/SDR_baseline.tif` |
+| `fire_adjustment` | project, catchment, event | `Events/<e>/Erodibility/*_adjusted_*` |
+| ↳ `default_c_factor` | project, catchment | `Erodibility/C_factor.tif` |
+| `severity` | project, catchment, event | `Events/<e>/FireSeverity/*` |
+| `erosion`, `debris` | any | `Runs/<e>/<ens>/*` |
+
+Writing one to the wrong file raises, and the error names the file to use
+instead. A one-off `ctx.parameters(...)` override is not restricted this way —
+it is explicit, transient, and recorded as such.
+
+#### Stale layers
+
+Changing a parameter does not rebuild anything, so the layers on disk can
+fall out of step with the values now in force. Every derived raster is
+stamped with the parameters that built it, as GeoTIFF tags:
+
+```
+$ gdalinfo Events/2019_fire/Delivery/SDR_t0.tif | grep FIRE_IMPACTS
+  FIRE_IMPACTS_DIGEST=sha256:9a019f573bd...
+  FIRE_IMPACTS_PARAMS={"delivery":{"ic0":0.5,"k":1.0,"max_sdr":0.8,...}}
+  FIRE_IMPACTS_VERSION=0.1
+```
+
+The simulation checks those tags against the parameters it resolves and
+**raises** rather than silently mixing two calibrations:
+
+```
+ValueError: .../SDR_t0.tif was built with different parameters than this
+run resolves — delivery.max_sdr: built with 0.8, now 0.5. Re-run the step
+that produces it, or pass the parameters it was built with.
+```
+
+Re-run the producing step, or pass `allow_stale=True` when the mismatch is
+deliberate. Only the parameters a layer actually *depends on* are compared,
+so changing an unrelated group does not flag it.
+
+The tag is per-file, which the JSON record cannot be: it survives partial
+rebuilds, orphaned layers left behind by a shortened breakpoint list, and
+the raster being copied out of the project.
+
+> **Limit:** the check covers parameters only. Re-extract the DEM,
+> re-derive dNBR, or hand-edit a C factor and every digest still matches.
+> It is one edge of a dependency graph, not the whole of it.
+
+#### Re-running over existing results
+
+A run directory is keyed by `(event, ensemble)`, so a second run of the same
+pair lands on top of the first. Results carry a signature — the parameters
+the run consumed, plus the digests of the input layers it read — and a run
+that would replace results produced under a different configuration
+**raises**:
+
+```
+ValueError: .../Runs/2019_fire/historical/Results already holds results
+produced under a different configuration — erosion.support_practice_factor:
+was 1.0, now 0.5. Re-running would replace them. Pass overwrite=True to do
+that deliberately, or results_section= to write alongside them.
+```
+
+An identical re-run is idempotent and needs no escape. Rebuilt input layers
+count as a change even when the run's own parameters are untouched, since
+the outputs depend on both.
+
+To keep several variants side by side, give each run a **label**. The label
+names the run's output directory in place of the ensemble, so a sweep is
+just several runs:
+
+```python
+for value in (0.5, 0.7, 0.9):
+    ctx = RunContext.solo_run(proj, event='2019_fire', ensemble='historical',
+                              label=f'maxsdr{int(value * 100)}')
+    rusle.run_usle_simulation(ctx, rain, recorders=recorders,
+                              params=ctx.parameters(delivery__max_sdr=value))
+```
+
+```
+Runs/2019_fire/
+├── historical/     # label defaults to the ensemble name
+├── maxsdr50/
+├── maxsdr70/
+└── maxsdr90/
+```
+
+The label defaults to the ensemble name, so a project that never uses one
+has exactly the paths it always had. Rainfall stays keyed by the ensemble,
+so every labelled variant shares one `Ensembles/<ensemble>/rainfall.nc`.
+
+Because the directory is no longer named by the ensemble, each run records
+its identity in a `run.json` written when the directory is created:
+
+```json
+{"event": "2019_fire", "ensemble": "historical", "label": "maxsdr50"}
+```
+
+`list_runs()` reads that. Pass `with_labels=True` to distinguish variants;
+without it, labelled runs of one ensemble collapse to a single
+`(event, ensemble)` pair. Two different ensembles cannot share a label —
+that raises, since they would write into each other's results.
+
+#### Substituting an input
+
+Sometimes you want to drive the model with something other than the real
+data — a scenario run ("what if this catchment burned at high severity"), a
+supplied raster, or a uniform value. That is an **input binding**, which is
+kept separate from calibration parameters: a parameter says *what
+coefficient the model uses*, a binding says *where an input comes from*.
+
+Bindings live under a `"bindings"` key in the same files as parameters, and
+resolve project → catchment → event. Two inputs are bindable — `dnbr` and
+`c_factor`:
+
+```json
+{
+  "bindings": {
+    "dnbr": { "source": "synthetic", "severity": "high" }
+  }
+}
+```
+
+| Source | Meaning |
+|---|---|
+| `derived` | the normal pipeline (default) |
+| `constant` | a uniform value; needs `units`, optional `domain` |
+| `file` | a raster you supply; needs `units` |
+| `synthetic` | sampled from a reference fire's dNBR distribution |
+
+`units` is **required** for `constant` and `file`, and valid units depend on
+the input: `dnbr` takes `"dnbr"` (the stored band-ratio difference) or
+`"dnbr_x1000"` (the conventional scale thresholds are quoted on), which
+differ by 1000×; `c_factor` takes `"dimensionless"`. Nothing about a bare
+value or a raster reveals which scale it is on, so there is no default.
+
+`synthetic` applies only to `dnbr` — there is no reference distribution to
+sample a cover factor from, and accepting one would write dNBR values into
+a C-factor file.
+
+Like parameters, a binding may only be set at a level at least as broad as
+the output it produces:
+
+| Input | Settable at | Because it writes |
+|---|---|---|
+| `dnbr` | project, catchment, event | `Events/<e>/FireSeverity/masked_dNBR.tif` |
+| `c_factor` | project, catchment | `Erodibility/C_factor.tif`, shared by every fire in the catchment |
+
+Binding `c_factor` per event would have one fire rewrite the input its
+siblings depend on, so it is refused — on reading the files as well as
+writing them, since they are hand-editable.
+
+> **Deprecated:** `fire_adjustment.default_c_factor` and the `c_factor_fn`
+> argument to `compute_adjusted_k_c` both say what a `c_factor` binding
+> says — "paint this scalar" and "use this raster". They still work and
+> warn. Supplying a binding *and* either of them raises, because nothing
+> defines which should win.
+
+`domain` decides which cells a constant fills: `catchment`, `dem_valid`, or
+`mask:<section>/<file>` to borrow an existing layer's valid cells. The
+default fills the whole catchment, which for dNBR asserts that lakes and
+bare rock burned too.
+
+A binding is resolved **once**, at preprocessing time, by writing a real
+raster to the standard path — so everything downstream is unchanged and the
+input can be opened in QGIS. Resolving writes a `dnbr_binding.json` beside
+the raster recording the binding, the effective random seed, and the
+content hash of what was written.
+
+```python
+from fire_impacts.pre.materialise import materialise_dnbr
+materialise_dnbr(ctx)      # applies whatever the layers resolve to
+```
+
+#### A note on dNBR scale
+
+dNBR is **stored** as the raw band-ratio difference (pre-fire NBR minus
+post-fire NBR, negatives clipped), which lands in roughly `[0, 1]`. It is
+**quoted and thresholded** on the conventional `0`–`1000` scale used
+throughout the fire-severity literature — and so is every threshold and
+lookup table in this package, including `fire_adjustment.dnbr_saturation`,
+`erosion.dnbr_severity_threshold` and `debris.dnbr_threshold`.
+
+`const.DNBR_SCALE` converts between them, and lives beside the default
+thresholds so the two cannot drift apart. Read dNBR through
+`pre.util.read_dnbr_aligned` / `read_dnbr_aligned_like` rather than applying
+the factor by hand: consumers used to each remember (or forget), and one that
+forgot compared a `[0, 1]` raster against a threshold of `400`, which made the
+entire high-severity branch unreachable.
+
+#### Seeing what was used
+
+`ctx.parameters()` resolves all five layers and returns a record of the values
+**and where each one came from**:
+
+```python
+record = ctx.parameters()
+record.parameters.delivery.max_sdr     # 0.75
+record.sources['delivery.max_sdr']     # 'catchment'
+record.sources_for('default')          # everything nobody chose
+record.digest()                          # 'sha256:...' — identifies this exact set
+```
+
+Reading it back later is one call — `ctx.results_provenance()` gathers the
+run's identity, the parameters it resolved and the layers it read:
+
+```python
+prov = ctx.results_provenance()
+print(prov.summary())
+prov.chosen()      # just what somebody set, as a DataFrame
+prov.to_frame()    # every parameter, with where each value came from
+prov.inputs        # layer name -> digest of the parameters that built it
+```
+
+That record is what gets written to `provenance.json` alongside the outputs it
+produced, so a result directory says what made it. The `sources` field is the
+part that matters months later: it distinguishes a deliberate `0.5` from a
+defaulted one.
+
+To run a one-off with different values — a sensitivity sweep, say — pass a
+record straight to the producer instead of persisting anything:
+
+```python
+rusle.compute_adjusted_k_c(
+    ctx, params=ctx.parameters(delivery__max_sdr=0.9))
+```
+
+**Changing a parameter does not rebuild anything by itself.** Re-run the step
+that produces the layers you changed — `compute_adjusted_k_c` for
+`fire_adjustment` and `delivery`, `extract_headwaters` / `compute_lsi` for
+`topography` (`extract_headwaters` for the headwater threshold),
+`run_usle_simulation` for `erosion`, `debris_flow` for `debris`, and
+`calculate_fire_severity` for `severity` — note that re-running severity
+invalidates everything downstream of the dNBR.
+
+
 ### Low level interface
 
 The low level interface provides access to the core functionality of the library while leaving the user/caller to manage data storage, I/O and harmonisation.
@@ -214,10 +594,12 @@ The core library code is stored in `fire_impacts` directory. The code repository
 | `<top-level>` | |
 | `├── data` | Common parameter files (eg concentrations of pollutants in ash and debris) |
 | `├── examples` | Worked example notebooks (jupytext `.py` + `.ipynb`) |
-| `├── templates` | Copyable starter notebooks for a new study (PrepareData, Simulation, SimulationEnsemble, SourceIntegration) |
 | `├── test_data` | Small spatial datasets to support examples and unit tests |
 | `└── fire_impacts` | Library code |
 | `    ├── context.py` | `RunContext` + `EventDefinition` (project / catchment / event / ensemble addressing) |
+| `    ├── cli.py` | The `fire-impacts` command (`new`, `update`, `status`) |
+| `    ├── notebooks.py` | Copying the starter notebooks into a project, and backing up edited ones |
+| `    ├── templates` | Copyable starter notebooks for a new study (PrepareData, Simulation, SimulationEnsemble, SourceIntegration). Inside the package so they ship with an install |
 | `    ├── pre` | Data pre-processing (topography, severity, soils, RUSLE factors) |
 | `    ├── sim` | Simulation (RUSLE erosion, debris flow, ensembles, results I/O) |
 | `    ├── stochastic` | Stochastic rainfall replicate generation |

@@ -4,6 +4,7 @@ eWater Source model configuration module for fire impacts modeling.
 
 from .veneer_config import (
     connect_to_veneer,
+    check_load_distributor_plugin,
     configure_load_distributor_model,
     detect_constituent,
     detect_functional_unit,
@@ -15,7 +16,8 @@ from .veneer_config import (
     save_model,
     configure_source_model_with_fire_data,
     LIKELY_CONSTITUENTS,
-    LIKELY_FUNCTIONAL_UNITS
+    LIKELY_FUNCTIONAL_UNITS,
+    LOAD_DISTRIBUTOR_DLL,
 )
 
 from .utils import (
@@ -31,9 +33,11 @@ __all__ = [
     # Configuration constants
     'LIKELY_CONSTITUENTS',
     'LIKELY_FUNCTIONAL_UNITS',
-    
+    'LOAD_DISTRIBUTOR_DLL',
+
     # Main configuration functions
     'connect_to_veneer',
+    'check_load_distributor_plugin',
     'configure_load_distributor_model',
     'detect_constituent',
     'detect_functional_unit',

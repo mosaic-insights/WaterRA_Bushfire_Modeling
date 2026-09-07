@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Report every version independently: the point of the matrix is to
+      # find the version-specific breaks, and one red cell should not hide
+      # the others. A get_origin() difference between 3.13 and 3.14 is
+      # exactly the class of bug this exists to catch.
+      fail-fast: false
+      matrix:
+        # Every version pyproject.toml claims to support. Testing a subset
+        # would mean advertising support we never exercise.
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install system libraries
+        # pg_config is needed to build dea-tools' psycopg2 dependency from
+        # source; the geospatial wheels bring their own GDAL/PROJ.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpq-dev
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # pysheds is a fork (numpy 2.0 compatibility), so it is not in
+          # requirements.txt as a plain name.
+          pip install https://github.com/joelrahman/pysheds/archive/refs/heads/master.zip
+          pip install -r requirements.txt
+          pip install -e '.[test]'
+
+      - name: Show resolved environment
+        run: pip list
+
+      - name: Run tests
+        # Network and Veneer tests are deselected by pyproject addopts:
+        # they need remote services and a Windows-only eWater SOURCE
+        # instance respectively.
+        run: pytest -q
+
+  lint:
+    name: pyflakes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install pyflakes
+        run: pip install pyflakes
+
+      - name: Check for undefined names
+        # Undefined names only, not unused imports: the package carries a
+        # backlog of those, and failing on them would mean this job is
+        # always red and therefore ignored. Undefined names are real bugs
+        # — a threading edit once referenced a local belonging to another
+        # function, which shipped because a star import made it look
+        # plausible to both the reader and the linter.
+        #
+        # Test helpers are excluded: several use `from .util import *` for
+        # shared fixtures, which defeats the check without indicating a
+        # problem. fire_impacts/__init__.py's `from .pre import *` is a
+        # deliberate public re-export and is excluded for the same reason.
+        run: |
+          pyflakes fire_impacts > /tmp/pyflakes.txt 2>&1 || true
+          grep -vE "/tests?/|fire_impacts/__init__\\.py" /tmp/pyflakes.txt \
+            > /tmp/lib.txt || true
+          if grep -E "undefined name|may be undefined" /tmp/lib.txt; then
+            echo "::error::pyflakes found undefined names in library code"
+            exit 1
+          fi
+          echo "No undefined names in library code."

@@ -85,7 +85,10 @@ def package_data_path(fn=None):
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    dirname = os.path.join(os.path.dirname(__file__), '..', 'data')
+    # Inside the package, not beside it: '..' resolved to the repo root,
+    # which exists in a source checkout but is site-packages/ in an
+    # installed wheel — so every lookup table was missing once installed.
+    dirname = os.path.join(os.path.dirname(__file__), 'data')
     if fn is None:
         return dirname
     return os.path.join(dirname, fn)
@@ -94,17 +97,30 @@ def package_data_path(fn=None):
 ###############################################################################
 def load_package_data(fn):
     """
-    Load a static package lookup table by filename.
+    Load a static lookup table by filename.
 
     Parameters:
-    - fn: Filename of the data file within the package data directory.
+    - fn: Filename of the data file within the package data directory,
+      or a path to a file elsewhere. A bare filename (no directory
+      separator) resolves against the packaged tables; anything with a
+      separator is used as given, so a caller can substitute their own
+      table without repackaging.
 
     Returns:
     - DataFrame if the file is a CSV, otherwise None.
     --------------------------------------------------------------------
+    Notes:
+    - Raises FileNotFoundError for a supplied path that does not exist,
+      rather than failing later with an unhelpful pandas error.
     --------------------------------------------------------------------
     """
-    fn = package_data_path(fn)
+    if os.sep in str(fn) or (os.altsep and os.altsep in str(fn)):
+        if not os.path.exists(fn):
+            raise FileNotFoundError(
+                f'Lookup table not found: {fn}'
+            )
+    else:
+        fn = package_data_path(fn)
     if fn.endswith('.csv'):
         logger.info(f'Loading data from {fn}')
         import pandas as pd

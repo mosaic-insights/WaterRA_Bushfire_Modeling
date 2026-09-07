@@ -400,6 +400,59 @@ def read_aligned_like(
     )
 
 
+def read_dnbr_aligned_like(path, template, **kwargs):
+    """
+    Read a dNBR raster onto a template grid, on the conventional scale.
+
+    dNBR is stored as the raw band-ratio difference (~[0, 1]) but every
+    threshold in the package is quoted on the 0-1000 scale, so the factor
+    is applied here rather than at each call site — see const.DNBR_SCALE.
+
+    Parameters:
+    - path: dNBR raster (dNBR.tif or masked_dNBR.tif).
+    - template: RasterGrid to align to.
+
+    Returns:
+    - 2-D array on the conventional 0-1000 scale.
+    """
+    return read_aligned_like(path, template, **kwargs) * c.DNBR_SCALE
+
+
+def read_dnbr_aligned(path, transform, crs, shape, **kwargs):
+    """
+    Read a dNBR raster onto an explicit grid, on the conventional scale.
+
+    The transform/crs/shape counterpart of read_dnbr_aligned_like, for
+    callers that hold a target grid rather than a RasterGrid.
+
+    Returns:
+    - 2-D array on the conventional 0-1000 scale.
+    """
+    return read_aligned(path, transform, crs, shape, **kwargs) \
+        * c.DNBR_SCALE
+
+
+def to_dnbr_scale(values):
+    """
+    Convert stored dNBR values to the conventional 0-1000 scale.
+
+    For callers that already hold an array or Series (zonal statistics,
+    for instance) rather than a path.
+    """
+    return values * c.DNBR_SCALE
+
+
+def from_dnbr_scale(values):
+    """
+    Convert conventional-scale dNBR back to the stored representation.
+
+    Used by producers that source values already on the 0-1000 scale
+    (the synthetic-fire reference rasters), so that everything written to
+    masked_dNBR.tif shares one convention.
+    """
+    return values / c.DNBR_SCALE
+
+
 def write_raster(
     path: str,
     data,
@@ -408,6 +461,7 @@ def write_raster(
     dtype='float32',
     nodata=np.nan,
     compress='lzw',
+    tags=None,
     **meta_updates,
 ):
     """
@@ -426,6 +480,10 @@ def write_raster(
     - dtype: output dtype (default float32).
     - nodata: output nodata value (default NaN).
     - compress: compression (default 'lzw'; pass None for uncompressed).
+    - tags: optional dict of GeoTIFF metadata tags. Used to stamp derived
+      layers with the parameters that produced them, so the file answers
+      "what made this?" on its own — including after it has been copied
+      out of the project directory. Values are stringified by GDAL.
     - meta_updates: any further metadata overrides.
 
     Returns:
@@ -458,6 +516,8 @@ def write_raster(
 
     with rio.open(path, 'w', **out_meta) as dst:
         dst.write(np.asarray(data).astype(out_meta['dtype']), 1)
+        if tags:
+            dst.update_tags(**tags)
     logger.debug('Wrote raster to %s', path)
 
 

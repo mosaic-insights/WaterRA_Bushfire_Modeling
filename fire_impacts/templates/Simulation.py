@@ -51,6 +51,13 @@ catchment_name = proj.catchments[0]
 # via a RunContext. The event must match a directory produced by
 # PrepareData; the ensemble names this climate realisation. Outputs
 # land under Catchments/<c>/Runs/<event>/<ensemble>/.
+# What has been prepared for this catchment? A RunContext can be built for
+# an event that does not exist yet — you might create the context before
+# running PrepareData — so it is worth checking the names first.
+proj.events(catchment_name)
+proj.ensembles(catchment_name)
+
+# %%
 ctx = RunContext.solo_run(
     proj, event='2019_fire', ensemble='stochastic',
 )
@@ -154,6 +161,56 @@ recorders = recorder_factory(ctx, rain_seq.index[0], rain_seq.index[-1])
 # %%
 
 # %% [markdown]
+# ### Calibration parameters for this run
+#
+# The RUSLE simulation and the debris flow model have their own calibration
+# parameters (`erosion` and `debris`). They resolve through the same five
+# layers as the preprocessing ones — package defaults, then
+# `<project>/parameters.json`, `Catchments/<c>/parameters.json`, the event's
+# `event.json`, then a one-off call override — with the most specific winning.
+#
+# You do not need to re-specify anything the PrepareData notebook set: the
+# context reads it back.
+#
+# > **Status:** `erosion` and `debris` are both live here — the RUSLE P
+# > factor, the dNBR severity split, the kinetic-energy rate, and the
+# > debris erosion/deposition coefficients all take effect. The
+# > preprocessing groups are live too, so the layers this run reads
+# > already reflect any overrides you set in PrepareData.
+
+# %%
+# What this run resolves, and where each value came from:
+record = ctx.parameters()
+record.parameters.erosion.support_practice_factor
+
+# %%
+# `sources` distinguishes a deliberate value from a defaulted one — the thing
+# you will want to know when you revisit these results.
+record.sources['erosion.support_practice_factor']
+
+# %%
+# `erosion` and `debris` control run-scope outputs, so unlike `topography` and
+# `delivery` they can be set at any level, including per event:
+# ctx.set_event_parameter_overrides({'erosion': {'support_practice_factor': 0.8}})
+
+# %%
+# ...or for a single run, without persisting anything. The resolved record
+# is written to provenance.json beside the results, so the outputs say what
+# produced them:
+# results = rusle.run_usle_simulation(
+#     ctx, rain_seq, recorders=recorders,
+#     params=ctx.parameters(erosion__support_practice_factor=0.8))
+
+# %% [markdown]
+# ### Stale layer check
+#
+# The C/K/SDR layers this run reads were built by PrepareData. If you have
+# changed a preprocessing parameter since then, the simulation raises
+# rather than silently mixing two calibrations — re-run
+# `compute_adjusted_k_c`, or pass `allow_stale=True` if the mismatch is
+# deliberate. Only the parameters a layer depends on are compared.
+
+# %% [markdown]
 # ### Run the simulation
 
 # %%
@@ -186,6 +243,75 @@ baseline_results = rusle.run_usle_simulation(
     recorders=baseline_recorders,
     use_fire_adjusted=False,
 )
+
+# %% [markdown]
+# ### What produced these results?
+#
+# Every run records what it was built from, beside the outputs it wrote.
+# Six months later — or when someone else opens the project — this is how
+# you find out what a set of results actually means.
+
+# %%
+# One object covering the run's identity, the parameters it resolved, and
+# the input layers it read.
+prov = ctx.results_provenance()
+print(prov.summary())
+
+# %% [markdown]
+# `chosen()` is usually the interesting half: the parameters somebody set,
+# as opposed to the ones still on package defaults. An empty result means
+# this run used the shipped calibration throughout.
+
+# %%
+prov.chosen()
+
+# %% [markdown]
+# `to_frame()` gives the whole resolved set, one row per parameter, with
+# where each value came from — `default`, `project`, `catchment`, `event`
+# or `call`. That distinction is the point: it tells a deliberate 0.5
+# apart from a defaulted one.
+
+# %%
+prov.to_frame()
+
+# %% [markdown]
+# Two runs can be compared directly, because the frames are sorted.
+
+# %%
+# baseline = ctx.results_provenance('Results_baseline')
+# prov.to_frame().compare(baseline.to_frame())
+
+# %% [markdown]
+# ### Where the inputs came from
+#
+# `inputs` maps each layer the run read to a digest of the parameters that
+# built it. The simulation checks these before it runs and refuses to mix
+# calibrations, so a mismatch is normally caught rather than discovered —
+# but the digests are here if you want to confirm two runs read the same
+# layers.
+
+# %%
+prov.inputs
+
+# %% [markdown]
+# The same information lives on each raster as GeoTIFF metadata, so a
+# layer still answers for itself once it has been copied out of the
+# project — `gdalinfo <file> | grep FIRE_IMPACTS` from a shell, or:
+
+# %%
+from fire_impacts.provenance import read_parameter_tags
+
+read_parameter_tags(ctx.event_path('Delivery', 'SDR_t0.tif'))
+
+# %% [markdown]
+# If the fire severity was substituted rather than derived — a synthetic
+# fire, a supplied raster, or a uniform value — that is recorded too,
+# including the seed actually used, so the draw can be reproduced.
+
+# %%
+from fire_impacts.pre.materialise import read_binding_record
+
+read_binding_record(ctx)   # None when dNBR came from the normal pipeline
 
 # %% [markdown]
 # ### Viewing RUSLE simulation results
@@ -263,6 +389,15 @@ rainfall.rainfall
 # Extract and inspect one replicate:
 rain_intensity_seq = rainfall.rainfall[:,9].to_pandas()
 rain_intensity_seq
+# %% [markdown]
+# ### Stale layer check
+#
+# The C/K/SDR layers this run reads were built by PrepareData. If you have
+# changed a preprocessing parameter since then, the simulation raises
+# rather than silently mixing two calibrations — re-run
+# `compute_adjusted_k_c`, or pass `allow_stale=True` if the mismatch is
+# deliberate. Only the parameters a layer depends on are compared.
+
 # %% [markdown]
 # ### Run the simulation
 

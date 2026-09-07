@@ -131,6 +131,7 @@ def save_ensemble_run(
     - pathlib.Path to the run root directory.
     """
     catchment = ctx.catchment
+    ctx.ensure_run_directory()
     root = _run_root(ctx)
     root.mkdir(parents=True, exist_ok=True)
     logger.info('Saving run to %s', root)
@@ -350,11 +351,13 @@ def list_ensembles(project, catchment) -> list[str]:
 
     Returns:
     - Sorted list of ensemble name strings found on disk.
+
+    Notes:
+    - Thin wrapper around project.ensembles(catchment), which is the
+      more discoverable spelling — asking what exists is not a
+      simulation-results question.
     """
-    base = Path(project.catchment_path(catchment)) / 'Ensembles'
-    if not base.exists():
-        return []
-    return sorted(p.name for p in base.iterdir() if p.is_dir())
+    return project.ensembles(catchment)
 
 
 def list_events(project, catchment) -> list[str]:
@@ -367,30 +370,44 @@ def list_events(project, catchment) -> list[str]:
 
     Returns:
     - Sorted list of event name strings found on disk.
+
+    Notes:
+    - Thin wrapper around project.events(catchment).
     """
-    base = Path(project.catchment_path(catchment)) / 'Events'
-    if not base.exists():
-        return []
-    return sorted(p.name for p in base.iterdir() if p.is_dir())
+    return project.events(catchment)
 
 
-def list_runs(project, catchment, *, event: str | None = None) -> list[tuple[str, str]]:
+def list_runs(project, catchment, *, event: str | None = None,
+              with_labels: bool = False) -> list:
     """
-    Return the (event, ensemble) runs available under a catchment.
+    List the runs that have produced output for a catchment.
+
+    Run directories are named by a free-form label, which defaults to the
+    ensemble name, so the ensemble is read from each run's ``run.json``
+    rather than from the path.
 
     Parameters:
-    - project: FireImpactsProject managing the directory structure.
-    - catchment: Name of the catchment to query.
-    - event: Optional event filter; if given, only runs under
-      Runs/<event>/ are returned.
+    - project: the FireImpactsProject.
+    - catchment: catchment name.
+    - event: restrict to one event.
+    - with_labels: return (event, ensemble, label) triples instead of
+      (event, ensemble) pairs. Off by default so existing callers are
+      unaffected; two labelled variants of one ensemble appear as
+      duplicate pairs without it.
 
     Returns:
-    - Sorted list of (event_name, ensemble_name) tuples found on disk.
+    - Sorted list of (event, ensemble) tuples, or (event, ensemble,
+      label) triples when with_labels is set.
+
+    Notes:
+    - A directory with no run.json predates run labelling (or was left
+      by a crash before anything was written). Its name was the ensemble
+      under the old layout, so it is reported as such.
     """
     base = Path(project.catchment_path(catchment)) / 'Runs'
     if not base.exists():
         return []
-    out: list[tuple[str, str]] = []
+    out: list = []
     event_dirs = (
         [base / event] if event is not None
         else [p for p in base.iterdir() if p.is_dir()]
@@ -398,10 +415,23 @@ def list_runs(project, catchment, *, event: str | None = None) -> list[tuple[str
     for ev_dir in event_dirs:
         if not ev_dir.exists():
             continue
-        for ens_dir in ev_dir.iterdir():
-            if ens_dir.is_dir():
-                out.append((ev_dir.name, ens_dir.name))
-    return sorted(out)
+        for run_dir in ev_dir.iterdir():
+            if not run_dir.is_dir():
+                continue
+            identity_path = run_dir / c.RUN_DEFINITION_NAME
+            if identity_path.exists():
+                with open(identity_path) as f:
+                    identity = json.load(f)
+                ensemble = identity.get('ensemble', run_dir.name)
+            else:
+                # Pre-labelling layout: the directory name was the
+                # ensemble.
+                ensemble = run_dir.name
+            out.append(
+                (ev_dir.name, ensemble, run_dir.name) if with_labels
+                else (ev_dir.name, ensemble)
+            )
+    return sorted(set(out)) if not with_labels else sorted(out)
 
 
 def load_ensemble_rainfall(ctx) -> xr.Dataset:

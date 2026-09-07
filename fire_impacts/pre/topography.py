@@ -20,13 +20,22 @@ from pysheds.view import Raster as PyshedsRaster
 from pysheds.grid import Grid
 from .project import FireImpactsProject, save_catchment_raster
 from ..context import RunContext
-from .util import *
+from ..const import UNSET
+from ..params import deprecated_overrides
+from .util import (
+    clip_and_reproject_raster, condition_dem, read_raster, slope_from_dem,
+    write_raster,
+)
 import copy
 import logging
 
 logger = logging.getLogger(__name__)
 
-from ..const import *
+from ..const import (
+    APPROX_DEGREES_TO_METRES, CRS_METRE_UNITS, D8_FLOW_DIRECTIONS,
+    FLOW_ACCUMULATION_FN, FLOW_DIRECTION_FN, FLOW_ROUTING_TYPE,
+    NODATA_VAL_INT, SLOPE_FN, SLOPE_HYDRO_FN,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +529,8 @@ def compute_flow_accum(
 
 def extract_headwaters(
     ctx: RunContext,
-    threshold_m2: float = DEFAULT_HW_THRESHOLD,
+    threshold_m2=UNSET,
+    params=None,
 ):
     """
     Delineate headwaters for a catchment based on a flow accumulation
@@ -528,8 +538,11 @@ def extract_headwaters(
 
     Parameters:
     - ctx: catchment-only RunContext.
-    - threshold_m2: contributing area threshold in square metres for
-      headwater delineation (default DEFAULT_HW_THRESHOLD).
+    - threshold_m2: Deprecated. Use the topography parameter group
+      (topography.headwater_threshold_m2). Supplying it here is honoured
+      as a call-layer override.
+    - params: Calibration parameters — a ParameterRecord (from
+      ctx.parameters()) or a ModelParameters.
 
     Returns:
     - DataFrame containing headwater summary data.
@@ -542,6 +555,13 @@ def extract_headwaters(
       Topography folder.
     ------------------------------------------------------------------------
     """
+    record = ctx._resolved_params(
+        params,
+        **deprecated_overrides({
+            'topography.headwater_threshold_m2': threshold_m2,
+        }),
+    )
+    threshold_m2 = record.parameters.topography.headwater_threshold_m2
     catchment = ctx.catchment
     new_hw_id_field = ctx.project.headwater_id
 
@@ -746,6 +766,13 @@ def extract_headwaters(
     # Save the headwater summary CSV
     hw_data = pd.DataFrame.from_records(records)
     csv_path = ctx.catchment_path("Topography", "Headwaters.csv")
+    # Headwaters are a catchment-scope layer, so the record goes beside
+    # them at catchment scope, restricted to the values that cannot vary
+    # by event (this may be called from an event context).
+    ctx.write_provenance(
+        record.restricted_to_scope('catchment'), scope='catchment',
+        groups=('topography',))
+
     logger.info("Writing summary data to CSV file: %s", csv_path)
     hw_data.to_csv(csv_path, index=False)
 

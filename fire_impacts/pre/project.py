@@ -153,6 +153,250 @@ class FireImpactsProject(object):
         with open(self._settings_fn(), 'w') as f:
             json.dump(self._settings(), f, indent=2)
 
+    # --- Calibration parameters ---------------------------------------------
+
+    ###########################################################################
+    def _parameters_fn(self):
+        """
+        Return the path to the project's parameters.json file.
+        ----------------------------------------------------------------
+        Notes:
+        - Deliberately separate from settings.json. settings.json is
+          machine-written: _settings() only serialises the four known
+          attributes and _write() rewrites the file whenever a catchment
+          or subcatchment layer is added, so a hand-added key there would
+          be silently dropped.
+        ----------------------------------------------------------------
+        """
+        return os.path.join(self.project_path, const.PARAMETERS_FILE_NAME)
+
+    ###########################################################################
+    def parameter_overrides(self) -> dict:
+        """
+        Return the project-scope parameter overrides as a plain dict.
+
+        Reads <project>/parameters.json, which is optional and
+        hand-editable. An absent file means "no overrides" — every value
+        falls back to the package defaults.
+
+        Returns:
+        - Nested dict of {group: {field: value}}. Empty when the file is
+          absent.
+        ----------------------------------------------------------------
+        Notes:
+        - The dict is validated (unknown keys rejected, ranges checked)
+          when it is merged by RunContext.parameters(), not here, so a
+          partially-written file can still be inspected.
+        ----------------------------------------------------------------
+        """
+        return _parameters_only(
+            self._read_parameter_overrides(self._parameters_fn()))
+
+    ###########################################################################
+    def set_parameter_overrides(self, overrides) -> dict:
+        """
+        Write project-scope parameter overrides to parameters.json.
+
+        Parameters:
+        - overrides: a ModelParameters instance, or a nested dict of
+          {group: {field: value}}. A ModelParameters is written in full;
+          a dict is written as given (so it stays a sparse override set).
+
+        Returns:
+        - The dict written.
+        ----------------------------------------------------------------
+        Notes:
+        - Validated before writing: an invalid override raises rather
+          than leaving a file the next run would reject.
+        ----------------------------------------------------------------
+        """
+        return self._write_parameter_overrides(
+            self._parameters_fn(), overrides, scope='project',
+        )
+
+    ###########################################################################
+    def binding_overrides(self) -> dict:
+        """
+        Return project-scope input bindings from parameters.json.
+        ----------------------------------------------------------------
+        Notes:
+        - Bindings share the file with parameters, under a separate
+          "bindings" key: they are the same kind of user-authored
+          configuration and splitting them across two files would mean
+          two places to look.
+        ----------------------------------------------------------------
+        """
+        return self._read_parameter_overrides(
+            self._parameters_fn()).get('bindings', {})
+
+    ###########################################################################
+    def catchment_binding_overrides(self, catchment: str) -> dict:
+        """
+        Return catchment-scope input bindings.
+        ----------------------------------------------------------------
+        """
+        return self._read_parameter_overrides(
+            self._catchment_parameters_fn(catchment)).get('bindings', {})
+
+    ###########################################################################
+    def _catchment_parameters_fn(self, catchment: str):
+        """
+        Return the path to a catchment's parameters.json.
+        ----------------------------------------------------------------
+        """
+        return self.catchment_path(catchment, const.PARAMETERS_FILE_NAME)
+
+    ###########################################################################
+    def catchment_parameter_overrides(self, catchment: str) -> dict:
+        """
+        Return catchment-scope parameter overrides as a plain dict.
+
+        Reads Catchments/<catchment>/parameters.json, which is optional
+        and hand-editable. Sits between the project defaults and the
+        event overrides in the resolution order, and is the level at
+        which catchment-scoped groups (topography, delivery) should be
+        set — they control layers written once per catchment, so an
+        event-level value for them is rejected.
+
+        Returns:
+        - Nested dict of {group: {field: value}}. Empty when absent.
+        ----------------------------------------------------------------
+        """
+        return _parameters_only(self._read_parameter_overrides(
+            self._catchment_parameters_fn(catchment)
+        ))
+
+    ###########################################################################
+    def set_catchment_parameter_overrides(self, catchment: str, overrides):
+        """
+        Write catchment-scope parameter overrides.
+
+        Parameters:
+        - catchment: the catchment to write for.
+        - overrides: a ModelParameters instance, or a nested dict of
+          {group: {field: value}}.
+
+        Returns:
+        - The dict written.
+        ----------------------------------------------------------------
+        Notes:
+        - Validated before writing, including scope: a catchment file may
+          carry anything except project-scoped values (of which there are
+          currently none).
+        ----------------------------------------------------------------
+        """
+        _assert_catchment_registered_for_params(self, catchment)
+        return self._write_parameter_overrides(
+            self._catchment_parameters_fn(catchment),
+            overrides, scope='catchment',
+        )
+
+    ###########################################################################
+    def _read_parameter_overrides(self, path: str) -> dict:
+        """Read one parameters.json, returning {} when it is absent."""
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f'{path} is not valid JSON: {exc}') from None
+        if not isinstance(data, dict):
+            raise ValueError(
+                f'{path} must contain a JSON object of '
+                f'{{group: {{field: value}}}}, got {type(data).__name__}.'
+            )
+        return data
+
+    ###########################################################################
+    def _write_parameter_overrides(self, path: str, overrides, *, scope: str):
+        """Validate and write one parameters.json. Shared by the project
+        and catchment stores."""
+        from ..params import ModelParameters, check_scope, sparse_overrides
+        if isinstance(overrides, ModelParameters):
+            # Reduce to what actually differs from the package defaults.
+            # Writing the full set would make every default an explicit
+            # user setting: sources would read back as chosen-everywhere,
+            # and a later release that fixes a default would be silently
+            # overridden by the frozen file.
+            data = sparse_overrides(overrides)
+        else:
+            data = dict(overrides or {})
+            # Validate by merging onto the defaults; raises on unknown
+            # keys, wrong types, or out-of-range values.
+            try:
+                ModelParameters.from_dict(data)
+            except ValueError as exc:
+                raise ValueError(f'For {path}: {exc}') from None
+        check_scope(data, scope)
+        self._merge_into_settings_file(path, data, drop='parameters')
+        logger.info('Wrote %s parameters to %s', scope, path)
+        return data
+
+    ###########################################################################
+    def _merge_into_settings_file(self, path: str, data: dict, *, drop: str):
+        """Write one concern into a shared overrides file, keeping the
+        other. parameters.json holds parameter groups at the top level and
+        bindings under a "bindings" key; writing either as the whole file
+        would erase the other."""
+        existing = self._read_parameter_overrides(path)
+        if drop == 'parameters':
+            merged = dict(data)
+            if existing.get('bindings'):
+                merged['bindings'] = existing['bindings']
+        else:
+            merged = {k: v for k, v in existing.items() if k != 'bindings'}
+            if data:
+                merged['bindings'] = data
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(merged, f, indent=2)
+
+    ###########################################################################
+    def set_binding_overrides(self, bindings):
+        """
+        Write project-scope input bindings to parameters.json.
+        ----------------------------------------------------------------
+        """
+        return self._write_binding_overrides(
+            self._parameters_fn(), bindings, scope='project')
+
+    ###########################################################################
+    def set_catchment_binding_overrides(self, catchment: str, bindings):
+        """
+        Write catchment-scope input bindings.
+        ----------------------------------------------------------------
+        Notes:
+        - This is where a c_factor binding belongs: C_factor.tif is built
+          once per catchment and shared by every fire in it.
+        ----------------------------------------------------------------
+        """
+        _assert_catchment_registered_for_params(self, catchment)
+        return self._write_binding_overrides(
+            self._catchment_parameters_fn(catchment), bindings,
+            scope='catchment')
+
+    ###########################################################################
+    def _write_binding_overrides(self, path: str, bindings, *, scope: str):
+        """Validate and write the bindings half of one overrides file."""
+        from ..bindings import InputBindings, check_binding_scope
+        if isinstance(bindings, InputBindings):
+            data = {
+                name: binding.to_dict()
+                for name, binding in bindings.to_dict().items()
+                if binding.get('source') != 'derived'
+            }
+        else:
+            data = dict(bindings or {})
+            try:
+                InputBindings.from_dict(data)
+            except ValueError as exc:
+                raise ValueError(f'For {path}: {exc}') from None
+        check_binding_scope(data, scope)
+        self._merge_into_settings_file(path, data, drop='bindings')
+        logger.info('Wrote %s bindings to %s', scope, path)
+        return data
+
     # --- Path helpers -------------------------------------------------------
 
     ###########################################################################
@@ -184,6 +428,60 @@ class FireImpactsProject(object):
                 )
             return base
         return os.path.join(base, catchment, *args)
+
+    ###########################################################################
+    def events(self, catchment: str = None):
+        """
+        Return the event names that exist under a catchment.
+
+        Parameters:
+        - catchment: Name of the catchment. Optional when the project
+          has exactly one.
+
+        Returns:
+        - Sorted list of event names found on disk. Empty when the
+          catchment has no Events folder yet.
+        ----------------------------------------------------------------
+        Notes:
+        - A method rather than an attribute like `catchments`, because
+          events are discovered from disk per catchment rather than
+          registered in settings.json — there is nothing to read without
+          knowing which catchment to look under.
+        ----------------------------------------------------------------
+        """
+        return self._names_under(catchment, 'Events')
+
+    ###########################################################################
+    def ensembles(self, catchment: str = None):
+        """
+        Return the ensemble names that exist under a catchment.
+
+        Parameters:
+        - catchment: Name of the catchment. Optional when the project
+          has exactly one.
+
+        Returns:
+        - Sorted list of ensemble names found on disk.
+        ----------------------------------------------------------------
+        """
+        return self._names_under(catchment, 'Ensembles')
+
+    ###########################################################################
+    def _names_under(self, catchment, folder: str):
+        """Sorted names of the directories under one catchment folder."""
+        if catchment is None:
+            # catchment_path(None) is the Catchments root, not the sole
+            # catchment, so resolve the name rather than passing None on.
+            if len(self.catchments) != 1:
+                raise ValueError(
+                    f'Project has {len(self.catchments)} catchments — name '
+                    f'the one to query. Known: {list(self.catchments)}'
+                )
+            catchment = self.catchments[0]
+        base = Path(self.catchment_path(catchment)) / folder
+        if not base.exists():
+            return []
+        return sorted(p.name for p in base.iterdir() if p.is_dir())
 
     ###########################################################################
     def event_path(
@@ -255,29 +553,35 @@ class FireImpactsProject(object):
         *args,
         event: str,
         ensemble: str,
+        label: str = None,
         ):
         """
-        Resolve a path under a catchment's (event, ensemble) run folder.
+        Resolve a path under a catchment's run folder.
 
         Parameters:
         - catchment: Name of the catchment.
         - args: Path components appended below the run folder.
         - event: Event name (required).
         - ensemble: Ensemble name (required).
+        - label: Name for this run's outputs. Defaults to the ensemble
+          name, so a project that never uses labels has exactly the
+          paths it always had.
 
         Returns:
-        - Catchments/<catchment>/Runs/<event>/<ensemble>/<args>.
+        - Catchments/<catchment>/Runs/<event>/<label or ensemble>/<args>.
         ----------------------------------------------------------------
         Notes:
-        - A run is the cartesian product of one event and one ensemble.
-          Simulation outputs (RUSLE grids, debris flow summaries,
-          combined timeseries) live here. Input fire-side data is read
-          from event_path; input rainfall is read from ensemble_path.
+        - A run pairs one event with one ensemble. Simulation outputs
+          (RUSLE grids, debris flow summaries, combined timeseries) live
+          here. Input fire-side data is read from event_path; input
+          rainfall is read from ensemble_path — which is keyed by the
+          ensemble, not the label, so every labelled variant of a run
+          shares one copy of the rainfall.
         ----------------------------------------------------------------
         """
         return os.path.join(
             self.catchment_path(catchment),
-            'Runs', event, ensemble,
+            'Runs', event, label or ensemble,
             *args,
             )
 
@@ -1936,6 +2240,25 @@ class FireImpactsProject(object):
 
 
 ###############################################################################
+def _parameters_only(data: dict) -> dict:
+    """Strip the bindings half out of a shared overrides file.
+
+    parameters.json carries parameter groups at the top level and input
+    bindings under a "bindings" key. Handing the whole file to the
+    parameter validator makes "bindings" look like an unknown group.
+    """
+    return {k: v for k, v in (data or {}).items() if k != 'bindings'}
+
+
+def _assert_catchment_registered_for_params(project, catchment):
+    """Raise if a catchment name is not registered with the project."""
+    if catchment not in project.catchments:
+        raise ValueError(
+            f"Catchment {catchment!r} is not registered with the project. "
+            f"Known: {list(project.catchments)}"
+        )
+
+
 def plot_catchment_boundary(
     project: FireImpactsProject,
     catchment: str,
@@ -2366,7 +2689,7 @@ def format_dNBR(series: pd.Series):
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
-    return series.clip(lower=0).mul(1000).astype(np.float64)
+    return series.clip(lower=0).mul(const.DNBR_SCALE).astype(np.float64)
 
 
 ###############################################################################

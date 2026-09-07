@@ -158,6 +158,12 @@ class RunContext:
     catchment: str
     event: str | None = None
     ensemble: str | None = None
+    # Names this run's output directory. Defaults to the ensemble name,
+    # so a project that never labels a run has the paths it always had.
+    # A label lets several parameter variants of one (event, ensemble)
+    # sit side by side without a further level of nesting; the ensemble
+    # is recorded in run.json rather than encoded in the path.
+    label: str | None = None
 
     # -- Constructors --------------------------------------------------------
 
@@ -205,18 +211,23 @@ class RunContext:
         event: str,
         ensemble: str,
         catchment: str | None = None,
+        label: str | None = None,
     ) -> 'RunContext':
         """Convenience for the single-catchment case.
 
         Returns the unique (event, ensemble) run context. If ``catchment``
         is None and the project has exactly one catchment, that catchment
         is used; otherwise ``catchment`` must be supplied.
+
+        ``label`` names the output directory, defaulting to the ensemble
+        name. Give one to keep several parameter variants of the same
+        (event, ensemble) side by side.
         """
         catchment = _resolve_solo_catchment(project, catchment)
         _assert_catchment_registered(project, catchment)
         return cls(
             project=project, catchment=catchment,
-            event=event, ensemble=ensemble,
+            event=event, ensemble=ensemble, label=label,
         )
 
     @classmethod
@@ -382,10 +393,19 @@ class RunContext:
             self.catchment, *args, ensemble=self.ensemble,
         )
 
+    @property
+    def run_label(self) -> str:
+        """The name of this run's output directory.
+
+        The label when one is set, otherwise the ensemble name.
+        """
+        return self.label or self.ensemble
+
     def run_path(self, *args) -> str:
         """Resolve a path under this context's run folder.
 
-        Raises if this context has no ensemble.
+        Named by :attr:`run_label`. Raises if this context has no
+        ensemble.
         """
         if self.ensemble is None:
             raise ValueError(
@@ -394,7 +414,7 @@ class RunContext:
             )
         return self.project.run_path(
             self.catchment, *args,
-            event=self.event, ensemble=self.ensemble,
+            event=self.event, ensemble=self.ensemble, label=self.label,
         )
 
     # -- Event definition (fire dates + recovery breakpoints) ----------------
@@ -427,10 +447,10 @@ class RunContext:
         If no event.json exists yet, the package default breakpoints are
         used and a warning is logged.
         """
+        self.require_event_directory()
         path = self._event_definition_path()
         if os.path.exists(path):
-            with open(path) as f:
-                data = json.load(f)
+            data = self._read_event_json()
         else:
             logger.warning(
                 'No %s for catchment %s event %s; using the default '
@@ -450,18 +470,453 @@ class RunContext:
 
         Validates the breakpoints (at least two, strictly increasing)
         before writing. Returns the resulting EventDefinition.
+
+        Merges into any existing event.json rather than replacing it, so
+        parameter overrides written by set_parameter_overrides survive.
         """
         const.recovery_windows(breakpoints)
-        path = self._event_definition_path()
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         definition = EventDefinition(
             fire_start_date=self.fire_start_date,
             fire_end_date=self.fire_end_date,
             recovery_breakpoints=list(breakpoints),
         )
-        with open(path, 'w') as f:
-            json.dump(definition.to_dict(), f, indent=2)
+        self._update_event_json(definition.to_dict())
         return definition
+
+    # -- Calibration parameters ---------------------------------------------
+
+    def event_parameter_overrides(self) -> dict:
+        """Return this event's parameter overrides from event.json.
+
+        Empty dict when the event has none (or has no event.json yet).
+        Raises if this context has no event.
+        """
+        return self._read_event_json().get('parameters', {})
+
+    def set_event_parameter_overrides(self, overrides) -> dict:
+        """Persist event-scope parameter overrides to event.json.
+
+        Parameters:
+        - overrides: a ModelParameters instance, or a nested dict of
+          {group: {field: value}}. Either way only what differs from the
+          package defaults is stored, so the file records choices rather
+          than pinning every default. A ModelParameters carrying
+          catchment-scoped changes is still refused — those belong in the
+          catchment file.
+
+        Merges into any existing event.json, leaving recovery_breakpoints
+        untouched. Validated before writing.
+        """
+        from .params import ModelParameters, check_scope, sparse_overrides
+        if isinstance(overrides, ModelParameters):
+            # Only what differs from the defaults — see sparse_overrides.
+            data = sparse_overrides(overrides)
+        else:
+            data = dict(overrides or {})
+            ModelParameters.from_dict(data)   # validate; raises on bad keys
+        # An event file may not carry catchment-scoped values: the layers
+        # they control are written once per catchment, so an event-level
+        # value would either be ignored or would overwrite a file the
+        # sibling events share.
+        check_scope(data, 'event')
+        self._update_event_json({'parameters': data})
+        return data
+
+    # -- Run identity --------------------------------------------------------
+
+    def ensure_run_directory(self) -> str:
+        """Create this run's output directory and record what it is.
+
+        The directory is named by :attr:`run_label`, which need not be
+        the ensemble name, so the ensemble cannot be read back off the
+        path. ``run.json`` carries it, and is written here — when the
+        directory is created — rather than by save_ensemble_run, which
+        only runs on success. A run that crashes midway would otherwise
+        leave a directory nothing could identify.
+
+        Raises if the directory already belongs to a different
+        (event, ensemble): two ensembles given the same label would
+        otherwise write into each other's results.
+
+        Returns:
+        - The run directory path.
+        """
+        root = self.run_path()
+        os.makedirs(root, exist_ok=True)
+        path = os.path.join(root, const.RUN_DEFINITION_NAME)
+
+        identity = {
+            'event': self.event,
+            'ensemble': self.ensemble,
+            'label': self.run_label,
+        }
+        if os.path.exists(path):
+            with open(path) as f:
+                existing = json.load(f)
+            clash = {
+                key: (existing.get(key), identity[key])
+                for key in ('event', 'ensemble')
+                if existing.get(key) != identity[key]
+            }
+            if clash:
+                detail = '; '.join(
+                    f'{key}: directory belongs to {was!r}, this run is {now!r}'
+                    for key, (was, now) in sorted(clash.items())
+                )
+                raise ValueError(
+                    f'{root} already holds a different run — {detail}. Two '
+                    f'runs cannot share a label unless they are the same '
+                    f'(event, ensemble); give this one a different label.'
+                )
+            return root
+
+        with open(path, 'w') as f:
+            json.dump(identity, f, indent=2)
+        return root
+
+    def run_identity(self) -> dict | None:
+        """Return this run directory's recorded identity, or None."""
+        path = os.path.join(self.run_path(), const.RUN_DEFINITION_NAME)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return json.load(f)
+
+    # -- Input bindings ------------------------------------------------------
+
+    def event_binding_overrides(self) -> dict:
+        """Return this event's input bindings from event.json."""
+        return self._read_event_json().get('bindings', {})
+
+    def set_event_binding_overrides(self, bindings) -> dict:
+        """Persist event-scope input bindings to event.json.
+
+        Parameters:
+        - bindings: an InputBindings instance, or a nested dict of
+          {input: {source: ..., ...}}.
+
+        Validated before writing, and merged into event.json alongside
+        the recovery breakpoints and parameter overrides.
+        """
+        from .bindings import InputBindings, check_binding_scope
+
+        if isinstance(bindings, InputBindings):
+            data = {
+                name: binding
+                for name, binding in bindings.to_dict().items()
+                if binding.get('source') != 'derived'
+            }
+        else:
+            data = dict(bindings or {})
+            InputBindings.from_dict(data)   # validate
+        # An event file may only carry event-scoped inputs. c_factor
+        # builds a catchment-level layer every fire in the catchment
+        # shares, so binding it per event would have one event rewrite
+        # the others' input.
+        check_binding_scope(data, 'event')
+        self._update_event_json({'bindings': data})
+        return data
+
+    def catchment_binding_overrides(self) -> dict:
+        """Return this context's catchment-scope input bindings."""
+        return self.project.catchment_binding_overrides(self.catchment)
+
+    def set_catchment_binding_overrides(self, bindings) -> dict:
+        """Persist catchment-scope bindings for this context's catchment.
+
+        Where a c_factor binding belongs; set_event_binding_overrides
+        refuses it.
+        """
+        return self.project.set_catchment_binding_overrides(
+            self.catchment, bindings)
+
+    def bindings(self):
+        """Resolve this context's input bindings.
+
+        Merges the project, catchment and event layers, most specific
+        winning. Unlike :meth:`parameters` there is deliberately no
+        call-site layer: resolving a binding writes a raster, so an
+        override at simulation time would either rewrite a preprocessing
+        artefact mid-run or be silently ignored. Bindings are applied at
+        exactly one point, by the function that materialises them.
+
+        Returns:
+        - An :class:`fire_impacts.bindings.InputBindings`.
+        """
+        from .bindings import InputBindings, check_binding_scope
+
+        merged: dict = {}
+        for layer, data, where in (
+            ('project', self.project.binding_overrides(),
+             const.PARAMETERS_FILE_NAME),
+            ('catchment',
+             self.project.catchment_binding_overrides(self.catchment),
+             f'{self.catchment}/{const.PARAMETERS_FILE_NAME}'),
+            ('event',
+             self.event_binding_overrides() if self.event else {},
+             f'{self.event}/{const.EVENT_DEFINITION_NAME}'),
+        ):
+            if not data:
+                continue
+            # Checked on read as well as on write: these files are
+            # hand-editable, so the setters are not the only way in.
+            try:
+                check_binding_scope(data, layer)
+            except ValueError as exc:
+                raise ValueError(f'In {where}: {exc}') from None
+            merged.update(data)
+        return InputBindings.from_dict(merged)
+
+    # -- Catchment-scope overrides (delegate to the project store) ----------
+
+    def catchment_parameter_overrides(self) -> dict:
+        """Return this context's catchment-scope parameter overrides."""
+        return self.project.catchment_parameter_overrides(self.catchment)
+
+    def set_catchment_parameter_overrides(self, overrides) -> dict:
+        """Persist catchment-scope overrides for this context's catchment.
+
+        This is where catchment-scoped groups (topography, delivery) must
+        be set; :meth:`set_parameter_overrides` rejects them.
+        """
+        return self.project.set_catchment_parameter_overrides(
+            self.catchment, overrides,
+        )
+
+    def parameters(self, **overrides):
+        """Resolve this context's calibration parameters.
+
+        Merges five layers, most specific winning: the package defaults,
+        ``<project>/parameters.json``, this catchment's
+        ``Catchments/<c>/parameters.json``, this event's ``parameters``
+        key in event.json (skipped for a catchment-only context), and any
+        call-site overrides given here as ``group__field=value``.
+
+        Each parameter declares the scope of the output it controls, and
+        every persisted layer is checked against it on read as well as on
+        write — so a catchment-scoped value hand-added to an event file
+        raises rather than silently rewriting the layers the other events
+        share (see :func:`fire_impacts.params.check_scope`). Call-site
+        overrides are deliberately unrestricted.
+
+        Parameters:
+        - overrides: call-site overrides, e.g.
+          ``ctx.parameters(delivery__max_sdr=0.9)``.
+
+        Returns:
+        - A :class:`fire_impacts.params.ParameterRecord` carrying the
+          resolved values, the origin of each one, and a digest.
+
+        Notes:
+        - Unknown group or field names raise rather than being ignored,
+          at every layer.
+        """
+        from .params import nest_overrides, resolve_parameters
+
+        # Check the persisted layers on the way IN, not only when they are
+        # written. Both files are documented as hand-editable, so the
+        # setters are not the only way a value gets into them — and a
+        # catchment-scoped value hand-added to an event file is exactly the
+        # cross-event corruption the scope system exists to prevent
+        # (fire A's event.json rewriting the shared SDR_baseline.tif).
+        layers = []
+        for layer, data, where in (
+            ('project', self.project.parameter_overrides(),
+             const.PARAMETERS_FILE_NAME),
+            ('catchment', self.catchment_parameter_overrides(),
+             f'{self.catchment}/{const.PARAMETERS_FILE_NAME}'),
+        ):
+            _check_layer_scope(data, layer, where)
+            layers.append((layer, data))
+        if self.event is not None:
+            event_data = self.event_parameter_overrides()
+            _check_layer_scope(
+                event_data, 'event',
+                f'{self.event}/{const.EVENT_DEFINITION_NAME}',
+            )
+            layers.append(('event', event_data))
+        if overrides:
+            # The call layer carries exactly the keys the caller named,
+            # NOT a diff against the package defaults. Diffing would drop
+            # an explicit override that happens to equal the default, so
+            # ctx.parameters(delivery__max_sdr=0.8) against a project file
+            # holding 0.9 would silently resolve to 0.9 — the failure mode
+            # this whole system exists to prevent. If the caller typed it,
+            # they chose it.
+            layers.append(('call', nest_overrides(overrides)))
+        return resolve_parameters(layers)
+
+    def _resolved_params(self, params=None, **overrides):
+        """Resolve parameters for a model function.
+
+        The single entry point every public pre/sim function uses, so the
+        precedence rules live in one place:
+
+        - ``params`` given: it is authoritative and returned as a record
+          (a bare :class:`~fire_impacts.params.ModelParameters` is wrapped,
+          attributing every leaf to 'call'). The caller has already
+          resolved, so the layers are not re-read.
+        - ``params`` not given: the five layers are merged as in
+          :meth:`parameters`, with ``overrides`` as the call layer.
+
+        Passing both ``params`` and an override for the same value is
+        ambiguous, so it raises rather than silently picking one.
+
+        Parameters:
+        - params: a ParameterRecord or ModelParameters, or None.
+        - overrides: call-layer overrides as ``group__field=value``,
+          typically built by
+          :func:`~fire_impacts.params.deprecated_overrides` from legacy
+          keyword arguments.
+
+        Returns:
+        - A :class:`~fire_impacts.params.ParameterRecord`.
+        """
+        from .params import as_record
+
+        if params is None:
+            return self.parameters(**overrides)
+        if overrides:
+            clashes = sorted(
+                key.replace('__', '.') for key in overrides
+            )
+            raise ValueError(
+                f'Cannot pass params= together with an override for '
+                f'{clashes}: which one wins is ambiguous. Either set the '
+                f'value in the params you pass, or drop params= and let '
+                f'the context resolve.'
+            )
+        return as_record(params)
+
+    def write_provenance(self, record, *, scope: str, section=None,
+                         groups=None, extra=None) -> str:
+        """Write a resolved parameter record beside the outputs it produced.
+
+        Parameters:
+        - record: the ParameterRecord the step resolved.
+        - scope: 'catchment', 'event' or 'run' — which output tree this
+          step wrote to.
+        - section: for run scope, the results sub-folder (e.g. 'Results').
+          Ignored for catchment and event scope, which have no sections.
+        - groups: parameter groups this step actually consumed. When
+          given, only those groups are updated and the rest of an
+          existing record is preserved — several steps write catchment
+          scope (extract_headwaters, compute_lsi, the base C/K build) and
+          the last to run would otherwise erase what the others recorded.
+          None writes the whole record.
+        - extra: additional top-level keys to store alongside the record,
+          such as the run signature used to detect an overwrite. Kept
+          outside 'values' so the record's digest still describes exactly
+          the parameters.
+
+        Returns:
+        - The path written.
+
+        Notes:
+        - Deliberately a different file from parameters.json: that is the
+          sparse override *input* a user edits, this is the full resolved
+          *output*. Writing the record back into an override file would
+          turn every package default into an explicit user setting on the
+          first run, which destroys the default/chosen distinction the
+          record exists to preserve.
+        """
+        path = self._provenance_path(scope, section)
+        data = record.to_dict()
+        if groups is not None:
+            existing = self.read_provenance(scope=scope, section=section)
+            if existing is not None:
+                merged = existing.to_dict()
+                for group in groups:
+                    if group in data['values']:
+                        merged['values'][group] = data['values'][group]
+                prefixes = tuple(f'{g}.' for g in groups)
+                merged['sources'] = {
+                    **{k: v for k, v in merged['sources'].items()
+                       if not k.startswith(prefixes)},
+                    **{k: v for k, v in data['sources'].items()
+                       if k.startswith(prefixes)},
+                }
+                merged['resolved_at'] = data['resolved_at']
+                merged['digest'] = _digest_of(merged['values'])
+                data = merged
+        if extra:
+            data = {**data, **extra}
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2, default=str)
+        logger.info('Wrote parameter provenance to %s', path)
+        return path
+
+    def results_provenance(self, section=None):
+        """How the results in one section were produced.
+
+        Combines the run's identity, the parameters it resolved and the
+        input layers it read into one object — see
+        :class:`fire_impacts.provenance.RunProvenance`. The lower-level
+        :meth:`read_provenance` returns only the parameter record.
+
+        Parameters:
+        - section: results sub-folder. Defaults to the standard Results
+          folder.
+
+        Returns:
+        - A RunProvenance, or None when that section has no record.
+        """
+        from .provenance import read_run_provenance
+
+        return read_run_provenance(self, section=section)
+
+    def read_provenance(self, *, scope: str, section=None):
+        """Read back a provenance record, or None when absent.
+
+        Returns a :class:`~fire_impacts.params.ParameterRecord`.
+        """
+        from .params import ParameterRecord
+
+        path = self._provenance_path(scope, section)
+        if not os.path.exists(path):
+            return None
+        with open(path) as f:
+            return ParameterRecord.from_dict(json.load(f))
+
+    def _provenance_path(self, scope: str, section=None) -> str:
+        """Resolve the provenance path for a scope (shared by read/write)."""
+        if scope == 'catchment':
+            return self.catchment_path(const.PROVENANCE_FILE_NAME)
+        if scope == 'event':
+            return self.event_path(const.PROVENANCE_FILE_NAME)
+        if scope == 'run':
+            parts = [section] if section else []
+            return self.run_path(*parts, const.PROVENANCE_FILE_NAME)
+        raise ValueError(
+            f"Unknown provenance scope {scope!r}; expected 'catchment', "
+            f"'event' or 'run'."
+        )
+
+    # -- event.json read/write ----------------------------------------------
+
+    def _read_event_json(self) -> dict:
+        """Return the parsed event.json, or {} when it does not exist."""
+        path = self._event_definition_path()
+        if not os.path.exists(path):
+            return {}
+        with open(path) as f:
+            return json.load(f)
+
+    def _update_event_json(self, updates: dict) -> dict:
+        """Merge updates into event.json and write it back.
+
+        event.json holds several independent concerns (recovery
+        breakpoints, parameter overrides). Each writer must preserve the
+        others rather than replacing the file wholesale.
+        """
+        path = self._event_definition_path()
+        data = self._read_event_json()
+        data.update(updates)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+        return data
 
     def simulation_period(self):
         """Return the (start, end) pandas Timestamps of this event's
@@ -474,12 +929,50 @@ class RunContext:
         """
         return self.event_definition().simulation_period()
 
+    def require_event_directory(self) -> str:
+        """Raise a specific error if this event does not exist on disk.
+
+        Called by the accessors that read per-event files, so that a
+        missing event is reported as a missing event. Without it the
+        first failure is whichever file happened to be read first, and
+        its message describes the wrong problem — a context built for a
+        mistyped event reported "Run calculate_fire_severity for event
+        'typo_fire' first", which reads as though the event exists and
+        one step is outstanding.
+
+        Contexts are deliberately constructible for events that do not
+        exist yet, so this cannot move into RunContext construction: a
+        user may reasonably build the context before running the prep
+        that creates the event.
+
+        Returns:
+        - The event directory path.
+        """
+        directory = Path(self.project.event_path(
+            self.catchment, event=self.event))
+        if directory.exists():
+            return str(directory)
+
+        available = self.project.events(self.catchment)
+        if available:
+            hint = f'Events present for {self.catchment}: {available}.'
+        else:
+            hint = (
+                f'No events exist for {self.catchment} yet — run the '
+                f'PrepareData notebook to create one.'
+            )
+        raise FileNotFoundError(
+            f'Event {self.event!r} does not exist for catchment '
+            f'{self.catchment!r}. {hint}'
+        )
+
     def _event_definition_path(self) -> str:
         """Path to this event's event.json (raises if event is None)."""
         return self.event_path(const.EVENT_DEFINITION_NAME)
 
     def _fire_meta_date(self, key):
         """Read one date from the event-scoped FireMeta.csv."""
+        self.require_event_directory()
         path = self.event_path(
             const.FIRE_SEVERITY_FOLDER_NAME, 'FireMeta.csv',
         )
@@ -496,6 +989,24 @@ class RunContext:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _digest_of(values):
+    """Digest a plain values dict (used when merging provenance records)."""
+    from .params import _digest
+    return _digest(values)
+
+
+def _check_layer_scope(data, layer, where):
+    """Scope-check one persisted override layer, naming the file on failure."""
+    from .params import check_scope
+
+    if not data:
+        return
+    try:
+        check_scope(data, layer)
+    except ValueError as exc:
+        raise ValueError(f'In {where}: {exc}') from None
+
 
 def _resolve_catchments(project, catchment):
     """Return the list of catchment names to iterate, filtered by name."""
