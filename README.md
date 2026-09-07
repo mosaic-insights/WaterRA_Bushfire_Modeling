@@ -44,6 +44,22 @@ If you don't currently have a Python environment, we recommend using [Miniforge]
  pip install -e .
  ```
 
+### Check that the data services are reachable
+
+The library downloads elevation, soil, imagery and rainfall data from
+remote services as it runs. To confirm they are reachable before you
+start:
+
+```
+fire-impacts check-network
+```
+
+On a corporate network this will often report certificate failures,
+because such networks intercept HTTPS and re-sign it with an internal
+certificate authority that Python does not trust by default. The
+command names the fix that applies; [docs/corporate-networks.md](docs/corporate-networks.md)
+explains it in full.
+
 ## Configuring a study
 
 Each project holds one `study.toml` describing the study: which catchment,

@@ -117,6 +117,16 @@ print("All libraries imported successfully!")
 
 If you encounter package compatibility issues, refer to [ENVIRONMENT_FIX_GUIDE.md](ENVIRONMENT_FIX_GUIDE.md) which provides solutions for common numpy/pandas version conflicts.
 
+### Downloads fail with a certificate error
+
+If a download fails with `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate`, your network is inspecting HTTPS traffic and re-signing it with an internal certificate authority. Run:
+
+```powershell
+fire-impacts check-network
+```
+
+This reports which services are reachable and prints the fix that matches. See [docs/corporate-networks.md](docs/corporate-networks.md) for the full explanation. It is worth running straight after installation even if nothing has failed yet.
+
 ## Testing Your Installation
 
 The environment includes comprehensive testing capabilities with pytest and example notebooks in the `examples/` directory to validate your installation.
