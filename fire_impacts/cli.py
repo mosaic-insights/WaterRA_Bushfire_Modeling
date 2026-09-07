@@ -13,6 +13,8 @@ import typer
 
 from . import notebooks as nb
 from .pre import FireImpactsProject
+from .study import CONFIG_NAME, check_study, config_path
+from .study_scaffold import example_seed, write_scaffold
 
 # ---------------------------------------------------------------------------
 # Logging setup
@@ -77,6 +79,68 @@ def _summarise(states, dry_run):
             logger.info('Start with "PrepareData.ipynb" to prepare data.')
 
 
+###############################################################################
+def _seed_from_project(path):
+    """
+    Recover what a study.toml can be seeded with from an existing project.
+
+    Parameters:
+    - path: Project directory.
+
+    Returns:
+    - Dict of dotted setting name to value. A name mapped to None could
+      not be recovered and is flagged in the generated file.
+    --------------------------------------------------------------------
+    Notes:
+    - A project created before study.toml existed has real catchment,
+      event and ensemble names on disk, so seeding from those beats
+      seeding from the bundled example - the file comes out describing
+      the study the user is actually doing.
+    - Input paths and the API key are not recorded anywhere in a project,
+      so they come back None and the file says so.
+    - `FireImpactsProject(path, exist_ok=True)` falls back to creating a
+      fresh settings.json when the existing one is missing or unreadable.
+      This helper only reads, so it checks for settings.json itself and
+      takes the empty seed rather than let that fallback write into a
+      project it was only asked to inspect.
+    --------------------------------------------------------------------
+    """
+    seed = {
+        'catchment.boundary': None,
+        'catchment.aridity': None,
+        }
+
+    if not os.path.exists(os.path.join(path, 'settings.json')):
+        return seed
+
+    try:
+        project = FireImpactsProject(path, exist_ok=True)
+        catchments = list(project.catchments)
+    except Exception as e:                       # noqa: BLE001
+        logger.debug('Could not read %s to seed a config: %s', path, e)
+        return seed
+
+    if not catchments:
+        return seed
+
+    catchment = catchments[0]
+    seed['catchment.name'] = catchment
+
+    for dotted, call in (
+            ('event.name', lambda: project.events(catchment)),
+            ('ensemble.name', lambda: project.ensembles(catchment)),
+            ):
+        try:
+            found = list(call())
+        except Exception as e:                   # noqa: BLE001
+            logger.debug('Could not list %s: %s', dotted, e)
+            continue
+        if found:
+            seed[dotted] = found[0]
+
+    return seed
+
+
 # ---------------------------------------------------------------------------
 # CLI commands
 # ---------------------------------------------------------------------------
@@ -101,6 +165,19 @@ def new(path: str, notebooks: bool = True):
         logger.info('Adding template notebooks...')
         states = nb.refresh_notebooks(path)
         _summarise(states, dry_run=False)
+
+    # write_scaffold refuses to overwrite an existing study.toml, but
+    # that can never happen here: FireImpactsProject(path) above already
+    # raised FileExistsError if this path was an existing project.
+    written = write_scaffold(path, example_seed())
+    # Echoed rather than logged: this is the one line every new user
+    # needs to see, and it must show up whether or not logging is
+    # configured to print INFO messages.
+    typer.echo(
+        f'Wrote {os.path.basename(written)}. This is where you set '
+        'the catchment, the fire and the input files for your study '
+        '- it is the only file you need to edit.'
+        )
 
 
 ###############################################################################
@@ -156,15 +233,53 @@ def update(
         )
     _summarise(states, dry_run=dry_run)
 
+    if not dry_run and not os.path.exists(config_path(path)):
+        # A project created before study.toml existed: its refreshed
+        # notebooks will call load_study(), so it needs one. Seed it from
+        # the project's own state rather than from the bundled example,
+        # so the file describes the study actually in progress.
+        seed = _seed_from_project(path)
+        write_scaffold(path, seed)
+        # Echoed rather than logged, for the same reason as in new(): a
+        # migrated project needs this seen, not just recorded.
+        typer.echo(
+            f'This project had no {CONFIG_NAME}, so one has been written '
+            'from what could be read off the project itself. Open it and '
+            'fill in the settings marked "could not be recovered" before '
+            'running the notebooks.'
+            )
+    elif not dry_run:
+        # This is the static gap between the file and the full schema -
+        # unrelated to anything this run changed - so the wording must
+        # not imply otherwise. Point at "status" rather than enumerate:
+        # a config that has left the same 26 settings at their defaults
+        # since it was written is not news on the hundredth update.
+        report = check_study(path)
+        if report['unset']:
+            logger.info(
+                'Your %s leaves %d optional setting(s) at their '
+                'defaults. Run "fire-impacts status %s" to list them.',
+                CONFIG_NAME, len(report['unset']), path
+                )
+
 
 ###############################################################################
 @app.command()
-def status(path: str):
+def status(
+    path: str,
+    verbose: bool = typer.Option(
+        False, '--verbose', '-v',
+        help='List optional settings left at their defaults, not just '
+             'how many there are.',
+        ),
+    ):
     """
     Report how a project's notebooks compare with the latest templates.
 
     Parameters:
     - path: Directory of the project to inspect.
+    - verbose: If True, name every unset optional setting instead of
+      just counting them.
     --------------------------------------------------------------------
     --------------------------------------------------------------------
     """
@@ -188,6 +303,35 @@ def status(path: str):
             note = ('differs from the current template (added before '
                     'edits were tracked; will be backed up)')
         typer.echo(f'{state.name:<24} {note}')
+
+    typer.echo('')
+    report = check_study(path)
+
+    if report['missing_file']:
+        typer.echo(
+            f'{CONFIG_NAME:<24} missing (run "fire-impacts update '
+            f'{path}" to create one)'
+            )
+        return
+
+    typer.echo(f'{CONFIG_NAME:<24} present')
+    # Real problems always print in full; only the "unset" list - which
+    # is information, not a fault - collapses behind --verbose. Left
+    # spelled out by default, a healthy project's report is nothing but
+    # this list, and a user has to read every line to confirm that.
+    for problem in report['unknown']:
+        typer.echo(f'  ! {problem}')
+    for name in report['required_missing']:
+        typer.echo(f'  ! {name} is required but not set')
+    if report['unset']:
+        if verbose:
+            for name in report['unset']:
+                typer.echo(f'  - {name} not set (uses the default)')
+        else:
+            typer.echo(
+                f'  - {len(report["unset"])} optional setting(s) not set '
+                f'(using defaults; use --verbose to list them)'
+                )
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,15 @@
 - **House style** (follow `params.py` and `notebooks.py`): module docstring explaining *why*; `###...###` banner comments above public functions; `Parameters:` / `Returns:` / `Notes:` docstring sections; British spelling in prose.
 - **Templates are `py:percent` jupytext scripts.** Cells are separated by `# %%` and markdown cells by `# %% [markdown]` with `#`-prefixed lines. Editing a template means editing the `.py` under `fire_impacts/templates/` only — the `.ipynb` is generated on install.
 - **The example must keep working.** After every template change, the scaffolded `study.toml` values must still describe the bundled `test_data` example.
+- **Assertion hygiene — this project has shipped this defect three times.** Never assert a short substring against a string that embeds a path, a filename, or the test's own name. Concretely: `assert 'set' in out` is satisfied by the header word "settings"; `assert 'study.toml' in out` is satisfied by the header's own path; `assert 'setting' in str(exc.value)` is satisfied by pytest naming `tmp_path` after the test function (truncated to ~30 chars). Each of those shipped and had to be fixed in review.
+
+  The rule: **isolate the line you mean, then assert on it** — find the line containing the setting's dotted name and assert against that line, not against the whole output. For exception messages, assert a distinctive multi-word phrase (`'Unknown setting'`, `'no such file'`) that cannot occur incidentally. Before writing any assertion, ask whether it could still pass if the behaviour under test were completely broken; if it could, it is not an assertion.
+
+- **Two tests fail on this Windows workstation on a clean checkout, and are NOT your regression:**
+  - `fire_impacts/tests/test_integration_pipeline.py::test_default_outputs_are_unchanged` — compares golden output paths written with `\` against literals using `/`; the file hashes themselves match.
+  - `fire_impacts/tests/test_notebooks.py::TestDetectingEdits::test_line_endings_are_not_an_edit` — trips over CRLF conversion.
+
+  The baseline command is `python -m pytest fire_impacts -q` — note the path is the **package**, not `fire_impacts/tests/`. Tests live under `fire_impacts/sim/tests/` and `fire_impacts/pre/tests/` as well, and the narrower path collects roughly half of them. Verified baseline before any of this work with that exact command: **887 passed, exactly these 2 failed.** A run showing these two and nothing else is a pass. Investigate only if a *third* failure appears, or if either message changes shape. Task 7 runs `test_notebooks.py`, which contains the second one — expect it, and do not "fix" it.
 
 ---
 
@@ -71,6 +80,7 @@ class Outer:
     inner: Inner = Inner()
     name: str = 'x'
     items: list | None = None
+    plain_items: list = field(default_factory=list)
 
 
 def test_unknown_key_raises_with_a_suggestion():
@@ -109,9 +119,17 @@ def test_a_list_field_accepts_a_list():
     assert result.items == [0, 1, 2]
 
 
-def test_a_list_field_rejects_a_scalar():
-    with pytest.raises(ValueError, match='must be a list'):
+def test_an_optional_list_field_rejects_a_scalar():
+    """`list | None` goes through coerce's union branch, which reports the
+    alternatives rather than the list specifically. Asserted separately from
+    the plain-list case so a change to either message is visible."""
+    with pytest.raises(ValueError, match='expected one of'):
         _schema.from_dict(Outer, {'items': 3}, path='')
+
+
+def test_a_plain_list_field_rejects_a_scalar():
+    with pytest.raises(ValueError, match='must be a list'):
+        _schema.from_dict(Outer, {'plain_items': 3}, path='')
 
 
 def test_params_still_exposes_the_old_private_names():
@@ -1226,15 +1244,25 @@ most likely to be emailed around."
 ### Task 5: Generate the commented scaffold from the schema
 
 **Files:**
-- Modify: `fire_impacts/study.py`
+- Create: `fire_impacts/study_scaffold.py`
 - Test: `fire_impacts/tests/test_study_scaffold.py`
 
+**Why a separate module** (ruling made during execution, after a reviewer
+flagged the trajectory): Tasks 2-6 were all written to land in `study.py`,
+which would have made it a loader, a serialiser and a reporter in one
+~800-line file. The read side (schema, `load_study`, the `StudySettings`
+methods, and Task 6's `check_study`) stays in `study.py`. The write side —
+everything that *generates* a `study.toml` — moves here. There is no
+re-export: `study_scaffold` imports from `study`, never the reverse, so the
+dependency runs one way and no circular import is possible.
+
 **Interfaces:**
-- Consumes: the schema and its `help` / `required` / `example` / `secret` metadata from Task 2.
+- Consumes: from `fire_impacts.study` — `StudySettings`, `CONFIG_NAME`, `StudyConfigError`, `config_path`, and the `help` / `required` / `example` / `path` field metadata from Task 2.
 - Produces:
   - `scaffold_text(seed: dict | None = None) -> str`
   - `write_scaffold(path: str, seed: dict | None = None) -> str` (returns the path written; raises `StudyConfigError` if the file already exists)
-  - `EXAMPLE_SEED: dict` — the bundled example's values, keyed by dotted name
+  - `EXAMPLE_SEED: dict` — the bundled example's values, keyed by dotted name, with paths relative to the repository's `examples/` directory
+  - `example_seed() -> dict` — `EXAMPLE_SEED` with its paths made absolute when the repository's `test_data` can be located. **This is what callers use**; the bare constant is the fallback.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1256,8 +1284,10 @@ from dataclasses import fields
 import pytest
 
 from fire_impacts.study import (
-    CONFIG_NAME, EXAMPLE_SEED, StudyConfigError, StudySettings,
-    load_study, scaffold_text, write_scaffold,
+    CONFIG_NAME, StudyConfigError, StudySettings, load_study,
+)
+from fire_impacts.study_scaffold import (
+    EXAMPLE_SEED, example_seed, scaffold_text, write_scaffold,
 )
 
 
@@ -1318,6 +1348,20 @@ def test_write_scaffold_refuses_to_overwrite(tmp_path):
     assert (tmp_path / CONFIG_NAME).read_text() == '# mine\n'
 
 
+def test_the_example_seed_resolves_test_data_when_it_can_find_it():
+    """A project created outside the repository must still get a study.toml
+    whose paths point at something real - otherwise 'a new project runs end
+    to end' holds only for a project made in one particular directory."""
+    seed = example_seed()
+    boundary = seed['catchment.boundary']
+    if os.path.isabs(boundary):
+        assert os.path.exists(boundary), boundary
+    else:
+        # No test_data reachable (an installed wheel); the relative literal
+        # stands, which is what shipped before.
+        assert 'test_data' in boundary
+
+
 def test_a_seeded_value_that_could_not_be_recovered_is_flagged(tmp_path):
     """Migration: what can't be read off an existing project is left blank
     with a comment telling the user to fill it in."""
@@ -1332,7 +1376,43 @@ def test_a_seeded_value_that_could_not_be_recovered_is_flagged(tmp_path):
 Run: `pytest fire_impacts/tests/test_study_scaffold.py -v`
 Expected: FAIL — `ImportError: cannot import name 'scaffold_text'`
 
-- [ ] **Step 3: Add the generator to `study.py`**
+- [ ] **Step 3: Create `fire_impacts/study_scaffold.py`**
+
+Start the module with its own docstring and imports, then add the code below:
+
+```python
+"""
+Generating a study.toml for a project that has none.
+
+The file this writes is the first thing a user of the template notebooks
+meets, so it has to explain itself: every setting carries the `help` text
+from the schema, required settings are written live and optional ones
+commented out with their default shown.
+
+Those comments are generated from the same field metadata that
+``study.load_study`` validates against, which is the point of doing it this
+way rather than keeping a hand-written template beside the code. A
+hand-written one drifts - it ends up describing settings the loader would
+reject - and nothing catches it, because nobody re-reads a comment block.
+
+Writing lives here rather than in ``study.py`` so that reading a config and
+producing one stay separable. The dependency runs one way: this module
+imports from ``study``, never the reverse.
+"""
+
+# ---------------------------------------------------------------------------
+# Imports
+# ---------------------------------------------------------------------------
+
+import os
+from dataclasses import fields
+
+from .study import (
+    CONFIG_NAME, StudyConfigError, StudySettings, config_path,
+)
+```
+
+Then the generator itself:
 
 ```python
 # The bundled example, keyed by dotted setting name. `fire-impacts new`
@@ -1453,6 +1533,43 @@ def scaffold_text(seed=None):
 
 
 ###############################################################################
+def example_seed():
+    """
+    Return the example seed with its input paths resolved if possible.
+
+    Returns:
+    - Dict of dotted setting name to value, as EXAMPLE_SEED but with
+      absolute paths when the repository's test_data can be found.
+    --------------------------------------------------------------------
+    Notes:
+    - The relative paths in EXAMPLE_SEED only resolve for a project created
+      one level below the repository root, which is where `examples/` sits.
+      A project created anywhere else would get a study.toml whose very
+      first load fails on a missing boundary file - so the promise that a
+      new project runs before you change anything would hold only in the
+      one place nobody actually works.
+    - test_data is not package data, so an installed wheel has none. There
+      the walk finds nothing and the relative literals stand, which is no
+      worse than before.
+    --------------------------------------------------------------------
+    """
+    seed = dict(EXAMPLE_SEED)
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(4):
+        here = os.path.dirname(here)
+        candidate = os.path.join(here, 'test_data')
+        if os.path.isdir(candidate):
+            for key, value in list(seed.items()):
+                if isinstance(value, str) and 'test_data' in value:
+                    seed[key] = os.path.join(
+                        candidate, os.path.basename(value))
+            break
+
+    return seed
+
+
+###############################################################################
 def write_scaffold(path, seed=None):
     """
     Write a commented study.toml into a project.
@@ -1493,7 +1610,7 @@ Expected: PASS (6 tests)
 Run:
 
 ```bash
-python -c "from fire_impacts.study import scaffold_text, EXAMPLE_SEED; print(scaffold_text(EXAMPLE_SEED))"
+python -c "from fire_impacts.study import scaffold_text, example_seed; print(scaffold_text(example_seed()))"
 ```
 
 Expected: the file shown in the "The file" section of the spec. Confirm by
@@ -1676,7 +1793,7 @@ file predates a setting the newer templates understand."
 - Test: `fire_impacts/tests/test_study_cli.py`
 
 **Interfaces:**
-- Consumes: `write_scaffold`, `check_study`, `EXAMPLE_SEED`, `CONFIG_NAME` from Tasks 5 and 6; `nb.refresh_notebooks`, `nb.plan_update` from the existing `notebooks.py`.
+- Consumes: `write_scaffold`, `check_study`, `example_seed`, `CONFIG_NAME` from Tasks 5 and 6; `nb.refresh_notebooks`, `nb.plan_update` from the existing `notebooks.py`.
 - Produces: `_seed_from_project(path) -> dict` in `cli.py`, used only by `update`.
 
 **Verify before writing `_seed_from_project`:** confirm the exact signatures
@@ -1831,8 +1948,12 @@ def _seed_from_project(path):
     return seed
 ```
 
-Add `from .study import CONFIG_NAME, check_study, config_path, write_scaffold, EXAMPLE_SEED, StudyConfigError`
-to the imports at the top of `cli.py`.
+Add these to the imports at the top of `cli.py`:
+
+```python
+from .study import CONFIG_NAME, StudyConfigError, check_study, config_path
+from .study_scaffold import example_seed, write_scaffold
+```
 
 - [ ] **Step 4: Write the config in `new`**
 
@@ -1840,7 +1961,7 @@ At the end of `new()`, after the notebook block:
 
 ```python
     try:
-        written = write_scaffold(path, EXAMPLE_SEED)
+        written = write_scaffold(path, example_seed())
         logger.info(
             'Wrote %s. This is where you set the catchment, the fire and '
             'the input files for your study - it is the only file you '
@@ -1912,7 +2033,9 @@ Expected: PASS (6 tests)
 - [ ] **Step 8: Run the notebook tests, which share this CLI**
 
 Run: `pytest fire_impacts/tests/test_notebooks.py -v`
-Expected: PASS, unchanged
+Expected: unchanged from the baseline — everything passes except the
+known `TestDetectingEdits::test_line_endings_are_not_an_edit` CRLF
+failure listed in Global Constraints. Do not try to fix that one.
 
 - [ ] **Step 9: Commit**
 

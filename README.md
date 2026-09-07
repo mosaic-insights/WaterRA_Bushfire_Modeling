@@ -44,6 +44,36 @@ If you don't currently have a Python environment, we recommend using [Miniforge]
  pip install -e .
  ```
 
+## Configuring a study
+
+Each project holds one `study.toml` describing the study: which catchment,
+which fire, where the input files are. It is written for you by
+`fire-impacts new`, pre-filled with the bundled example so a new project
+runs end to end before you change anything.
+
+It is the only file you need to edit to point the notebooks at your own
+data. The four notebooks read it, so a value like the event name is set
+once rather than in each of them.
+
+The convention in the file: **a setting that is not commented out is one
+the file sets; a commented-out setting is optional and unset, and the
+comment says what happens if you leave it out.** Uncommented is not the
+same as required — as well as every required setting, the file sets the
+optional ones the bundled example uses, and your TERN API key.
+
+`fire-impacts status <project>` reports whether the file is there,
+anything it sets that is not a real setting (with a suggestion), any
+required setting it does not mention, and how many optional settings are
+left at their defaults — `--verbose` names them.
+
+`fire-impacts update` never overwrites `study.toml`. If a project made
+before the file existed does not have one, `update` writes it, filling in
+the catchment, event and ensemble names it can read off the project and
+flagging what it cannot.
+
+> Calibration parameters are a separate matter and live in
+> `parameters.json` — see [Calibration parameters](#calibration-parameters).
+
 ## Usage
 
 The library supports two different modes:
@@ -566,7 +596,7 @@ The low level interface provides access to the core functionality of the library
 
 ### Worked example
 
-A worked example, showing usage of the high level interface, is provided in the [examples/PrepareData.ipynb](examples/PrepareData.ipynb).
+`fire-impacts new ./my-project` generates a worked example, using the high level interface, ready to run before you change anything — see [Starting a project, and keeping its notebooks current](#starting-a-project-and-keeping-its-notebooks-current).
 
 
 ### Status
@@ -593,7 +623,7 @@ The core library code is stored in `fire_impacts` directory. The code repository
 |-----------|----|
 | `<top-level>` | |
 | `├── data` | Common parameter files (eg concentrations of pollutants in ash and debris) |
-| `├── examples` | Worked example notebooks (jupytext `.py` + `.ipynb`) |
+| `├── examples` | See [examples/README.md](examples/README.md) — worked examples now come from `fire-impacts new` |
 | `├── test_data` | Small spatial datasets to support examples and unit tests |
 | `└── fire_impacts` | Library code |
 | `    ├── context.py` | `RunContext` + `EventDefinition` (project / catchment / event / ensemble addressing) |

@@ -132,79 +132,166 @@ discoverable from the notebook.
 Lives in the project directory, beside the notebooks. One convention carries
 most of the discoverability:
 
-> Uncommented means you must supply it. Commented out means optional, and the
-> comment states the default.
+> Uncommented means the file sets it. Commented out means optional and unset,
+> and the comment states the default.
+
+Uncommented is deliberately *not* the same as required: as well as every
+required setting, the file writes live whatever the seed supplies (the
+bundled example's subcatchment coverage and its label column) and the
+`prompt`ed TERN key below. Saying "uncommented means required" would be
+simpler, and was what this section said for a while, but it is false of
+every file `fire-impacts new` has ever written — and it reads as though a
+subcatchment coverage were mandatory, which is the opposite of the design.
+
+The file below is not hand-written — it is what `scaffold_text()`
+actually generates, pasted verbatim, with the example paths in their
+relative fallback form. Keeping the illustration generated rather than
+drawn by hand is the same discipline as generating the comments from the
+schema: a hand-drawn one drifts, and during implementation this one did.
 
 ```toml
 # study.toml - everything this study needs you to supply.
 #
-# Uncommented settings are required. Commented-out settings are
-# optional; the comment shows what happens if you leave them out.
-# Values shown here drive the bundled example catchment, so a new
-# project runs end to end before you change anything.
+# Uncommented settings are the ones this file sets; commented-out
+# settings are optional and unset, and their comment says what happens
+# if you leave them out. Uncommented is not the same as required: the
+# file also sets any optional setting it already has an answer for -
+# what the bundled example uses, say - and the TERN API key, which the
+# soil download needs but no other notebook does.
+#
+# The values here drive the bundled example catchment, so a new project
+# runs end to end before you change anything.
+#
+# Calibration parameters are NOT set here - they live in
+# parameters.json. See the PrepareData notebook.
 
 [project]
-directory = "."        # project data root, relative to this file
-# clear = false        # Leave this out and PrepareData starts from
-#                      # scratch, wiping existing project data. Set it
-#                      # false once the project holds work worth keeping.
+# Where the project's data lives, and whether to start it afresh.
+
+# project data root, relative to this file
+# directory = '.'
+# Leave this out and PrepareData starts from scratch, wiping existing
+# project data. Set it false once the project holds work worth keeping.
+# clear = false
 
 [catchment]
-name     = "EgSmallCatchment_7899"
+# The study area and the input rasters describing it.
+
+# name for this catchment within the project
+name = "EgSmallCatchment_7899"
+# boundary coverage (.shp/.geojson). Must carry a CRS - it becomes the CRS
+# for everything else in the catchment.
 boundary = '..\test_data\EgSmallCatchment_7899.shp'
-aridity  = '..\test_data\AridityPT_EgSmallCatchment_7899.tif'
-# dem           = ''   # default: download the GA 1" national DEM
-# subcatchments = ''   # default: no subcatchment reporting
-# subcatchment_id_field = 'SiteID'
-#                      # attribute naming each subcatchment. Must match the
-#                      # subcatchment names in your Source model.
-# cell_size_m = 30     # DEM cell size in metres, used to convert per-cell
-#                      # results to t/ha. Change it if your DEM is not 30 m.
+# aridity raster covering the catchment
+aridity = '..\test_data\AridityPT_EgSmallCatchment_7899.tif'
+# DEM covering the catchment. Leave it out to download the GA 1 arc-second
+# national DEM.
+# dem = ''
+# subcatchment coverage (.shp/.geojson). Leave it out for no subcatchment
+# reporting.
+subcatchments = '..\test_data\Subcatchments_EgSmall_7899.shp'
+# attribute naming each subcatchment. Must match the subcatchment names in
+# your Source model.
+subcatchment_id_field = "Id"
+# DEM cell size in metres, used to convert per-cell results to t/ha.
+# Change it if your DEM is not 30 m.
+# cell_size_m = 30
 
 [event]
-name       = "2019_fire"
+# The fire being modelled.
+
+# name for this fire; becomes the Events/<name> directory
+name = "2019_fire"
+# date the fire started, YYYY-MM-DD
 fire_start = "2019-01-15"
-fire_end   = "2019-03-07"
-# recovery_breakpoints = [0, 1, 2, 3]   # default: const.DEFAULT_RECOVERY_BREAKPOINTS
+# date the fire ended, YYYY-MM-DD
+fire_end = "2019-03-07"
+# default: const.DEFAULT_RECOVERY_BREAKPOINTS
+# recovery_breakpoints = [0, 1, 2, 3]
 
 [ensemble]
-name = "stochastic"
-# num_replicates       = 10   # replicates drawn from pyraingen
-# inspect_replicate    = 9    # which one the single-run Simulation notebook plots
-# mean_annual_rainfall = 600  # mm; default: estimated from catchment lat/lon
-# average_temperature  = 20   # degrees C; default: estimated from catchment lat/lon
-# n_workers            = 10   # replicates run in parallel; cap for your machine
+# The stochastic rainfall realisation driving the simulations.
+
+# names this climate realisation
+# name = "stochastic"
+# replicates drawn from pyraingen
+# num_replicates = 10
+# which one the single-run Simulation notebook plots. Numbered from zero,
+# so it must be less than num_replicates - lower num_replicates and you
+# must lower this too.
+# inspect_replicate = 9
+# mm; default: estimated from catchment lat/lon
+# mean_annual_rainfall = 600
+# degrees C; default: estimated from catchment lat/lon
+# average_temperature = 20
+# replicates run in parallel; cap this for your machine
+# n_workers = 10
 
 [reporting]
-# Thresholds used by the ensemble notebook's exceedance maps. These are
-# reporting choices, not model calibration - they change what the maps
-# show, never what the model computes.
-# erosion_threshold_t_ha    = 0.5
+# Thresholds the ensemble notebook's exceedance maps are drawn at.
+#
+# Reporting choices, not model calibration: they change what a map shows,
+# never what the model computes. That is why they are here and not in
+# parameters.json.
+
+# catchment erosion exceedance threshold, t/ha
+# erosion_threshold_t_ha = 0.5
+# delivered-load exceedance threshold, kg/ha
 # delivered_threshold_kg_ha = 500
 
 [secrets]
+# Credentials for the data services the preprocessing downloads from.
+
 # Your TERN API key, needed to download soil data.
 # Free - see the "Soils" section of PrepareData for how to get one.
 # If left blank, the TERN_API_KEY environment variable is used instead.
 tern_api_key = ""
 
 [source]
-# port            = 9876        # Veneer port for the running Source instance
-# constituent     = 'TSS'       # default: auto-detected
-# functional_unit = 'Forested'  # default: auto-detected
-# replicate       = 0           # which ensemble replicate to push into Source
-# timestep        = 'D'         # must match your Source model: 'D' or 'h'
-# date_format     = '%d/%m/%Y'  # how your Source install writes run-period dates
-# output_dir      = 'source_inputs'   # where the generated CSVs are written
-# Load Distributor calibration:
-# load_attenuation      = 10.0
-# maximum_concentration = 1000.0      # mg/L
-# Names of the Source data sources this notebook creates and then reads
-# back. One name each - the notebook currently uses two different names
-# for the rainfall source and reads the wrong one in one place.
-# tss_data_source      = 'fire_tss'
+# Connecting to a running eWater Source instance via Veneer.
+
+# Veneer port for the running Source instance. 9876 is the conventional
+# one; note that connect_to_veneer() in the library defaults to 9877,
+# which the notebooks never use because they always pass this setting.
+# port = 9876
+# default: auto-detected
+# constituent = 'TSS'
+# default: auto-detected
+# functional_unit = 'Forested'
+# which ensemble replicate to push into Source. Distinct from
+# ensemble.inspect_replicate, which only chooses what the Simulation
+# notebook plots.
+# replicate = 0
+# must match your Source model: 'D' for daily, 'h' hourly
+# timestep = 'D'
+# how your Source install writes run-period dates
+# date_format = '%d/%m/%Y'
+# where the generated CSVs are written, inside the project
+# output_dir = 'source_inputs'
+# Load Distributor attenuation
+# load_attenuation = 10.0
+# Load Distributor concentration cap, mg/L
+# maximum_concentration = 1000.0
+# name of the Source data source holding sediment load. Also names the CSV
+# written for it, so keep it to characters a filename may contain.
+# tss_data_source = 'fire_tss'
+# name of the Source data source holding rainfall. Also names the CSV
+# written for it, so keep it to characters a filename may contain.
 # rainfall_data_source = 'stochastic_rain'
 ```
+
+- **`secrets.tern_api_key` is written live but not required at load.** The
+  file's convention is that a commented-out setting is one you can ignore,
+  and a commented-out blank API key is how someone gets stranded at the soil
+  download. But marking it `required` would make `load_study` raise on a
+  blank key and block the Simulation notebook, which never touches TERN. So
+  a third state exists: `prompt` metadata means *write this live in the
+  scaffold, do not enforce it at load*. It is the only field that carries it.
+
+- **`project.directory` and `ensemble.name` are written commented.** An
+  earlier draft of this document showed them live. They have working
+  defaults and are not values a user must supply, so the generator commenting
+  them is correct and that draft was wrong.
 
 ### Notes on specific settings
 
@@ -353,7 +440,10 @@ BREAKPOINTS = study.event.recovery_breakpoints
 CLEAR = True if study.project.clear is None else study.project.clear
 ```
 
-Body cells then read `FireImpactsProject(PROJECT_DIR, clear=CLEAR)`,
+Body cells then read
+`FireImpactsProject(PROJECT_DIR, clear=CLEAR, exist_ok=not CLEAR)`
+(`exist_ok` is what makes `clear = false` mean "reopen this project" rather
+than "refuse, the folder exists"),
 `proj.add_catchment(BOUNDARY)`, `topography.extract_catchment_dems(prep_ctx, DEM)`,
 `severity.calculate_fire_severity(ctx, fire_start_date=FIRE_START, fire_end_date=FIRE_END)`
 and `rusle.compute_adjusted_k_c(ctx, recovery_breakpoints=BREAKPOINTS)`.
@@ -370,8 +460,11 @@ ctx = RunContext.solo_run(
     proj, event=EVENT, ensemble=ENSEMBLE, catchment=CATCHMENT)
 ```
 
-is identical in all three. `rainfall.rainfall[:, REPLICATE]` replaces the two
-hard-coded `[:, 9]` in `Simulation`. `SourceIntegration` picks up `PORT`, and
+is identical in all three. `rainfall.rainfall[:, INSPECT_REPLICATE]` replaces
+the two hard-coded `[:, 9]` in `Simulation`; `SourceIntegration` binds
+`source.replicate` as `SOURCE_REPLICATE`, so the two settings this section
+separates do not share one name in the templates that read them.
+`SourceIntegration` picks up `PORT`, and
 `CONSTITUENT` / `FUNCTIONAL_UNIT` become "config value if set, else auto-detect"
 rather than a commented-out override.
 
@@ -388,8 +481,18 @@ back from the project.
 | Command | Behaviour |
 |---|---|
 | `fire-impacts new <path>` | Writes `study.toml` from the schema, pre-filled with the example values; reported alongside the notebooks |
-| `fire-impacts update <path>` | Never overwrites `study.toml`; writes one only when absent. Afterwards reports settings the new templates understand that the file does not set — all optional and defaulted, so information rather than a demand |
-| `fire-impacts status <path>` | Gains a config section: unknown keys with a suggestion, required-but-missing keys, and available-but-unset settings |
+| `fire-impacts update <path>` | Never overwrites `study.toml`; writes one only when absent. Afterwards notes in one line how many optional settings sit at their defaults, and points at `status` — without claiming anything changed this run |
+| `fire-impacts status <path>` | Gains a config section: unknown keys with a suggestion, required-but-missing keys, and a one-line count of unset settings. `--verbose` lists them |
+
+An earlier draft of this section had `update` enumerate every unset setting,
+described as "settings the new templates understand that your file does not
+mention". That was wrong, and running it showed why: nothing stores what the
+schema looked like previously, so an unset setting cannot be told apart from
+one that is simply optional and unwanted. The message fired identically on
+the first update and the hundredth — twenty-six lines of it — and `status`
+printed the same wall for a freshly created, entirely healthy project.
+Reporting a static gap as though it were drift is worse than not reporting
+it.
 
 ### Migrating a project that predates the config file
 

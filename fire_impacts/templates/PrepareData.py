@@ -12,10 +12,6 @@
 #     name: python3
 # ---
 
-# %%
-import os
-
-
 # %% [markdown]
 # # Preparing data for fire impact analysis
 #
@@ -101,6 +97,40 @@ from fire_impacts.context import RunContext
 from fire_impacts.pre import project, topography, severity, soil, rusle
 
 # %% [markdown]
+# ## Settings for this study
+#
+# Every value below comes from `study.toml`, in this project folder.
+# **That file is the only one you need to edit** to point this notebook at
+# your own catchment and fire — the cells further down refer to the names
+# defined here.
+#
+# Running the cell prints each setting and where it came from, so you can
+# check the notebook is about to do what you expect.
+#
+# > Calibration parameters are a separate matter and live in
+# > `parameters.json`; see the *Calibration parameters* section below.
+
+# %%
+from fire_impacts.study import load_study
+
+study = load_study('.')
+study.describe()
+
+PROJECT_DIR = study.project.directory
+CATCHMENT   = study.catchment.name
+BOUNDARY    = study.catchment.boundary
+DEM         = study.catchment.dem          # None -> download national DEM
+ARIDITY     = study.catchment.aridity
+EVENT       = study.event.name
+FIRE_START  = study.event.fire_start
+FIRE_END    = study.event.fire_end
+BREAKPOINTS = study.event.recovery_breakpoints
+
+# PrepareData builds a project from scratch, so it clears by default.
+# Set clear = false in study.toml to keep data already in the project.
+CLEAR = True if study.project.clear is None else study.project.clear
+
+# %% [markdown]
 # ## Logging
 #
 # We use logging statements to provide feedback on progress through various steps. This allows you to tailor what level of information you see by setting a log 'level':
@@ -123,15 +153,18 @@ logging.basicConfig(level=logging.INFO,format='%(asctime)s - %(name)s - %(leveln
 #
 # In Python, we use a `FireImpactsProject` object to represent this directory and all the data stored within it
 #
-# Here, we create a new project in the current directory. **Note:** In this case we will delete (`clear`) any existing data in that directory.
-#
-# By default, *current directory* here is the directory this Notebook is saved in.
+# Here, we create the project in the directory named by `project.directory` in `study.toml`, which is the directory this Notebook is saved in unless you change it. **Note:** by default we delete (`clear`) any existing data in that directory; set `clear = false` in `study.toml` once the project holds work worth keeping.
 #
 # > **Access Note:** running this Notebook and associated code from a OneDrive folder may result in 'Access Denied' errors when creating or updating a project. We recommend setting up on your C:\ (or other primary local) drive.
 
 # %%
-# proj = FireImpactsProject('.\\fire_impacts_example_project', clear=True)
-proj = FireImpactsProject('.',clear=True)
+# `exist_ok=not CLEAR` is what makes `clear = false` usable: without it the
+# project folder that is already there - `fire-impacts new` leaves a
+# settings.json and a Catchments/ behind - is treated as an obstacle and
+# construction raises FileExistsError. With it, an existing project is
+# re-opened and its contents left alone, which is the whole point of the
+# setting.
+proj = FireImpactsProject(PROJECT_DIR, clear=CLEAR, exist_ok=not CLEAR)
 
 # %% [markdown]
 # ## Catchment areas
@@ -140,13 +173,12 @@ proj = FireImpactsProject('.',clear=True)
 #
 # Catchments are added to the project by providing a boundary coverage (eg a Shapefile or a GeoJSON file).
 #
-# Here, we add a small example catchment, from the `test_data` directory, but you can use your own.
+# Here we add the catchment named in `study.toml`. A freshly created project points at the small example catchment in `test_data`; change `catchment.boundary` to use your own, and `catchment.name` to whatever you want that catchment called within the project.
 #
 # **Note:** The boundary coverage should include a coordinate reference system (CRS). This is the CRS that will be used for all other data stored in relation to this catchment in the project.
 
 # %%
-example_catchment_name = 'EgSmallCatchment_7899'
-proj.add_catchment(f'..\\test_data\\{example_catchment_name}.shp')
+proj.add_catchment(BOUNDARY, name=CATCHMENT)
 
 # %%
 proj.catchments
@@ -184,20 +216,17 @@ proj.catchments
 # ### Digital Elevation Model (DEM)
 # By default, the package will download the Geoscience Australia hydrologically-enforced DEM ([national 1" DEM](https://ecat.ga.gov.au/geonetwork/srv/eng/catalog.search#/metadata/72759)), which has a horizontal spatial resolution of 1 arc second (approx. 30 metres).
 #
-# > **Option**: If you have a specific DEM you wish to use, you can provide the path\filename.ext as the second argument of `topography.extract_catchment_dems()`. Make sure the DEM covers the entire catchment area.
+# > **Option**: set `catchment.dem` in `study.toml` to use your own DEM. Leave it out and the national DEM is downloaded. Make sure any DEM you supply covers the entire catchment.
 #
 
 # %%
-# If you have a specific DEM you want to use, point python to it.
-#We have a DEM for the example catchment included in the test date for this package.
-optional_DEM_filename = '..\\test_data\\example_dem.tif'
-
 # Static catchment-level preprocessing (DEM, soil, headwaters) doesn't
 # depend on a fire event — use a catchment-only RunContext.
 prep_ctx = RunContext.solo_catchment(proj)
 
-# Get a DEM. To use your own DEM, replace None with the filename path:
-topography.extract_catchment_dems(prep_ctx, None)
+# Get a DEM. DEM holds catchment.dem from study.toml, and is None when
+# that setting is left out — in which case the national DEM is downloaded.
+topography.extract_catchment_dems(prep_ctx, DEM)
 # Visualise the processed DEM:
 proj.plot_catchment_raster('Topography','DEM.tif')
 
@@ -214,7 +243,7 @@ headwaters = topography.extract_headwaters(prep_ctx)
 
 # %%
 # Plot the raw headwaters to see what they look like:
-proj.plot_headwaters(example_catchment_name)
+proj.plot_headwaters(CATCHMENT)
 
 # See a snapshot of what they look like in tabular form:
 headwaters.head()
@@ -253,23 +282,21 @@ proj.plot_catchment_raster('Topography','Flow_accumulation')
 # Fire severity data requires measuring Normalised Burn Ration (NBR) before and after a fire, to produce a measure of change called delta-NBR (abbreviated as dNBR or ΔNBR).
 #
 # This package automatically finds and downloads relevant satellite-based NBR datasets and computes fire severity for your catchment. 
-# > **Note**: The fire start and end dates here correspond to an actual fire that took place in this area.
+# > **Note**: the dates come from `event.fire_start` and `event.fire_end` in `study.toml`. Those shipped with a new project describe a real fire in the example catchment.
 
 # %%
-fire_start_date = '2019-01-15'  # Set fire start date (the date that fire started)
-fire_end_date = '2019-03-07'    # Set fire end date (the date that fire ended)
 # Each fire is identified by an event name. Every fire-dependent
 # operation binds to a RunContext combining the catchment and event;
 # RunContext.solo_event resolves the catchment when there is exactly
 # one in the project.
-ctx = RunContext.solo_event(proj, event='2019_fire')
+ctx = RunContext.solo_event(proj, event=EVENT)
 
 # %%
 # This method may take a few minutes to download and process data.
 severity.calculate_fire_severity(
     ctx,
-    fire_start_date=fire_start_date,
-    fire_end_date=fire_end_date,
+    fire_start_date=FIRE_START,
+    fire_end_date=FIRE_END,
 )
 
 
@@ -288,26 +315,20 @@ proj.plot_catchment_raster('FireSeverity', 'masked_dNBR', ctx=ctx)
 # Soil data are required for RUSLE (erosion) and debris flow simulations.
 #
 # ### Required Inputs
-# Many of these will be downloaded and processed automatically by the package, but you will need a **TERN API KEY** to access them. The following instructions show you how to obtain an API and save it on Windows in such a way that python will be able to access it:
+# Many of these will be downloaded and processed automatically by the package, but you will need a **TERN API KEY** to access them. The following instructions show you how to obtain a key and record it so that this notebook can use it:
 # 1. Create a TERN account - [Instructions for creating a TERN account (TERN Youtube channel)](https://youtu.be/HTlc0xk4zf8?si=z_vEqToQDwnK4-KI)
 # 2. Generate an API key - [Generating an API key](https://youtu.be/HTlc0xk4zf8?si=z_vEqToQDwnK4-KI)
-# 3. Save the full API key as a user-level environment variable:
-#    1. *System Properties > Advanced > Environment Variables > User variables > New*
-#    2. *Variable name*: `'TERN_API_KEY'` or similar
-#    3. *Variable value*: Paste the full API key here
-#    4. *OK*
-# 5. Use `os.environ.get()` with your variable name so python can see what it is, without having to store the key itself in this notebook.
+# 3. Paste the key into the `[secrets]` section of `study.toml`, as `tern_api_key`. If you would rather keep it out of that file, leave the setting blank and set a `TERN_API_KEY` environment variable instead — the notebook checks both.
 #
-# You will also need an **Aridity raster** file, which is included for the example catchment but will need to be obtained for your catchment of interest before loading the subsequent datasets or running the simulations.
+# You will also need an **Aridity raster** file, named by `catchment.aridity` in `study.toml`. One is included for the example catchment, but you will need to obtain one for your catchment of interest before loading the subsequent datasets or running the simulations.
 
 # %%
-# Tell python where your API key is:
-API_KEY = os.environ.get('TERN_API_KEY')
+# Read the API key from study.toml, or from the TERN_API_KEY environment
+# variable if the setting is blank.
+API_KEY = study.secret('tern_api_key')
 # Download the relevant data from TERN:
 soil.download_soil_data_stac(prep_ctx, api_key=API_KEY)
 
-# Existing aridity raster location:
-ARIDITY=r'..\\test_data\\AridityPT_EgSmallCatchment_7899.tif'
 # Extract aridity data for each catchment:
 soil.extract_aridity_data(prep_ctx, aridity_raster=ARIDITY)
 
@@ -396,7 +417,7 @@ record.sources['delivery.max_sdr']
 
 # This catchment only:
 # proj.set_catchment_parameter_overrides(
-#     example_catchment_name, {'topography': {'max_slope_length_m': 200.0}})
+#     CATCHMENT, {'topography': {'max_slope_length_m': 200.0}})
 
 # This fire only:
 # ctx.set_event_parameter_overrides({'fire_adjustment': {'c_peak': 0.40}})
@@ -452,21 +473,23 @@ record.digest()
 # Compute recovery-specific K-, C- and SDR layers ready for erosion
 # simulation.
 #
-# Recovery is specified as a single array of BREAKPOINTS in years after the
+# Recovery is specified as a single array of breakpoints in years after the
 # fire end date: n+1 breakpoints define n contiguous recovery windows, and
 # window i is modelled at recovery time b_i (the window start). The
 # breakpoints are stored in the event's event.json, so the Simulation
 # notebook reads them back automatically — you don't re-specify them there.
 #
-# If omitted, the package default is used. Shown here for reference:
+# BREAKPOINTS comes from event.recovery_breakpoints in study.toml. Leave
+# that setting out and the package default is used, shown here for
+# reference:
 print("Default recovery breakpoints:", const.DEFAULT_RECOVERY_BREAKPOINTS)
 
-# To override, pass recovery_breakpoints (examples):
+# Examples of what you might set event.recovery_breakpoints to:
 #   [0, 1, 2, 3]             -> yearly windows
 #   [0, 0.25, 0.5, 0.75, 1]  -> quarterly windows
 rusle.compute_adjusted_k_c(
     ctx,
-    # recovery_breakpoints=[0, 1, 2, 3],
+    recovery_breakpoints=BREAKPOINTS,   # None -> the package default
 )
 
 # %% [markdown]
@@ -488,4 +511,4 @@ summary.head()
 # ...and also in a map, where we can see the same headwaters now coloured differently based on the severity of the fire in that area:
 
 # %%
-proj.plot_headwaters(example_catchment_name, colour_col='dNBR_mean', table=summary)
+proj.plot_headwaters(CATCHMENT, colour_col='dNBR_mean', table=summary)

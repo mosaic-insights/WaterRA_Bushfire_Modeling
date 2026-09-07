@@ -57,29 +57,71 @@ from fire_impacts.sim import (
 from fire_impacts.stochastic.rainfall import get_rainfall_replicates
 
 # %% [markdown]
+# ## Settings for this study
+#
+# From `study.toml` — the same file the other notebooks read. Everything
+# the ensemble needs you to choose is in there; the cells below refer to
+# the names defined here.
+#
+# Running the cell prints each setting and where it came from, so you can
+# check the notebook is about to do what you expect.
+
+# %%
+from fire_impacts.study import load_study
+
+study = load_study('.')
+study.describe()
+
+PROJECT_DIR  = study.project.directory
+CATCHMENT    = study.catchment.name
+EVENT        = study.event.name
+ENSEMBLE     = study.ensemble.name
+N_REPLICATES = study.ensemble.num_replicates
+N_WORKERS    = study.ensemble.n_workers
+SUBCATCHMENTS = study.catchment.subcatchments
+SUBCATCHMENT_ID_FIELD = study.catchment.subcatchment_id_field
+
+# Optional climate statistics for the rainfall generator. Left out of
+# study.toml they arrive as None, and the backend estimates them from the
+# catchment's lat/lon. The Simulation notebook reads the same two, so both
+# notebooks ask pyraingen for the same rainfall.
+MEAN_ANNUAL_RAINFALL = study.ensemble.mean_annual_rainfall
+AVERAGE_TEMPERATURE  = study.ensemble.average_temperature
+
+# Per-cell results are reported per hectare, so the model needs to know how
+# big a cell is. This follows the DEM: change catchment.cell_size_m if yours
+# is not the 30 m of the national DEM this project downloads by default.
+# Nothing checks it against the raster, and a wrong value is silent — it
+# rescales every t/ha figure below, and with them the erosion threshold the
+# exceedance map is drawn at.
+CELL_AREA_HA = study.catchment.cell_size_m ** 2 / 10_000
+
+# Where the exceedance maps put their line. Reporting choices, not model
+# calibration: they change what a map shows, never what the model computes.
+EROSION_THRESHOLD_T_HA    = study.reporting.erosion_threshold_t_ha
+DELIVERED_THRESHOLD_KG_HA = study.reporting.delivered_threshold_kg_ha
+
+# %% [markdown]
 # ## Load project
 
 # %%
-proj = FireImpactsProject('.', exist_ok=True)
+proj = FireImpactsProject(PROJECT_DIR, exist_ok=True)
 proj.catchments
 
 # %% [markdown]
-# A `FireImpactsProject` can host multiple study catchments; in this
-# example we assume just one and take the first.
+# > **Note:** a `FireImpactsProject` can hold several catchments. This
+# > notebook works on the one named by `catchment.name` in `study.toml`.
 
 # %%
-CATCHMENT = proj.catchments[0]
-CATCHMENT
-
 # A run binds to one (catchment, event, ensemble) combination via a
 # RunContext. The event must match a directory produced by PrepareData;
-# the ensemble names this climate realisation. CATCHMENT is still kept
-# as a separate variable for the plotting helpers.
+# the ensemble names this climate realisation. All three are named in
+# study.toml.
 # Pass label='...' to name this run's output directory, so several
 # parameter variants of one (event, ensemble) can sit side by side.
 # It defaults to the ensemble name.
 ctx = RunContext.solo_run(
-    proj, event='2019_fire', ensemble='stochastic',
+    proj, event=EVENT, ensemble=ENSEMBLE,
     catchment=CATCHMENT,
 )
 
@@ -97,7 +139,9 @@ ctx = RunContext.solo_run(
 # The library infers location and elevation from the catchment
 # boundary and DEM.  Mean annual rainfall and average temperature are
 # optional: the backend service estimates them from lat/lon when not
-# supplied.  Pass them explicitly when you have site-specific values.
+# supplied.  Set `ensemble.mean_annual_rainfall` and
+# `ensemble.average_temperature` in `study.toml` when you have
+# site-specific values.
 #
 # The same set of replicates feeds both simulations.
 
@@ -107,22 +151,26 @@ ctx = RunContext.solo_run(
 # isn't hard-coded here.
 rain_data_start, rain_data_end = ctx.simulation_period()
 
-N_REPLICATES = 10
-
 # %%
 # `num_years` is inferred from start/end (one API year per calendar
-# year spanned).  Uncomment the climate kwargs to override the
-# backend-estimated values.
+# year spanned).  `mean_annual_rainfall` and `average_temperature` are
+# optional: leave them out of study.toml and they arrive here as None,
+# which tells the backend service to estimate them from the catchment's
+# lat/lon.
 # The generated rainfall is cached under Ensembles/<ensemble>/ and reused
 # on repeat runs — identical rainfall, no repeat API call. Pass
 # regenerate=True to force a fresh draw.
+# Note what that means for the two climate statistics: only the window and
+# the replicate count decide whether the cache is reused, so changing
+# mean_annual_rainfall or average_temperature after a run has no effect
+# until you pass regenerate=True. You get the cached rainfall, silently.
 replicates = get_rainfall_replicates(
     ctx,
     start=rain_data_start,
     end=rain_data_end,
     num_replicates=N_REPLICATES,
-    # mean_annual_rainfall=600,   # mm  — optional
-    # average_temperature=20,     # °C  — optional
+    mean_annual_rainfall=MEAN_ANNUAL_RAINFALL,   # None -> estimated
+    average_temperature=AVERAGE_TEMPERATURE,     # None -> estimated
 )
 rainfall_ds = replicates
 rainfall_ds
@@ -169,7 +217,7 @@ recorder_factory = default_rusle_recorders(
 rusle_results = run_rusle_all_replicates(
     ctx,
     rainfall_30min,
-    n_workers=min(N_REPLICATES, 10),
+    n_workers=min(N_REPLICATES, N_WORKERS),
     recorder_factory=recorder_factory,
 )
 
@@ -186,7 +234,7 @@ rusle_results = run_rusle_all_replicates(
 baseline_results = run_rusle_all_replicates(
     ctx,
     rainfall_30min,
-    n_workers=min(N_REPLICATES, 10),
+    n_workers=min(N_REPLICATES, N_WORKERS),
     recorder_factory=recorder_factory,
     use_fire_adjusted=False,
 )
@@ -199,7 +247,9 @@ baseline_results = run_rusle_all_replicates(
 # to avoid extreme outliers dominating.
 
 # %%
-CELL_AREA_HA = 30 * 30 / 10_000  # nominal 30 m cell
+# CELL_AREA_HA follows catchment.cell_size_m, set at the top of the
+# notebook — the per-hectare figures below are only right if it matches
+# the DEM this project was built from.
 plot_ensemble_statistics_panel(
     rusle_results,
     'RUSLE_sum_total',
@@ -215,11 +265,12 @@ plt.show()
 # ### Exceedance probability map
 #
 # For each grid cell, what fraction of replicates exceed a policy
-# threshold?
+# threshold?  The threshold is `reporting.erosion_threshold_t_ha` in
+# `study.toml`, in tonnes per hectare; the recorded grids are per cell,
+# so it is converted using the cell area set at the top.
 
 # %%
-THRESHOLD_T_HA = 0.5
-THRESHOLD_PER_CELL = THRESHOLD_T_HA * CELL_AREA_HA
+THRESHOLD_PER_CELL = EROSION_THRESHOLD_T_HA * CELL_AREA_HA
 
 prob = exceedance_probability(
     rusle_results, 'RUSLE_sum_total', THRESHOLD_PER_CELL,
@@ -227,7 +278,8 @@ prob = exceedance_probability(
 )
 ax = plot_exceedance(prob, project=proj, catchment=CATCHMENT)
 ax.set_title(
-    f'P(erosion > {THRESHOLD_T_HA} t/ha)  (n={N_REPLICATES} replicates)'
+    f'P(erosion > {EROSION_THRESHOLD_T_HA:g} t/ha)  '
+    f'(n={N_REPLICATES} replicates)'
 )
 plt.show()
 
@@ -269,7 +321,7 @@ plt.show()
 debris_results = run_debris_flow_all_replicates(
     ctx,
     rainfall_12min,
-    n_workers=min(N_REPLICATES, 10),
+    n_workers=min(N_REPLICATES, N_WORKERS),
 )
 
 # %%
@@ -297,7 +349,8 @@ sc_debris_12min = debris_post['aggregated']
 # kilograms.  `combine_rusle_and_debris_subcatchment` rescales RUSLE to
 # kg, sums the two, aggregates to a requested temporal resolution, and
 # relabels the columns using a string attribute from the subcatchment
-# shapefile (``SiteID`` by default).
+# coverage — the one named by `catchment.subcatchment_id_field` in
+# `study.toml`.
 #
 # The available temporal resolutions cover the common use cases:
 #
@@ -311,15 +364,30 @@ sc_debris_12min = debris_post['aggregated']
 #   to avoid artificial smoothing of the erosion signal.
 
 # %% [markdown]
-# The preferred string label field (e.g. ``'SiteID'``) is typically
-# captured by ``add_subcatchments(..., label_field='SiteID')`` at
-# project setup and is picked up automatically from ``settings.json``.
-# If it was missed, register it now — it will be persisted for reuse
-# across all future sessions against this project.
+# The label field is normally captured when the subcatchment coverage is
+# registered — the *Simulation* notebook does that with
+# ``add_subcatchments(..., label_field=...)`` — and is then read back from
+# the project's ``settings.json``. If it was missed, the cell below
+# registers `catchment.subcatchment_id_field` now, and it is persisted for
+# every future session against this project.
+#
+# `catchment.subcatchments` is optional: leave that setting out and this
+# cell does nothing, exactly as the equivalent cell in *Simulation* does.
+#
+# A field already registered is left alone — the persisted value wins, so
+# editing `catchment.subcatchment_id_field` in `study.toml` does not
+# change it from here. Re-run the *Simulation* notebook's subcatchment
+# cell to change it.
+#
+# > This notebook needs a subcatchment coverage to have been registered
+# > already. If you have not run *Simulation*, set
+# > `catchment.subcatchments` in `study.toml` and run its subcatchment
+# > cell first; without it the combined-load cells below have nothing to
+# > aggregate to.
 
 # %%
-if proj.subcatchment_label_field(CATCHMENT) is None:
-    proj.set_subcatchment_label_field(CATCHMENT, 'SiteID')
+if SUBCATCHMENTS and proj.subcatchment_label_field(CATCHMENT) is None:
+    proj.set_subcatchment_label_field(CATCHMENT, SUBCATCHMENT_ID_FIELD)
 
 # %%
 def combine_at(freq):
@@ -372,6 +440,10 @@ mean_annual_kg
 # Exceedance plots default to a locked `[0, 1]` colour scale so maps
 # for different thresholds or years are directly comparable; pass
 # `vmin=` / `vmax=` to override.
+#
+# The three exceedance maps below are all drawn at
+# `reporting.delivered_threshold_kg_ha` from `study.toml`, so changing
+# that setting moves all of them together — titles included.
 
 # %%
 # Ensemble mean, year 1 (data-derived colour scale):
@@ -382,32 +454,40 @@ plot_subcatchment_ensemble(
 )
 plt.show()
 
-# P(year 1 combined load > 500 kg/ha):
+# P(year 1 combined load > the reporting threshold):
 plot_subcatchment_ensemble(
     combined_annual, project=proj, catchment=CATCHMENT,
-    time=0, reduction=('exceedance', 500), normalise_by='area_ha',
+    time=0, reduction=('exceedance', DELIVERED_THRESHOLD_KG_HA),
+    normalise_by='area_ha',
     cmap='RdYlGn_r',
-    title='P(Year 1 combined load > 500 kg/ha)',
+    title=f'P(Year 1 combined load > {DELIVERED_THRESHOLD_KG_HA:g} kg/ha)',
 )
 plt.show()
 
-# Same threshold against RUSLE only:
+# Same threshold against RUSLE only. These two need `project=` as well as
+# `catchment=`: that is how they find the registered label field, and
+# without it their columns come back as raw subcatchment IDs, which the
+# plotter cannot match to the labelled coverage.
 plot_subcatchment_ensemble(
-    rusle_subcatchment_ensemble(rusle_results, catchment=CATCHMENT),
+    rusle_subcatchment_ensemble(
+        rusle_results, project=proj, catchment=CATCHMENT),
     project=proj, catchment=CATCHMENT,
-    time=0, reduction=('exceedance', 500), normalise_by='area_ha',
+    time=0, reduction=('exceedance', DELIVERED_THRESHOLD_KG_HA),
+    normalise_by='area_ha',
     cmap='RdYlGn_r',
-    title='P(Year 1 RUSLE load > 500 kg/ha)',
+    title=f'P(Year 1 RUSLE load > {DELIVERED_THRESHOLD_KG_HA:g} kg/ha)',
 )
 plt.show()
 
 # ...and against debris flow only:
 plot_subcatchment_ensemble(
-    debris_subcatchment_ensemble(sc_debris_12min, catchment=CATCHMENT),
+    debris_subcatchment_ensemble(
+        sc_debris_12min, project=proj, catchment=CATCHMENT),
     project=proj, catchment=CATCHMENT,
-    time=0, reduction=('exceedance', 500), normalise_by='area_ha',
+    time=0, reduction=('exceedance', DELIVERED_THRESHOLD_KG_HA),
+    normalise_by='area_ha',
     cmap='RdYlGn_r',
-    title='P(Year 1 debris load > 500 kg/ha)',
+    title=f'P(Year 1 debris load > {DELIVERED_THRESHOLD_KG_HA:g} kg/ha)',
 )
 plt.show()
 
@@ -425,6 +505,12 @@ plt.show()
 # The same RunContext used for the simulation drives the save —
 # rainfall lands under Ensembles/<ensemble>/ (climate-only, shareable
 # across events) while run outputs land under Runs/<event>/<ensemble>/.
+#
+# > The *SourceIntegration* notebook reads the loads back at the
+# > resolution named by `source.timestep` in `study.toml`. That has to be
+# > one of the frequencies saved below — daily (`'D'`) as it stands. If
+# > you set `source.timestep` to something else, add it here as well, or
+# > SourceIntegration will not find anything to load.
 
 # %%
 save_ensemble_run(

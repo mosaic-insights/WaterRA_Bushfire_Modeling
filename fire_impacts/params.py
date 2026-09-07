@@ -27,21 +27,29 @@ Design notes: ``design-notes/calibration-parameters-proposal.md``.
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
-import numbers
-import types
 import warnings
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
-from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from .const import (
     DEFAULT_DNBR_SATURATION, DEFAULT_DNBR_SEVERITY_THRESHOLD,
     DEFAULT_ASH_CONSTITUENTS, DEFAULT_DEBRIS_CONSTITUENTS,
     DEFAULT_DEBRIS_DNBR_THRESHOLD, DEFAULT_I12_LOOKUP,
     DEFAULT_KE_RATE_RUSLE2, UNSET,
+)
+
+# These were private to this module until study.py needed the same
+# validation. They live in _schema now; the old names are kept because
+# they are referenced throughout this file.
+from ._schema import (
+    coerce as _coerce,
+    deep_merge as _deep_merge,
+    did_you_mean as _did_you_mean,
+    from_dict as _from_dict,
+    hints as _hints,
+    to_dict as _to_dict,
 )
 
 __all__ = [
@@ -821,77 +829,6 @@ def _package_version() -> str:
         return 'unknown'
 
 
-def _to_dict(obj: Any) -> Any:
-    """Recursively convert nested frozen dataclasses to plain dicts."""
-    if is_dataclass(obj) and not isinstance(obj, type):
-        return {f.name: _to_dict(getattr(obj, f.name)) for f in fields(obj)}
-    return obj
-
-
-def _did_you_mean(name: str, options) -> str:
-    """Return a ' Did you mean X?' suffix, or '' if nothing is close."""
-    close = difflib.get_close_matches(name, list(options), n=1, cutoff=0.6)
-    return f' Did you mean {close[0]!r}?' if close else ''
-
-
-def _from_dict(cls, data: dict, *, path: str):
-    """
-    Build a (possibly nested) dataclass from a dict, rejecting unknown keys.
-
-    Nested dataclass fields recurse; everything else is passed through to the
-    constructor so __post_init__ validation runs.
-    """
-    if not isinstance(data, dict):
-        raise ValueError(
-            f'{path or "parameters"}: expected an object, got '
-            f'{type(data).__name__}.'
-        )
-    known = {f.name: f for f in fields(cls)}
-    kwargs = {}
-    for key, value in data.items():
-        if key not in known:
-            where = f'{path}{key}' if path else key
-            raise ValueError(
-                f'Unknown parameter {where!r}.'
-                f'{_did_you_mean(key, known)} '
-                f'Valid names here: {sorted(known)}.'
-            )
-        default = known[key].default
-        if is_dataclass(default) and not isinstance(default, type):
-            # Merge onto the default instance so a partial override of a
-            # nested group works even when that group's own fields have no
-            # defaults (DebrisDepthParams requires all five).
-            if not isinstance(value, dict):
-                raise ValueError(
-                    f'{path}{key}: expected an object, got '
-                    f'{type(value).__name__}.'
-                )
-            kwargs[key] = _from_dict(
-                type(default),
-                _deep_merge(_to_dict(default), value),
-                path=f'{path}{key}.',
-            )
-        else:
-            kwargs[key] = _coerce(
-                value, _hints(cls).get(key), f'{path}{key}',
-            )
-    try:
-        return cls(**kwargs)
-    except TypeError as exc:
-        # A nested group with no default (DebrisDepthParams) needs every
-        # field; surface that as a parameter error rather than a TypeError.
-        raise ValueError(f'{path or "parameters"}: {exc}') from exc
-    except ValueError as exc:
-        # __post_init__ range errors name the field but not the group, and
-        # a user editing one of three parameters.json files needs the full
-        # path to know what to change.
-        message = str(exc)
-        prefix = path or ''
-        if prefix and not message.startswith(prefix):
-            message = f'{prefix}{message}'
-        raise ValueError(message) from None
-
-
 def scope_of(path: str) -> str:
     """
     Return the scope of a dotted parameter path, e.g. 'delivery.max_sdr'.
@@ -966,88 +903,6 @@ def check_scope(data: dict, layer: str) -> None:
         )
 
 
-_TYPE_HINTS: dict = {}
-
-
-def _hints(cls) -> dict:
-    """Return (and cache) a dataclass's resolved type hints.
-
-    ``from __future__ import annotations`` makes ``field.type`` a string,
-    so the annotations have to be resolved before they can be used to
-    coerce.
-    """
-    if cls not in _TYPE_HINTS:
-        _TYPE_HINTS[cls] = get_type_hints(cls)
-    return _TYPE_HINTS[cls]
-
-
-def _coerce(value, annotation, path: str):
-    """
-    Coerce a JSON value to a field's annotated type, or raise.
-
-    JSON has no int/float distinction, so a hand-edited ``1`` for a float
-    field must normalise to ``1.0`` — otherwise it is a different value to
-    the digest and would spuriously flag every derived layer stale. A
-    string where a number belongs is rejected here rather than leaking a
-    comparison TypeError out of __post_init__.
-    """
-    if annotation is None:
-        return value
-
-    # get_origin() returns types.UnionType for `X | None` on Python
-    # 3.10-3.13 and typing.Union for typing.Optional[X]; 3.14 unified them.
-    # Match both, or this branch is dead on the pinned runtime.
-    if get_origin(annotation) in (Union, types.UnionType):
-        args = get_args(annotation)
-        if value is None and type(None) in args:
-            return None
-        for member in (a for a in args if a is not type(None)):
-            try:
-                return _coerce(value, member, path)
-            except ValueError:
-                continue
-        raise ValueError(
-            f'{path}: expected one of '
-            f'{[getattr(a, "__name__", a) for a in args]}, got '
-            f'{type(value).__name__} ({value!r}).'
-        )
-
-    if annotation is bool:
-        if isinstance(value, bool):
-            return value
-        raise ValueError(f'{path} must be true or false, got {value!r}.')
-
-    if annotation is int:
-        # bool is a subclass of int; a JSON true is not a count. numbers.*
-        # rather than int/float so numpy and pandas scalars (np.int64 out of
-        # a DataFrame lookup) are accepted rather than rejected with a
-        # confusing "must be a whole number".
-        if isinstance(value, bool) or not isinstance(value, numbers.Real):
-            raise ValueError(f'{path} must be a whole number, got {value!r}.')
-        try:
-            as_float = float(value)
-        except (OverflowError, ValueError) as exc:
-            raise ValueError(f'{path}: {value!r} is out of range.') from exc
-        if not as_float.is_integer():
-            raise ValueError(f'{path} must be a whole number, got {value!r}.')
-        return int(as_float)
-
-    if annotation is float:
-        if isinstance(value, bool) or not isinstance(value, numbers.Real):
-            raise ValueError(f'{path} must be a number, got {value!r}.')
-        try:
-            return float(value)
-        except (OverflowError, ValueError) as exc:
-            raise ValueError(f'{path}: {value!r} is out of range.') from exc
-
-    if annotation is str:
-        if isinstance(value, str):
-            return value
-        raise ValueError(f'{path} must be a string, got {value!r}.')
-
-    return value
-
-
 def sparse_overrides(params: 'ModelParameters') -> dict:
     """
     Reduce a full ModelParameters to only what differs from the defaults.
@@ -1115,20 +970,6 @@ def _flatten(data: dict, prefix: str = '') -> dict:
         else:
             flat[full] = value
     return flat
-
-
-def _deep_merge(base: dict, overlay: dict) -> dict:
-    """Return a new dict with overlay merged recursively over base."""
-    merged = dict(base)
-    for key, value in overlay.items():
-        if (
-            isinstance(value, dict)
-            and isinstance(merged.get(key), dict)
-        ):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
 
 
 def _digest(values: dict) -> str:

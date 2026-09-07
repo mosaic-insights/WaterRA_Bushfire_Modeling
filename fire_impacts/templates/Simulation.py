@@ -32,21 +32,58 @@ import matplotlib.pyplot as plt
 
 
 # %% [markdown]
+# ## Settings for this study
+#
+# These come from `study.toml`, the same file the PrepareData notebook
+# read. Anything PrepareData already worked out — the fire dates, the
+# recovery windows — is read back from the project rather than repeated
+# here, so there is only ever one copy of it.
+#
+# Running the cell prints each setting and where it came from, so you can
+# check the notebook is about to do what you expect.
+
+# %%
+from fire_impacts.study import load_study
+
+study = load_study('.')
+study.describe()
+
+PROJECT_DIR = study.project.directory
+CATCHMENT   = study.catchment.name
+EVENT       = study.event.name
+ENSEMBLE    = study.ensemble.name
+N_REPLICATES = study.ensemble.num_replicates
+INSPECT_REPLICATE = study.ensemble.inspect_replicate
+SUBCATCHMENTS = study.catchment.subcatchments
+SUBCATCHMENT_ID_FIELD = study.catchment.subcatchment_id_field
+MEAN_ANNUAL_RAINFALL = study.ensemble.mean_annual_rainfall
+AVERAGE_TEMPERATURE  = study.ensemble.average_temperature
+
+# Replicates are numbered from zero, so the one this notebook plots has
+# to be less than the number generated. Checked here rather than left to
+# fail as a bare IndexError several sections below, which says nothing
+# about study.toml.
+if INSPECT_REPLICATE >= N_REPLICATES:
+    raise ValueError(
+        f'ensemble.inspect_replicate is {INSPECT_REPLICATE}, but only '
+        f'{N_REPLICATES} replicates are generated '
+        f'(ensemble.num_replicates), numbered 0 to {N_REPLICATES - 1}. '
+        f'Lower inspect_replicate or raise num_replicates in study.toml.')
+
+# %% [markdown]
 # ## Load project
 
 # %%
-#proj = FireImpactsProject('.',exist_ok=True)
-proj = FireImpactsProject('.', exist_ok=True)
+proj = FireImpactsProject(PROJECT_DIR, exist_ok=True)
 
 # %%
 proj.catchments
 
 # %% [markdown]
-# > **Note:** You can capture multiple study areas / catchments within a single `FireImpactsProject` directory structure. Here we will assume you have one, so we will take the first (presumed only)
+# > **Note:** a `FireImpactsProject` can hold several catchments. This
+# > notebook works on the one named by `catchment.name` in `study.toml`.
 
 # %%
-catchment_name = proj.catchments[0]
-
 # A simulation binds to one (catchment, event, ensemble) combination
 # via a RunContext. The event must match a directory produced by
 # PrepareData; the ensemble names this climate realisation. Outputs
@@ -54,17 +91,40 @@ catchment_name = proj.catchments[0]
 # What has been prepared for this catchment? A RunContext can be built for
 # an event that does not exist yet — you might create the context before
 # running PrepareData — so it is worth checking the names first.
-proj.events(catchment_name)
-proj.ensembles(catchment_name)
+proj.events(CATCHMENT)
+proj.ensembles(CATCHMENT)
 
 # %%
 ctx = RunContext.solo_run(
-    proj, event='2019_fire', ensemble='stochastic',
+    proj, event=EVENT, ensemble=ENSEMBLE, catchment=CATCHMENT,
 )
 ctx
+
+# %% [markdown]
+# ### Subcatchments (optional)
+#
+# Results can be summarised over *subcatchments* — the reporting units of
+# a downstream model, for instance — as well as over the whole catchment.
+# Point `catchment.subcatchments` in `study.toml` at a polygon coverage of
+# them and the cell below registers it; leave that setting out and the
+# cell does nothing.
+#
+# `catchment.subcatchment_id_field` names the attribute in that coverage
+# that identifies each subcatchment, and it becomes the label on every
+# subcatchment output — so it wants to match the names used in whatever
+# you feed the results to.
+#
+# > Every *simulation* in this notebook runs either way. Without
+# > subcatchments the models run over the catchment as a whole and the
+# > subcatchment summary tables are simply not written. Only the
+# > `plot_subcatchments()` cells in the results sections below need them,
+# > and those will stop with a message naming `add_subcatchments()` if
+# > you have not set the file. Skip those cells, or set the setting.
+
 # %%
-subcatch_path = '..\\test_data\\Subcatchments_EgSmall_7899.shp'
-#proj.add_subcatchments(catchment_name, subcatch_path)
+if SUBCATCHMENTS:
+    proj.add_subcatchments(
+        CATCHMENT, SUBCATCHMENTS, label_field=SUBCATCHMENT_ID_FIELD)
 
 # %% [markdown]
 # ## Rainfall data
@@ -84,23 +144,28 @@ rain_data_start, rain_data_end = ctx.simulation_period()
 
 # `num_years` is inferred from start/end (one API year per calendar
 # year spanned).  `mean_annual_rainfall` and `average_temperature` are
-# optional — if omitted, the backend service estimates them from the
-# catchment's lat/lon.  Override them here when you have site-specific
-# climate statistics.
+# optional: leave them out of study.toml and they arrive here as None,
+# which tells the backend service to estimate them from the catchment's
+# lat/lon.  Set them in study.toml when you have site-specific climate
+# statistics.
 # The generated rainfall is cached under Ensembles/<ensemble>/ and reused
 # on repeat runs — identical rainfall, no repeat API call. Pass
 # regenerate=True to force a fresh draw.
+# Note what that means for the two climate statistics: only the window and
+# the replicate count decide whether the cache is reused, so changing
+# mean_annual_rainfall or average_temperature after a run has no effect
+# until you pass regenerate=True. You get the cached rainfall, silently.
 replicates = get_rainfall_replicates(
     ctx,
     start=rain_data_start,
     end=rain_data_end,
-    num_replicates=10,
-    # mean_annual_rainfall=600,   # mm  — optional
-    # average_temperature=20,     # °C  — optional
+    num_replicates=N_REPLICATES,
+    mean_annual_rainfall=MEAN_ANNUAL_RAINFALL,   # None -> estimated
+    average_temperature=AVERAGE_TEMPERATURE,     # None -> estimated
 )
 rainfall_data = replicates
 # %% [markdown]
-# Once we have our pyraingen rainfall replicates, we use `aggregate_rainfall_data()` to resample the results to the 30-minute frequency required for debris flow simulations
+# Once we have our pyraingen rainfall replicates, we use `aggregate_rainfall_data()` to resample the results to the 30-minute frequency required for the erosion simulations
 
 # %%
 # aggregate_rainfall_data?
@@ -113,7 +178,11 @@ rainfall_30min = aggregate_rainfall_data(rainfall_data,rain_data_start,rain_data
 rainfall_30min
 
 # %% [markdown]
-# **Note:** The pyraingen data includes 10 stochastic replicates. In the following examples, we will only use one replicate.
+# **Note:** the data just generated holds `ensemble.num_replicates`
+# stochastic replicates. The examples below run just one of them — the one
+# numbered `ensemble.inspect_replicate` in `study.toml`, counting from
+# zero, so it must be less than `ensemble.num_replicates`. Running every
+# replicate is what the *SimulationEnsemble* notebook does.
 #
 
 # %% [markdown]
@@ -128,7 +197,7 @@ rainfall_30min
 
 # %%
 # Grab a single rainfall sequence from the stochastic rainfall replicates and inspect it:
-rain_seq = rainfall_30min.rainfall[:,9].to_pandas()
+rain_seq = rainfall_30min.rainfall[:, INSPECT_REPLICATE].to_pandas()
 rain_seq
 
 # %% [markdown]
@@ -140,7 +209,7 @@ rain_seq
 # * Peak 30 min erosion for year 1 and for year 2
 # * The same stats for sediment *delivered* to streams
 #
-# We also want daily timeseries at the subcatchment scale that we can later import into Source
+# We also want daily timeseries at the subcatchment scale that we can later import into Source. If you did not set `catchment.subcatchments` above, that timeseries covers the catchment as a single zone instead.
 
 # %%
 # Recorders are built with the default_rusle_recorders() factory: it returns
@@ -332,7 +401,9 @@ results['erosion_daily_time_series']
 #         - Sum for totals (e.g. 'RUSLE_sum_total', 'delivered_sum_total')
 #         - Mean for peaks/max (e.g. 'RUSLE_max_total', 'delivered_max_total')
 #
-# Examples of the different visualisations for our example catchment are shown in the following cells
+# Examples of the different visualisations for our example catchment are shown in the following cells.
+#
+# > The `plot_subcatchments()` cells need `catchment.subcatchments` to have been set at the top of this notebook. Without it no subcatchment summary was written, and those cells stop with a message naming `add_subcatchments()` — skip them and read the whole-catchment rasters instead.
 
 # %%
 # To see a complete picture of sediment eroded across the catchment:
@@ -340,7 +411,7 @@ proj.plot_catchment_raster('Results', 'RUSLE_sum_total', ctx=ctx)
 
 # %%
 # To see the total sediment eroded across each subcatchment:
-proj.plot_subcatchments(catchment=catchment_name, data_type='Results', colour_col='RUSLE_sum_total', ctx=ctx)
+proj.plot_subcatchments(catchment=CATCHMENT, data_type='Results', colour_col='RUSLE_sum_total', ctx=ctx)
 
 # %%
 # To see the maximum erosion for any 30-minute period for each cell:
@@ -348,7 +419,7 @@ proj.plot_catchment_raster('Results', 'RUSLE_max_total', ctx=ctx)
 
 # %%
 # To see the average maximum erosion in any 30-minute period across subcatchments:
-proj.plot_subcatchments(catchment=catchment_name, data_type='Results', colour_col='RUSLE_max_total', ctx=ctx)
+proj.plot_subcatchments(catchment=CATCHMENT, data_type='Results', colour_col='RUSLE_max_total', ctx=ctx)
 
 # %% [markdown]
 # Once we've predicted how much sediment has *eroded* from each cell, the final RUSLE step is to work out how much of that eroded sediment actually makes its way downhill and is *delivered* to the stream network.
@@ -359,7 +430,7 @@ proj.plot_catchment_raster('Results', 'delivered_sum_total', ctx=ctx)
 
 # %%
 # Totals delivered from each subcatchment:
-proj.plot_subcatchments(catchment=catchment_name, data_type='Results', colour_col='delivered_sum_total', ctx=ctx)
+proj.plot_subcatchments(catchment=CATCHMENT, data_type='Results', colour_col='delivered_sum_total', ctx=ctx)
 
 # %%
 # Largest mass of sediment delivered during any 30-minute period for each cell:
@@ -367,7 +438,7 @@ proj.plot_catchment_raster('Results', 'delivered_max_total', ctx=ctx)
 
 # %%
 # Average maximum sediment delivered during any 30-minute period across each subcatchment:
-proj.plot_subcatchments(catchment=catchment_name, data_type='Results', colour_col='delivered_max_total', ctx=ctx)
+proj.plot_subcatchments(catchment=CATCHMENT, data_type='Results', colour_col='delivered_max_total', ctx=ctx)
 
 # %% [markdown]
 # ## Debris Flow Simulation
@@ -387,7 +458,7 @@ rainfall.rainfall
 
 # %%
 # Extract and inspect one replicate:
-rain_intensity_seq = rainfall.rainfall[:,9].to_pandas()
+rain_intensity_seq = rainfall.rainfall[:, INSPECT_REPLICATE].to_pandas()
 rain_intensity_seq
 # %% [markdown]
 # ### Stale layer check
@@ -407,7 +478,7 @@ df_results = debris_flow(ctx, rain_intensity_seq)
 # %% [markdown]
 # ### Viewing debris flow simulation results
 #
-# A table of results for each headwater will be saved to the project's **DebrisFlow** folder. A separate table will also be created with the same results aggregated to subcatchments.
+# A table of results for each headwater will be saved to the project's **DebrisFlow** folder. If `catchment.subcatchments` is set, a separate table is also created with the same results aggregated to subcatchments; without it that step is skipped, and so are the `plot_subcatchments()` cells below.
 #
 # The easiest way to interpret the results is to use the build in visualisation methods: `plot_headwaters()` and `plot_subcatchments()`.
 #
@@ -415,22 +486,22 @@ df_results = debris_flow(ctx, rain_intensity_seq)
 
 # %%
 # To see the calculated critical thresholds for debris flow:
-proj.plot_headwaters(catchment_name, 'I12_crit_mean_Year_1', data_type='DebrisFlow', ctx=ctx)
+proj.plot_headwaters(CATCHMENT, 'I12_crit_mean_Year_1', data_type='DebrisFlow', ctx=ctx)
 
 # %%
 # The same, aggregated as the average threshold for each subcatchment:
-proj.plot_subcatchments(catchment_name, 'DebrisFlow', 'I12_crit_mean_Year_1', ctx=ctx)
+proj.plot_subcatchments(CATCHMENT, 'DebrisFlow', 'I12_crit_mean_Year_1', ctx=ctx)
 
 # %%
 # To see the number of debris flow events in each headwater:
-proj.plot_headwaters(catchment_name, 'Year1_num_events', data_type='DebrisFlow', ctx=ctx)
+proj.plot_headwaters(CATCHMENT, 'Year1_num_events', data_type='DebrisFlow', ctx=ctx)
 
 # %%
 # And by subcatchment:
-proj.plot_subcatchments(catchment_name, 'DebrisFlow', 'Year1_num_events', ctx=ctx)
+proj.plot_subcatchments(CATCHMENT, 'DebrisFlow', 'Year1_num_events', ctx=ctx)
 
 # %%
 # Finally we can view the mass that would form part of a debris flow in each subcatchment:
-proj.plot_subcatchments(catchment_name, 'DebrisFlow', 'mass', ctx=ctx)
+proj.plot_subcatchments(CATCHMENT, 'DebrisFlow', 'mass', ctx=ctx)
 
 # %%
