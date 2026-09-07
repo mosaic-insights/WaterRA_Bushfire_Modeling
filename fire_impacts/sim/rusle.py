@@ -365,11 +365,13 @@ def record_subcatchment_timeseries(
       faster for large ensembles.
     - agg_count of 1 is appropriate when each model row already
       represents the desired output interval.
+    - Timesteps flagged dry are counted but not accumulated; a window of
+      nothing but dry timesteps records a row of zeros.
     ------------------------------------------------------------------------
     """
     result = None
     index = None
-    zones = None
+    zone_indices = None
     zone_names = None
 
     intermediate = None
@@ -393,7 +395,7 @@ def record_subcatchment_timeseries(
         # Declare the variables from the outer scope so this closure
         # remembers their values between calls
         nonlocal result, index
-        nonlocal zones, zone_names
+        nonlocal zone_indices, zone_names
         nonlocal intermediate, intermediate_count
 
         data = kwargs.get(variable_name)
@@ -402,11 +404,12 @@ def record_subcatchment_timeseries(
             raise ValueError(
                 f"Variable {variable_name} not found in simulation data."
             )
+        dry = kwargs.get('dry', False)
 
         # On the first call, build zone masks from the subcatchment
         # boundaries. Fall back to the whole catchment boundary if no
         # subcatchments have been registered.
-        if zones is None:
+        if zone_indices is None:
             try:
                 boundaries_v = ctx.project.get_subcatchments(ctx.catchment)
             except FileNotFoundError:
@@ -416,15 +419,22 @@ def record_subcatchment_timeseries(
                 resolved_label = ctx.project.subcatchment_label_field(
                     ctx.catchment,
                 )
-            # Rasterise each subcatchment polygon separately to produce
-            # one binary mask per zone
-            zones = [
-                rasterio.features.rasterize(
-                    [g],
-                    transform=transform,
-                    fill=np.nan,
-                    dtype=np.float32,
-                    out_shape=data.shape,
+            # Rasterise each subcatchment polygon separately, then keep
+            # only the flat positions of the cells it covers. Holding
+            # indices rather than one full-grid mask per zone turns the
+            # aggregation below from a pass over the whole grid per zone
+            # into a single pass over the catchment.
+            zone_indices = [
+                np.flatnonzero(
+                    ~np.isnan(
+                        rasterio.features.rasterize(
+                            [g],
+                            transform=transform,
+                            fill=np.nan,
+                            dtype=np.float32,
+                            out_shape=data.shape,
+                        )
+                    )
                 ) for g in boundaries_v.geometry
             ]
             if resolved_label is None:
@@ -445,12 +455,17 @@ def record_subcatchment_timeseries(
             else:
                 zone_names = boundaries_v[resolved_label].values
 
-        # Accumulate data into the current aggregation cycle
+        # Accumulate data into the current aggregation cycle. A dry
+        # timestep contributes an all-zero grid, so there is nothing to
+        # add - and the grid it carries is shared and read-only. It
+        # still advances the cycle, so the output cadence is unchanged.
         intermediate_count += 1
-        if intermediate is None:
-            intermediate = data
-        else:
-            intermediate += data
+        if not dry:
+            if intermediate is None:
+                # Copy: the simulation reuses the buffer it handed us.
+                intermediate = data.copy()
+            else:
+                intermediate += data
 
         # Return early if we haven't reached the requested agg_count yet
         if intermediate_count < agg_count:
@@ -464,9 +479,6 @@ def record_subcatchment_timeseries(
         if index is None:
             index = []
         index.append(timestep)
-
-        # Mask each zone so only cells inside it retain their values
-        masked = [data * zone for zone in zones]
 
         def agg(d):
             """Apply the requested spatial aggregation to one zone."""
@@ -482,7 +494,13 @@ def record_subcatchment_timeseries(
         if result is None:
             result = {name: [] for name in zone_names}
 
-        grouped = [agg(d) for d in masked]
+        if data is None:
+            # Every timestep in this window was dry, so every zone
+            # eroded nothing.
+            grouped = [0.0] * len(zone_indices)
+        else:
+            flat = data.reshape(-1)
+            grouped = [agg(flat[positions]) for positions in zone_indices]
         for ix, name in enumerate(zone_names):
             result[name].append(grouped[ix])
 
@@ -492,10 +510,10 @@ def record_subcatchment_timeseries(
     def reset():
         """Reset all accumulated state back to initial values."""
         nonlocal result, index
-        nonlocal zones, zone_names
+        nonlocal zone_indices, zone_names
         nonlocal intermediate, intermediate_count
         index = None
-        zones = None
+        zone_indices = None
         zone_names = None
         result = None
         intermediate = None
@@ -847,7 +865,11 @@ def run_usle_simulation(
       running result. Recorders must also expose .reset() and
       .finalize() methods to manage state across calls.
     - The data dict passed to each recorder contains keys such as
-      'RUSLE', 'delivered', and related per-cell arrays.
+      'RUSLE', 'delivered', and related per-cell arrays, plus a 'dry'
+      flag. Every recorder gets the same arrays, so none of them may
+      write into one without copying it first; on a dry timestep those
+      arrays are shared and read-only, and accumulating them is both
+      unnecessary and an error.
     ------------------------------------------------------------------------
     """
     ctx.validate()
@@ -1147,6 +1169,7 @@ def generate_rusle(
       - 'total_rain': total rainfall depth for the timestep (float).
       - 'intensity': 30-min rainfall intensity in mm/hr (float).
       - 'erosivity': kinetic energy × intensity erosivity (float).
+      - 'dry': True when the timestep had no rainfall (bool).
       - 'RUSLE': per-cell erosion array (float32 numpy array).
       - 'delivered': RUSLE × SDR delivered sediment array.
       - 'RUSLE_below_threshold': erosion at low-severity cells.
@@ -1158,6 +1181,10 @@ def generate_rusle(
     - klscp, sdr, and dnbr must share the same shape and transform.
     - This is a generator function; results are produced one timestep at
       a time rather than all at once to keep memory usage manageable.
+    - A dry timestep yields all-zero grids, and every one of its grids is
+      the same shared read-only array — recorders must branch on 'dry'
+      rather than accumulating it, and must never write into a grid they
+      were handed without copying it first.
     ------------------------------------------------------------------------
     """
     # Convert to Series if we've got a DataFrame, to ensure consistency
@@ -1173,6 +1200,15 @@ def generate_rusle(
     dnbr_below_threshold = dnbr < erosion.dnbr_severity_threshold
     dnbr_above_threshold = dnbr >= erosion.dnbr_severity_threshold
 
+    # One shared zeros grid stands in for every dry timestep. Around
+    # three quarters of timesteps produce no erosion, and allocating six
+    # fresh grids for each of them was the single largest cost in a run.
+    # It is read-only because it is shared: a recorder accumulating into
+    # it in place would corrupt every other dry timestep, so that has to
+    # raise rather than quietly produce wrong numbers.
+    dry_grid = np.zeros_like(klscp, dtype=np.float32)
+    dry_grid.flags.writeable = False
+
     # Initialise timing variables for progress logging
     total_timesteps = len(rainfall.index)
     start_time = time.time()
@@ -1180,43 +1216,37 @@ def generate_rusle(
     iteration_count = 0
 
     # Loop over each 30-min timestep
-    for timestep in rainfall.index:
+    for timestep, delta_v_r in zip(rainfall.index, rainfall.values):
         iteration_count += 1
-        # Get rainfall depth (∆V_r) during the 30-min period
-        delta_v_r = rainfall[timestep]
 
-        # Initialise the result dict with zeros/default values
-        result = {
-            'total_rain': delta_v_r,
-            'intensity': 0.0,
-            'erosivity': 0.0,
-            'RUSLE': np.zeros_like(klscp, dtype=np.float32),
-            'delivered': np.zeros_like(klscp, dtype=np.float32),
-            'RUSLE_below_threshold': np.zeros_like(
-                klscp, dtype=np.float32
-            ),
-            'RUSLE_above_threshold': np.zeros_like(
-                klscp, dtype=np.float32
-            ),
-            'delivered_below_threshold': np.zeros_like(
-                klscp, dtype=np.float32
-            ),
-            'delivered_above_threshold': np.zeros_like(
-                klscp, dtype=np.float32
-            ),
-        }
-
-        # Skip RUSLE calculations for dry timesteps
+        # Skip RUSLE calculations for dry timesteps. They still have to
+        # be yielded so recorders keep their cadence, but every grid is
+        # zero and recorders short-circuit on the 'dry' flag.
         if delta_v_r == 0:
-            yield (timestep, result)
+            yield (timestep, {
+                'total_rain': delta_v_r,
+                'intensity': 0.0,
+                'erosivity': 0.0,
+                'dry': True,
+                'RUSLE': dry_grid,
+                'delivered': dry_grid,
+                'RUSLE_below_threshold': dry_grid,
+                'RUSLE_above_threshold': dry_grid,
+                'delivered_below_threshold': dry_grid,
+                'delivered_above_threshold': dry_grid,
+            })
             continue
 
         # Rainfall intensity (∆V_r / ∆t_r) in mm/hr, and the erosivity
         # factor (R) derived from it.
         intensity, R = rainfall_erosivity(
             delta_v_r, rate=erosion.kinetic_energy_coefficient)
-        result['intensity'] = intensity
-        result['erosivity'] = R
+        result = {
+            'total_rain': delta_v_r,
+            'intensity': intensity,
+            'erosivity': R,
+            'dry': False,
+        }
 
         # Total erosion in tonnes per hectare
         # TODO: sediment eroded? kg? t?
@@ -1723,20 +1753,38 @@ def record_multi_period_grid(variable, fn, periods):
     Returns:
     - A recorder closure with .reset() and .finalize() methods; finalize
       returns an xarray.DataArray of accumulated grids.
+    ------------------------------------------------------------------------
+    Notes:
+    - A timestep flagged dry contributes an all-zero grid, which changes
+      neither a sum nor a max of non-negative erosion. It is counted but
+      not accumulated, so it still divides a mean correctly.
+    ------------------------------------------------------------------------
     """
     # One accumulator array and count per period
     grids = [None] * len(periods)
     counts = [0] * len(periods)
     captured_transform = [None]  # mutable container for nonlocal capture
+    captured_shape = [None]
 
     def recorder(timestep, **kwargs):
         data = kwargs[variable]
+        dry = kwargs.get('dry', False)
         if captured_transform[0] is None and 'transform' in kwargs:
             captured_transform[0] = kwargs['transform']
+        if captured_shape[0] is None:
+            captured_shape[0] = data.shape
         for i, (ps, pe) in enumerate(periods):
             if timestep < ps or timestep > pe:
                 continue
             counts[i] += 1
+            # A dry timestep contributes an all-zero grid, which changes
+            # neither a sum nor a max of non-negative erosion. Its only
+            # effect on a mean is through the count incremented above,
+            # so there is nothing left to do with the array itself -
+            # and it is shared and read-only, so touching it would be a
+            # mistake anyway.
+            if dry:
+                continue
             if grids[i] is None:
                 grids[i] = data.copy()
             elif fn == 'max':
@@ -1749,16 +1797,22 @@ def record_multi_period_grid(variable, fn, periods):
             grids[i] = None
             counts[i] = 0
         captured_transform[0] = None
+        captured_shape[0] = None
 
     def finalize():
         import xarray as xr
 
-        # Find the grid shape from the first populated accumulator
+        # Find the grid shape from the first populated accumulator,
+        # falling back to the shape seen at the first timestep - every
+        # period can be dry, and that is still a result of zeros rather
+        # than no result at all.
         shape = None
         for g in grids:
             if g is not None:
                 shape = g.shape
                 break
+        if shape is None:
+            shape = captured_shape[0]
         if shape is None:
             return None
 

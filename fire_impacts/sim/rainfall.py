@@ -178,6 +178,70 @@ def convert_rainfall_depth_to_intensity(
     return result
 
 
+def _resample_via_pandas(ds: xr.Dataset, time_res: str, how: str):
+    """
+    Resample every time-varying variable of a Dataset using pandas.
+
+    Parameters:
+    - ds: xarray.Dataset with a 'time' dimension.
+    - time_res: Resampling rule string (e.g. '30min').
+    - how: Reduction to apply per bin — 'sum' or 'mean'.
+
+    Returns:
+    - xarray.Dataset reduced to the requested resolution, laid out the
+      way xarray's own resample lays it out: 'time' first, the
+      remaining dimensions in their original relative order.
+    ------------------------------------------------------------------------
+    Notes:
+    - xarray reduces resample groups one at a time in Python, so it
+      costs roughly the same per output bin however little data lands in
+      it — minutes for a 35 MB replicate set, and worse the finer the
+      output resolution. pandas does the identical reduction in a single
+      pass, so all this function does is reshape around it.
+    - Variables without a 'time' dimension are passed through untouched.
+    ------------------------------------------------------------------------
+    """
+    resampled = {}
+    for name, da in ds.data_vars.items():
+        if 'time' not in da.dims:
+            resampled[name] = da
+            continue
+
+        # Flatten everything but time into columns, which is the layout
+        # pandas reduces in one pass over the underlying block.
+        other_dims = [d for d in da.dims if d != 'time']
+        moved = da.transpose('time', *other_dims)
+        columns = moved.values.reshape(moved.sizes['time'], -1)
+        frame = pd.DataFrame(
+            columns, index=pd.DatetimeIndex(moved['time'].values),
+        )
+        resampler = frame.resample(time_res)
+        aggregated = getattr(resampler, how)()
+        if how == 'sum':
+            # xarray leaves a bin that caught no timestamps at all as
+            # NaN, where pandas sums it to 0.0. A gap in the record is
+            # missing rainfall, not an absence of rainfall, so keep it
+            # NaN. A bin that does hold timestamps but only NaN values
+            # sums to 0.0 under both, and must stay that way.
+            aggregated[(resampler.size() == 0).to_numpy()] = np.nan
+
+        shape = (len(aggregated),) + tuple(
+            moved.sizes[d] for d in other_dims
+        )
+        coords = {
+            d: moved.coords[d] for d in other_dims if d in moved.coords
+        }
+        coords['time'] = aggregated.index.values
+        resampled[name] = xr.DataArray(
+            aggregated.to_numpy().reshape(shape),
+            dims=('time', *other_dims),
+            coords=coords,
+            attrs=dict(da.attrs),
+        )
+
+    return xr.Dataset(resampled, attrs=dict(ds.attrs))
+
+
 def aggregate_rainfall_data(
     source,
     rain_data_start=None,
@@ -210,28 +274,31 @@ def aggregate_rainfall_data(
         source, rain_data_start, rain_data_end
     )
 
-    # resample() is called slightly differently for DataFrames vs
-    # xarray Datasets
-    if isinstance(r_flat, pd.DataFrame):
-        r_agg = r_flat.resample(time_res)
-    elif isinstance(r_flat, xr.Dataset):
-        r_agg = r_flat.resample(time=time_res)
-    else:
-        print(
-            f'r_flat is of type {type(r_flat)}. Assuming it is an '
-            'xarray dataset and expects the time argument...'
-        )
-        r_agg = r_flat.resample({'time': time_res})
-
+    # Depths add across a bin; intensities average, or the units come
+    # out wrong.
     units = r_flat['rainfall'].attrs['units']
     if units == 'mm':
-        r_agg = r_agg.sum()
+        how = 'sum'
     elif units == 'mm/h':
-        r_agg = r_agg.mean()
+        how = 'mean'
     else:
         raise ValueError(f"Unrecognized rainfall units: {units}")
 
-    return r_agg
+    # Datasets go through pandas rather than xr.Dataset.resample, which
+    # is thousands of times slower here — see _resample_via_pandas.
+    if isinstance(r_flat, xr.Dataset):
+        return _resample_via_pandas(r_flat, time_res, how)
+
+    # resample() is called slightly differently for DataFrames vs
+    # xarray Datasets
+    if isinstance(r_flat, pd.DataFrame):
+        return getattr(r_flat.resample(time_res), how)()
+
+    print(
+        f'r_flat is of type {type(r_flat)}. Assuming it is an '
+        'xarray dataset and expects the time argument...'
+    )
+    return getattr(r_flat.resample({'time': time_res}), how)()
 
 
 def _coerce_replicate_id(label):

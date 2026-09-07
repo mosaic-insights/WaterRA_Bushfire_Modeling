@@ -26,8 +26,10 @@ TWO_PERIODS = [
 ]
 ONE_PERIOD = [(TS('2019-01-01'), TS('2020-01-01'))]
 
+SHAPE = (2, 3)
 
-def grid(value, shape=(2, 3)):
+
+def grid(value, shape=SHAPE):
     return np.full(shape, value, dtype=np.float32)
 
 
@@ -164,6 +166,83 @@ class TestMultiPeriodGrid:
 
         assert result.shape == (2, 3)
         assert 'easting' not in result.coords
+
+
+class TestMultiPeriodGridDryTimesteps:
+    """
+    A timestep flagged dry erodes nothing, so the simulation hands every
+    recorder one shared read-only zeros grid rather than six fresh ones.
+    The recorder must not read or write it - but a dry timestep is still
+    a timestep, so it has to keep counting towards a mean.
+    """
+
+    def test_dry_timesteps_do_not_contribute_to_a_sum(self):
+        rec = record_multi_period_grid('RUSLE', 'sum', ONE_PERIOD)
+        rec(TS('2019-03-01'), RUSLE=grid(1.0), transform=TRANSFORM, dry=False)
+        rec(TS('2019-09-01'), RUSLE=grid(99.0), transform=TRANSFORM, dry=True)
+
+        assert np.allclose(rec.finalize().values, 1.0)
+
+    def test_dry_timesteps_do_not_contribute_to_a_max(self):
+        rec = record_multi_period_grid('RUSLE', 'max', ONE_PERIOD)
+        rec(TS('2019-03-01'), RUSLE=grid(1.0), transform=TRANSFORM, dry=False)
+        rec(TS('2019-09-01'), RUSLE=grid(99.0), transform=TRANSFORM, dry=True)
+
+        assert np.allclose(rec.finalize().values, 1.0)
+
+    def test_dry_timesteps_still_count_towards_a_mean(self):
+        # Two timesteps in the period, only one of them wet: the mean
+        # over the period is 4/2, not 4/1.
+        rec = record_multi_period_grid('RUSLE', 'mean', ONE_PERIOD)
+        rec(TS('2019-03-01'), RUSLE=grid(4.0), transform=TRANSFORM, dry=False)
+        rec(TS('2019-09-01'), RUSLE=grid(99.0), transform=TRANSFORM, dry=True)
+
+        assert np.allclose(rec.finalize().values, 2.0)
+
+    def test_a_period_of_only_dry_timesteps_finalises_to_zeros(self):
+        rec = record_multi_period_grid('RUSLE', 'sum', ONE_PERIOD)
+        rec(TS('2019-03-01'), RUSLE=grid(99.0), transform=TRANSFORM, dry=True)
+        result = rec.finalize()
+
+        assert result.shape == (2, 3)
+        assert np.allclose(result.values, 0.0)
+
+    def test_a_read_only_dry_grid_is_never_written_to(self):
+        read_only = grid(0.0)
+        read_only.flags.writeable = False
+        rec = record_multi_period_grid('RUSLE', 'sum', ONE_PERIOD)
+
+        rec(TS('2019-03-01'), RUSLE=read_only, transform=TRANSFORM, dry=True)
+        rec(TS('2019-06-01'), RUSLE=grid(1.0), transform=TRANSFORM, dry=False)
+        rec(TS('2019-09-01'), RUSLE=read_only, transform=TRANSFORM, dry=True)
+
+        assert np.allclose(rec.finalize().values, 1.0)
+
+    def test_precision_does_not_depend_on_a_dry_first_timestep(self):
+        # The accumulator takes its dtype from the first grid it keeps.
+        # Seeding it from a dry timestep used to pin it to the float32
+        # zeros grid and quietly round every later float64 addition -
+        # so the precision of a five-year sum depended on whether it
+        # happened to start raining.
+        wet = np.full(SHAPE, 1.0, dtype=np.float64)
+
+        dry_first = record_multi_period_grid('RUSLE', 'sum', ONE_PERIOD)
+        dry_first(TS('2019-02-01'), RUSLE=grid(0.0), transform=TRANSFORM,
+                  dry=True)
+        dry_first(TS('2019-03-01'), RUSLE=wet, transform=TRANSFORM)
+
+        wet_first = record_multi_period_grid('RUSLE', 'sum', ONE_PERIOD)
+        wet_first(TS('2019-03-01'), RUSLE=wet, transform=TRANSFORM)
+
+        assert dry_first.finalize().dtype == wet_first.finalize().dtype
+
+    def test_timesteps_are_wet_when_no_flag_is_given(self):
+        # Callers that predate the flag - and every existing test in
+        # this file - must keep accumulating exactly as before.
+        rec = record_multi_period_grid('RUSLE', 'sum', ONE_PERIOD)
+        feed(rec, [(TS('2019-03-01'), grid(2.0))])
+
+        assert np.allclose(rec.finalize().values, 2.0)
 
 
 class TestTimestepGrid:
