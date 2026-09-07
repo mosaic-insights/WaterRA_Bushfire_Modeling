@@ -2334,12 +2334,29 @@ have one, so we will take the first (presumed only)" with:
 "> **Note:** a `FireImpactsProject` can hold several catchments. This
 notebook works on the one named by `catchment.name` in `study.toml`."
 
-Also confirm that `get_rainfall_replicates` accepts `None` for
-`mean_annual_rainfall` and `average_temperature` and treats it as "estimate
-from lat/lon". Check the signature in
-`fire_impacts/stochastic/rainfall.py`. If it does **not** — if omitting the
-argument is the only way to get the estimate — keep the two arguments
-commented out in the template instead, and note it in the commit message.
+**`None` is the intended contract for the optional climate statistics.**
+Pass `MEAN_ANNUAL_RAINFALL` and `AVERAGE_TEMPERATURE` through to
+`get_rainfall_replicates` as written above. If the current implementation
+in `fire_impacts/stochastic/rainfall.py` does not accept `None` — if
+omitting the argument is the only way to get the lat/lon estimate — then
+**fix the library, not the template**: make `None` mean the same as
+omitted, which is what the parameter already documents ("if omitted, the
+backend service estimates them from the catchment's lat/lon"). A settings
+file cannot express "omit this argument", so `None` has to carry that
+meaning for the config to work at all.
+
+If you make that change, add a test beside the existing rainfall tests:
+
+```python
+def test_none_climate_statistics_mean_estimate_from_the_catchment():
+    """A study.toml cannot express 'omit this argument', so None has to
+    mean what omitting it means."""
+    # Assert that get_rainfall_replicates(..., mean_annual_rainfall=None)
+    # sends the same request as get_rainfall_replicates(...) with the
+    # argument left out. Mock the backend call and compare the payloads.
+```
+
+Commit that fix separately from the template change.
 
 - [ ] **Step 4: Verify**
 
