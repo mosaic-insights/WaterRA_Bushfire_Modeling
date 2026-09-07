@@ -74,6 +74,7 @@ from fire_impacts.sim import (
 )
 from fire_impacts.source import (
     connect_to_veneer,
+    check_load_distributor_plugin,
     detect_constituent,
     detect_functional_unit,
     configure_load_distributor_model,
@@ -159,6 +160,15 @@ rainfall_daily.head()
 PORT = 9876
 v = connect_to_veneer(port=PORT)
 v.scenario_info()
+
+# %% [markdown]
+# Confirm the [Load Distributor](https://github.com/flowmatters/source-loaddistributor)
+# plugin is loaded.  Raises if the running Source instance reports a plugin
+# list without it; warns (but does not fail) on older Veneer releases that
+# don't expose a `Plugins` field in `scenario_info()`.
+
+# %%
+check_load_distributor_plugin(v)
 
 # %% [markdown]
 # ## Pick the constituent and functional unit

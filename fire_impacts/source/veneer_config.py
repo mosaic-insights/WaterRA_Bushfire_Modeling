@@ -25,6 +25,9 @@ LIKELY_FUNCTIONAL_UNITS = [
     'Bushland', 'Burned', 'Native Vegetation',
 ]
 
+# Filename of the Load Distributor plugin, as reported by scenario_info().
+LOAD_DISTRIBUTOR_DLL = 'FlowMatters.Source.LoadDistributor.dll'
+
 
 # ---------------------------------------------------------------------------
 # Connection helper
@@ -54,6 +57,49 @@ def connect_to_veneer(port: int = 9877) -> veneer.Veneer:
             f"Failed to connect to Veneer on port {port}: {e}"
         )
         raise
+
+
+def check_load_distributor_plugin(v: veneer.Veneer) -> None:
+    """
+    Verify that the Load Distributor plugin is loaded in Source.
+
+    Parameters:
+    - v: Veneer connection object.
+
+    Returns:
+    - None. Raises if the plugin is known to be absent.
+    ------------------------------------------------------------------------
+    Notes:
+    - Matches on filename only, so the plugin's install directory does not
+      matter.
+    - Older Veneer releases omit 'Plugins' from scenario_info(). That case
+      is logged as a warning and allowed through, rather than failing a run
+      that would otherwise work.
+    ------------------------------------------------------------------------
+    """
+    info = v.scenario_info()
+    plugins = info.get('Plugins') if isinstance(info, dict) else None
+
+    if plugins is None:
+        logger.warning(
+            "scenario_info() did not include a 'Plugins' field; cannot verify "
+            "that the Load Distributor plugin (%s) is loaded. This is expected "
+            "on older Veneer releases.",
+            LOAD_DISTRIBUTOR_DLL,
+        )
+        return
+
+    target = LOAD_DISTRIBUTOR_DLL.lower()
+    for entry in plugins:
+        basename = str(entry).replace('\\', '/').rsplit('/', 1)[-1]
+        if basename.lower() == target:
+            logger.info("Load Distributor plugin found: %s", entry)
+            return
+
+    raise RuntimeError(
+        f"Load Distributor plugin '{LOAD_DISTRIBUTOR_DLL}' is not loaded in "
+        f"the connected Source instance. Plugins reported: {plugins}"
+    )
 
 
 # ---------------------------------------------------------------------------
