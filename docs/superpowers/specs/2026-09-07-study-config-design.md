@@ -32,11 +32,44 @@ What is scattered today:
 | TERN API key | env var lookup | | | |
 | subcatchments | | commented out | | |
 | replicate count | | literal `10` | `N_REPLICATES` | |
-| replicate to inspect | | literal `[:, 9]` twice | | |
+| replicate to inspect | | literal `[:, 9]` twice | | `REPLICATE = 0` (a different choice) |
 | Veneer port / constituent / FU | | | | `PORT`, `CONSTITUENT`, `FUNCTIONAL_UNIT` |
+| subcatchment label field | | | `'SiteID'` | (must match) |
+| DEM cell area | | | `CELL_AREA_HA = 30*30/10_000` | |
+| reporting thresholds | | | `THRESHOLD_T_HA`, `500` x3 | |
+| parallel workers | | | `min(N_REPLICATES, 10)` x3 | |
+| Load Distributor calibration | | | | `load_attenuation`, `maximum_concentration` |
+| Source data-source names | | | | `'fire_tss'`, `'stochastic_rain'`, `'rainfall'` |
+| Source timestep / date format | | | | `freq='D'`, `'%d/%m/%Y'` |
 
 Genuinely duplicated across notebooks: project directory, catchment, event,
 ensemble.
+
+The lower half of that table was missed on a first reading and found by a
+fact-check of this document against the code. Two of those values are not
+merely scattered but wrong:
+
+- `SourceIntegration.py` reads rainfall from a data source named
+  `'stochastic_rain'` at line 236 and from one named `'rainfall'` at line
+  327 — the same notebook disagreeing with itself about the name of the
+  thing it just created.
+- `PrepareData.py:310` writes the aridity path as `r'..\\test_data\\...'`
+  — a raw string containing *doubled* backslashes, so the literal path
+  contains `\\`. It resolves on Windows by luck rather than intent.
+
+Both stop being possible once the value is a setting named once.
+
+### What deliberately stays in the notebooks
+
+Not everything with a literal in it is a user setting. Library-defined
+names — plot layer names such as `'FireSeverity'`/`'dNBR'`, recorder result
+keys such as `'RUSLE_sum_total'`, the debris column names — are not the
+user's to choose. Neither is the notebooks' teaching material: the recorder
+configuration is presented with a comment listing the available cadences,
+the parameter-override cells are commented-out demonstrations, and the
+presentation choices (colour maps, unit labels, axis scaling) are part of
+what the notebook is showing you how to do. Moving those into a config file
+would make both artefacts worse.
 
 ## The shape of the solution
 
@@ -122,6 +155,11 @@ boundary = '..\test_data\EgSmallCatchment_7899.shp'
 aridity  = '..\test_data\AridityPT_EgSmallCatchment_7899.tif'
 # dem           = ''   # default: download the GA 1" national DEM
 # subcatchments = ''   # default: no subcatchment reporting
+# subcatchment_id_field = 'SiteID'
+#                      # attribute naming each subcatchment. Must match the
+#                      # subcatchment names in your Source model.
+# cell_size_m = 30     # DEM cell size in metres, used to convert per-cell
+#                      # results to t/ha. Change it if your DEM is not 30 m.
 
 [event]
 name       = "2019_fire"
@@ -135,6 +173,14 @@ name = "stochastic"
 # inspect_replicate    = 9    # which one the single-run Simulation notebook plots
 # mean_annual_rainfall = 600  # mm; default: estimated from catchment lat/lon
 # average_temperature  = 20   # degrees C; default: estimated from catchment lat/lon
+# n_workers            = 10   # replicates run in parallel; cap for your machine
+
+[reporting]
+# Thresholds used by the ensemble notebook's exceedance maps. These are
+# reporting choices, not model calibration - they change what the maps
+# show, never what the model computes.
+# erosion_threshold_t_ha    = 0.5
+# delivered_threshold_kg_ha = 500
 
 [secrets]
 # Your TERN API key, needed to download soil data.
@@ -146,6 +192,18 @@ tern_api_key = ""
 # port            = 9876        # Veneer port for the running Source instance
 # constituent     = 'TSS'       # default: auto-detected
 # functional_unit = 'Forested'  # default: auto-detected
+# replicate       = 0           # which ensemble replicate to push into Source
+# timestep        = 'D'         # must match your Source model: 'D' or 'h'
+# date_format     = '%d/%m/%Y'  # how your Source install writes run-period dates
+# output_dir      = 'source_inputs'   # where the generated CSVs are written
+# Load Distributor calibration:
+# load_attenuation      = 10.0
+# maximum_concentration = 1000.0      # mg/L
+# Names of the Source data sources this notebook creates and then reads
+# back. One name each - the notebook currently uses two different names
+# for the rainfall source and reads the wrong one in one place.
+# tss_data_source      = 'fire_tss'
+# rainfall_data_source = 'stochastic_rain'
 ```
 
 ### Notes on specific settings
@@ -216,8 +274,16 @@ comments in a scaffolded file are generated from the same definitions the loader
 validates against, they cannot drift from the code.
 
 Groups: `ProjectSettings`, `CatchmentSettings`, `EventSettings`,
-`EnsembleSettings`, `SecretSettings`, `SourceSettings`, composed into
-`StudySettings`.
+`EnsembleSettings`, `ReportingSettings`, `SecretSettings`,
+`SourceIntegrationSettings`, composed into `StudySettings`.
+
+**Two replicate settings, not one.** `ensemble.inspect_replicate` chooses
+which replicate the single-run Simulation notebook plots; `source.replicate`
+chooses which one is written into the Source model. They were conflated on a
+first reading of the templates — `Simulation.py` uses a bare `9` twice while
+`SourceIntegration.py` uses `REPLICATE = 0` and a separate hard-coded
+`write_replicate_csvs(0)`. They serve different purposes and stay separate,
+and `inspect_replicate` must be less than `num_replicates`.
 
 ### Public API
 
