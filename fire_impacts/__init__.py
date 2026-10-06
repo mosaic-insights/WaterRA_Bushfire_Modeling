@@ -12,3 +12,4 @@ The module relies on a standard directory structure, managed and implemented by 
 '''
 
 from .pre import *
+from .project_api import new_project, update_project, project_status

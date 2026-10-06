@@ -75,3 +75,4 @@ __*.ipynb
 # Claude Code local settings and worktrees
 .claude/settings.local.json
 .claude/worktrees/
+.worktrees/

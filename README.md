@@ -7,6 +7,51 @@ The library includes functionality for simulating erosion processes and debris f
 The package is designed for, and is being tested on, Australian conditions.
 
 
+## Quickstart
+
+The fastest path from nothing installed to a running example, in four
+steps. Everything here is explained in more depth further down — this
+section exists so you don't have to read the rest of the document
+first.
+
+**1. Install.** From the repository folder:
+
+```
+pip install -e .
+```
+
+See [Installation](#installation) below if you don't yet have a
+scientific Python environment to install into.
+
+**2. Create a project.** This creates a project folder, copies in the
+starter notebooks, and writes a `study.toml` pre-filled with a bundled
+example catchment — so the project runs before you change anything.
+From a terminal:
+
+```
+fire-impacts new ./my-project
+```
+
+Prefer to stay in Jupyter or a Python REPL? Every `fire-impacts`
+command has a plain-Python equivalent:
+
+```python
+from fire_impacts import new_project
+new_project('./my-project')
+```
+
+**3. Point it at your own study.** Open `my-project/study.toml` and
+edit the settings it sets live (uncommented) — your catchment boundary,
+its name, and your fire's dates. See [Configuring a
+study](#configuring-a-study) below for what each setting means and
+which ones are required.
+
+**4. Run it.** Open `my-project/PrepareData.ipynb` in Jupyter and run it
+top to bottom. See [Starting a project, and keeping its notebooks
+current](#starting-a-project-and-keeping-its-notebooks-current) below
+for the other three notebooks, and for pulling in newer templates later
+with `fire-impacts update` / `update_project(...)`.
+
 ## Installation
 
 The library can be installed using `pip` and assumes that you have a functioning 'scientific Python' installation, such as you might get by installing Anaconda Python.
