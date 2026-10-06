@@ -50,11 +50,11 @@ _COMMENT_WIDTH = 72
 # the user changes anything.
 EXAMPLE_SEED = {
     'catchment.name': 'EgSmallCatchment_7899',
-    'catchment.boundary': r'..\test_data\EgSmallCatchment_7899.shp',
+    'catchment.boundary': '../test_data/EgSmallCatchment_7899.shp',
     'catchment.aridity':
-        r'..\test_data\AridityPT_EgSmallCatchment_7899.tif',
+        '../test_data/AridityPT_EgSmallCatchment_7899.tif',
     'catchment.subcatchments':
-        r'..\test_data\Subcatchments_EgSmall_7899.shp',
+        '../test_data/Subcatchments_EgSmall_7899.shp',
     # The example's subcatchment shapefile has no 'SiteID' column - its
     # identifying attribute is 'Id'. The schema default stays 'SiteID',
     # which is what a real study (and a Source model) wants; the example
