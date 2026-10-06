@@ -524,7 +524,7 @@ save_ensemble_run(
         'D':     combined_daily,
     },
     include_rusle_grids=False,   # opt in when you need raw grids
-    include_raw_debris=True,
+    include_raw_debris=False,    # opt in for per-headwater debris series
     # extra_manifest={                       # add any custom metadata
     #     'mean_annual_rainfall_mm': 600,    # to record alongside the
     #     'average_temperature_c': 20,       # ensemble run
