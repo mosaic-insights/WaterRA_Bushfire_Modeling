@@ -17,3 +17,5 @@ cql2 # Required by calculate_fire_severity() method
 typer # cli support
 jupytext
 
+https://github.com/flowmatters/veneer-py/archive/master.zip # For eWater Source interaction
+

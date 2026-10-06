@@ -36,9 +36,18 @@ jobs:
       - name: Install system libraries
         # pg_config is needed to build dea-tools' psycopg2 dependency from
         # source; the geospatial wheels bring their own GDAL/PROJ.
+        #
+        # libgdal-dev (for gdal-config) is needed on 3.14 only: fiona has
+        # no PyPI wheel for cp314 yet (upstream: Toblerity/Fiona#1504, no
+        # timetable), so pip falls back to a source build there, which
+        # needs GDAL's headers/gdal-config to find. Harmless on the other
+        # versions, which already satisfy fiona from a wheel and never
+        # touch gdal-config. Building against the system GDAL rather than
+        # a bundled one is the fiona maintainer's own recommended
+        # workaround for this gap, not a hack bought on the side.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libpq-dev
+          sudo apt-get install -y --no-install-recommends libpq-dev libgdal-dev
 
       - name: Install dependencies
         run: |
