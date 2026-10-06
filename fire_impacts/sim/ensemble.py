@@ -1210,7 +1210,9 @@ def _long_frame(series, project, catchment, value_col):
     # Drop rows whose label we can't match to a subcatchment (keeps the
     # output aligned with the geometry layer)
     out = out.dropna(subset=[id_col])
-    return out[[id_col, key_name, value_col]]
+    # Without a label field the key is the ID itself; list it once, as
+    # plot_catchment_polygons() merges on it and needs a unique column.
+    return out[list(dict.fromkeys([id_col, key_name, value_col]))]
 
 
 def subcatchment_series_to_long(
