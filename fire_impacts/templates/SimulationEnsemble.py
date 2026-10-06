@@ -96,6 +96,13 @@ AVERAGE_TEMPERATURE  = study.ensemble.average_temperature
 # exceedance map is drawn at.
 CELL_AREA_HA = study.catchment.cell_size_m ** 2 / 10_000
 
+# The timestep your Source model runs at: 'D' (daily, the default) or 'h'.
+# SourceIntegration feeds Source from the loads this notebook saves, so
+# RUSLE records at this timestep and the loads are saved at it, alongside
+# the reporting resolutions. Set source.timestep before running this
+# notebook; changing it afterwards means running the ensemble again.
+SOURCE_TIMESTEP = study.source.timestep
+
 # Where the exceedance maps put their line. Reporting choices, not model
 # calibration: they change what a map shows, never what the model computes.
 EROSION_THRESHOLD_T_HA    = study.reporting.erosion_threshold_t_ha
@@ -202,12 +209,18 @@ rainfall_12min
 #
 # * Total erosion grid over the window (`RUSLE_sum_total`)
 # * Peak 30-min erosion grid over the window (`RUSLE_max_total`)
-# * Daily subcatchment-level erosion timeseries (`erosion_daily_time_series`)
+# * Subcatchment-level erosion timeseries (`erosion_daily_time_series`),
+#   at the `source.timestep` your Source model needs — daily unless you
+#   change it. The key says "daily" either way.
 
 # %%
+# An hourly Source model needs hourly loads, and they cannot be recovered
+# from a daily record afterwards, so the timeseries is recorded at the
+# Source timestep from the start.
 recorder_factory = default_rusle_recorders(
     include_timeseries=True,
     grid_timesteps=('total',),
+    timeseries_timestep=study.source.rusle_timeseries_timestep,
 )
 
 # %%
@@ -359,9 +372,11 @@ sc_debris_12min = debris_post['aggregated']
 # * `freq='MS'` — monthly totals.
 # * `freq='D'`  — daily loads (commonly linked to downstream sediment
 #   transport models).
-# * `freq='h'`  — hourly loads; requires RUSLE to have been recorded at
-#   hourly resolution (``default_rusle_recorders(timeseries_timestep='1h')``)
-#   to avoid artificial smoothing of the erosion signal.
+# * `freq='h'`  — hourly loads; only meaningful when RUSLE was recorded
+#   hourly, which this notebook does when `source.timestep` is `'h'`.
+#   Against a daily record, each day's whole load lands in its first hour.
+#
+# Loads at `source.timestep` are combined as well, for SourceIntegration.
 
 # %% [markdown]
 # The label field is normally captured when the subcatchment coverage is
@@ -402,6 +417,12 @@ def combine_at(freq):
 combined_total  = combine_at('total')
 combined_annual = combine_at('YS')
 combined_daily  = combine_at('D')
+
+# What SourceIntegration feeds Source. The daily loads above, unless
+# source.timestep says otherwise.
+combined_for_source = (
+    combined_daily if SOURCE_TIMESTEP == 'D'
+    else combine_at(SOURCE_TIMESTEP))
 
 # %%
 combined_annual[next(iter(combined_annual))]
@@ -507,10 +528,10 @@ plt.show()
 # across events) while run outputs land under Runs/<event>/<ensemble>/.
 #
 # > The *SourceIntegration* notebook reads the loads back at the
-# > resolution named by `source.timestep` in `study.toml`. That has to be
-# > one of the frequencies saved below — daily (`'D'`) as it stands. If
-# > you set `source.timestep` to something else, add it here as well, or
-# > SourceIntegration will not find anything to load.
+# > resolution named by `source.timestep` in `study.toml`, so that
+# > resolution is always among the ones saved below. A run saved before
+# > you changed `source.timestep` will not have it; run this notebook
+# > again.
 
 # %%
 save_ensemble_run(
@@ -522,6 +543,7 @@ save_ensemble_run(
         'total': combined_total,
         'YS':    combined_annual,
         'D':     combined_daily,
+        SOURCE_TIMESTEP: combined_for_source,   # 'D' again, by default
     },
     include_rusle_grids=False,   # opt in when you need raw grids
     include_raw_debris=False,    # opt in for per-headwater debris series

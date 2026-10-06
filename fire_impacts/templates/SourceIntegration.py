@@ -130,15 +130,9 @@ TSS_SOURCE      = study.source.tss_data_source
 RAINFALL_SOURCE = study.source.rainfall_data_source
 
 # Source labels its data sources with a unit word ('kg/day'), while
-# source.timestep is a pandas frequency ('D'). Translate, and refuse a
-# frequency we have no word for rather than labelling it wrongly: Source
-# reads these labels, so a wrong one is a silent scaling error.
-_UNIT_WORDS = {'D': 'day', 'h': 'hour'}
-if TIMESTEP not in _UNIT_WORDS:
-    raise ValueError(
-        f'source.timestep = {TIMESTEP!r} in study.toml has no units word; '
-        f'use one of {sorted(_UNIT_WORDS)}.')
-TIMESTEP_UNITS = _UNIT_WORDS[TIMESTEP]
+# source.timestep is a pandas frequency ('D'). Source reads these labels,
+# so they follow the setting rather than assume daily.
+TIMESTEP_UNITS = study.source.timestep_units
 
 # %% [markdown]
 # ## Load project and choose an ensemble run
@@ -181,27 +175,36 @@ ctx = RunContext.solo_run(
 # picks the resolution, and it has to match your Source model: `'D'`, the
 # default, for a daily model, `'h'` for an hourly one.
 #
-# Whichever you choose, the *SimulationEnsemble* notebook must have saved
-# that resolution — it saves `'total'`, `'YS'` and `'D'` as it stands —
-# and an hourly Source model also needs the ensemble to have been run
-# with `default_rusle_recorders(timeseries_timestep='1h')`, or the
-# erosion signal is smoothed on the way in.
-#
-# The variables below are named `..._daily` after the common case; they
-# hold whatever resolution `source.timestep` names.
+# *SimulationEnsemble* reads the same setting and saves the loads at that
+# timestep, recording RUSLE finely enough to supply them. So set
+# `source.timestep` before running the ensemble: a run saved under a
+# different setting will not have what this notebook needs, and the cell
+# below stops and says so.
 
 # %%
-combined_daily = load_ensemble_combined(ctx, freq=TIMESTEP)
-list(combined_daily)[:5], next(iter(combined_daily.values())).shape
+# The run's manifest lists the resolutions it saved. Checked up front so
+# a mismatch names the setting to change, rather than surfacing as a
+# missing-file error.
+manifest = load_ensemble_manifest(ctx)
+saved_frequencies = manifest.get('combined_frequencies', [])
+if TIMESTEP not in saved_frequencies:
+    raise ValueError(
+        f'source.timestep is {TIMESTEP!r}, but this ensemble run saved '
+        f'loads at {saved_frequencies} only. Re-run SimulationEnsemble '
+        f'with the current study.toml to save loads at {TIMESTEP!r}, or '
+        f'set source.timestep to match your Source model if it is wrong.')
+
+combined_loads = load_ensemble_combined(ctx, freq=TIMESTEP)
+list(combined_loads)[:5], next(iter(combined_loads.values())).shape
 
 # %%
 # The ensemble run numbers its replicates, and source.replicate picks one
 # of them to push into Source. Checked here rather than left to fail as a
 # bare KeyError in Part B, which says nothing about study.toml.
-if SOURCE_REPLICATE not in combined_daily:
+if SOURCE_REPLICATE not in combined_loads:
     raise ValueError(
         f'source.replicate is {SOURCE_REPLICATE}, but this run holds '
-        f'replicates {sorted(combined_daily)}. '
+        f'replicates {sorted(combined_loads)}. '
         f'Lower source.replicate in study.toml, '
         f'or re-run SimulationEnsemble with more replicates. Note that '
         f'source.replicate is the one pushed into Source; '
@@ -217,7 +220,6 @@ if SOURCE_REPLICATE not in combined_daily:
 # study.toml: what labelled these columns is whatever was registered when
 # the ensemble was saved, which is not necessarily what
 # `catchment.subcatchment_id_field` says today.
-manifest = load_ensemble_manifest(ctx)
 labelled_by = manifest.get('subcatchment_label_field')
 
 if labelled_by is None:
@@ -237,7 +239,7 @@ elif labelled_by != SUBCATCHMENT_ID_FIELD:
         f'meant to relabel them.')
 
 print(f'Load columns are labelled by {labelled_by!r}:')
-list(next(iter(combined_daily.values())).columns)
+list(next(iter(combined_loads.values())).columns)
 
 # %% [markdown]
 # Rainfall comes back as an xarray `Dataset` with `simulation x day x
@@ -256,11 +258,11 @@ from fire_impacts.sim.rainfall import convert_rainfall_to_dataframe
 rain_start = str(pd.to_datetime(rainfall_ds['time'].values[0]).date())
 rain_end = str(pd.to_datetime(rainfall_ds['time'].values[-1]).date())
 
-rainfall_daily_ds = aggregate_rainfall_data(
+rainfall_totals_ds = aggregate_rainfall_data(
     rainfall_ds, rain_start, rain_end, time_res=TIMESTEP,
 )
-rainfall_daily = convert_rainfall_to_dataframe(rainfall_daily_ds)
-rainfall_daily.head()
+rainfall_totals = convert_rainfall_to_dataframe(rainfall_totals_ds)
+rainfall_totals.head()
 
 # %% [markdown]
 # ## Connect to Source (Veneer)
@@ -326,8 +328,8 @@ configure_load_distributor_model(
 # The 'rainfall' below is the *column* name inside the data source, which
 # Source's runoff models look for by that name. It is not the name of the
 # data source itself — that is RAINFALL_SOURCE.
-tss_single = combined_daily[SOURCE_REPLICATE]
-rain_single = rainfall_daily[[SOURCE_REPLICATE]].rename(
+tss_single = combined_loads[SOURCE_REPLICATE]
+rain_single = rainfall_totals[[SOURCE_REPLICATE]].rename(
     columns={SOURCE_REPLICATE: 'rainfall'})
 tss_single.head(), rain_single.head()
 
@@ -402,8 +404,8 @@ rain_csv = source_inputs_dir / f'{RAINFALL_SOURCE}.csv'
 # %%
 def write_replicate_csvs(rep: int):
     """Overwrite the two on-disk CSVs with data for a given replicate."""
-    loads = combined_daily[rep]
-    rain = rainfall_daily[[rep]].rename(columns={rep: 'rainfall'})
+    loads = combined_loads[rep]
+    rain = rainfall_totals[[rep]].rename(columns={rep: 'rainfall'})
     loads.to_csv(tss_csv)
     rain.to_csv(rain_csv)
 
@@ -464,14 +466,14 @@ assign_rainfall_timeseries(v, rainfall_source_name=RAINFALL_SOURCE)
 # follow-up notebook.
 
 # %%
-replicate_ids = sorted(combined_daily)
+replicate_ids = sorted(combined_loads)
 source_runs = {}
 
 for rep in replicate_ids:
     logging.info(f'Replicate {rep:02d}: writing CSVs and running Source')
     write_replicate_csvs(rep)
-    start = combined_daily[rep].index[0].strftime(DATE_FORMAT)
-    end = combined_daily[rep].index[-1].strftime(DATE_FORMAT)
+    start = combined_loads[rep].index[0].strftime(DATE_FORMAT)
+    end = combined_loads[rep].index[-1].strftime(DATE_FORMAT)
     result = run_model_simulation(v, start_date=start, end_date=end)
     source_runs[rep] = result
     logging.info(f'Replicate {rep:02d}: status={result.get("Status")}')

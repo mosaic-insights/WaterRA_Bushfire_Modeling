@@ -179,6 +179,19 @@ class SecretSettings:
                 'is used instead.'})
 
 
+# The timesteps a Source model can be fed at, keyed by the pandas frequency
+# source.timestep names. Two notebooks act on that one setting and have to
+# agree: SimulationEnsemble records RUSLE at 'rusle_timestep' and saves the
+# combined loads at the key, and SourceIntegration reads them back and
+# labels the data sources it creates '<kg|mm>/<units>'. Source reads that
+# label, so a frequency with no entry here is refused rather than labelled
+# with a guess - a wrong label is a silent scaling error.
+SOURCE_TIMESTEPS = {
+    'D': {'units': 'day', 'rusle_timestep': '24h'},
+    'h': {'units': 'hour', 'rusle_timestep': '1h'},
+}
+
+
 @dataclass(frozen=True)
 class SourceIntegrationSettings:
     """Connecting to a running eWater Source instance via Veneer."""
@@ -202,7 +215,9 @@ class SourceIntegrationSettings:
                 'the Simulation notebook plots.'})
     timestep: str = field(default='D', metadata={
         'example': "'D'",
-        'help': "must match your Source model: 'D' for daily, 'h' hourly"})
+        'help': "must match your Source model: 'D' for daily, 'h' hourly. "
+                'SimulationEnsemble saves loads at this timestep, so set it '
+                'before running that notebook.'})
     date_format: str = field(default='%d/%m/%Y', metadata={
         'example': "'%d/%m/%Y'",
         'help': 'how your Source install writes run-period dates'})
@@ -225,6 +240,35 @@ class SourceIntegrationSettings:
         'help': 'name of the Source data source holding rainfall. Also '
                 'names the CSV written for it, so keep it to characters '
                 'a filename may contain.'})
+
+    def __post_init__(self):
+        # Refused at load rather than in SourceIntegration: SimulationEnsemble
+        # acts on this first, and finding out afterwards would cost a full
+        # ensemble run.
+        if self.timestep not in SOURCE_TIMESTEPS:
+            raise ValueError(
+                f'timestep = {self.timestep!r} is not a timestep this '
+                f"library can feed Source; use 'D' for a daily model or "
+                f"'h' for an hourly one.")
+
+    ###########################################################################
+    @property
+    def timestep_units(self):
+        """The unit word Source labels a per-timestep series with."""
+        return SOURCE_TIMESTEPS[self.timestep]['units']
+
+    ###########################################################################
+    @property
+    def rusle_timeseries_timestep(self):
+        """
+        The interval RUSLE has to record subcatchment loads at.
+
+        Notes:
+        - Anything coarser than the Source timestep cannot be split back
+          out: resampling a daily series to hourly puts the whole day's
+          load in its first hour.
+        """
+        return SOURCE_TIMESTEPS[self.timestep]['rusle_timestep']
 
 
 @dataclass(frozen=True)

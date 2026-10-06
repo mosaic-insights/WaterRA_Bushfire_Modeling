@@ -321,3 +321,34 @@ def test_a_whitespace_only_key_is_treated_as_not_set(tmp_path, monkeypatch):
     out = study.describe_text()
     [line] = [ln for ln in out.splitlines() if 'tern_api_key' in ln]
     assert 'not set' in line
+
+
+def test_source_timestep_defaults_to_daily(tmp_path):
+    """Most Source models run daily, so that is what an unset file gets -
+    and the unit Source is told, and the interval RUSLE records at, follow
+    from it."""
+    study = load_study(str(write_study(tmp_path)))
+    assert study.source.timestep == 'D'
+    assert study.source.timestep_units == 'day'
+    assert study.source.rusle_timeseries_timestep == '24h'
+
+
+def test_an_hourly_source_timestep_carries_hourly_units(tmp_path):
+    study = load_study(str(write_study(
+        tmp_path, MINIMAL + "\n[source]\ntimestep = 'h'\n")))
+    assert study.source.timestep_units == 'hour'
+    assert study.source.rusle_timeseries_timestep == '1h'
+
+
+@pytest.mark.parametrize('value', ['hour', 'H', 'daily', '30min'])
+def test_an_unsupported_source_timestep_is_refused_at_load(tmp_path, value):
+    """Caught when the file loads rather than in SourceIntegration: by
+    then SimulationEnsemble has already saved loads at whatever this
+    said, and an unsupported one would have cost a full ensemble run."""
+    with pytest.raises(StudyConfigError) as exc:
+        load_study(str(write_study(
+            tmp_path, MINIMAL + f"\n[source]\ntimestep = '{value}'\n")))
+    message = str(exc.value)
+    assert 'source.timestep' in message
+    assert repr(value) in message
+    assert "'D'" in message and "'h'" in message
