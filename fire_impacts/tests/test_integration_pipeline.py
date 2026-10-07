@@ -318,6 +318,32 @@ def test_prep_raster_hashes_absorbs_tiny_float_noise(tmp_path):
            "tolerance check against stored reference arrays.",
     strict=False,
     )
+def test_zzz_magnitude_probe(pipeline):
+    """TEMPORARY - measures how far CI's actual values are from a local
+    Windows reference, for the layers test_default_outputs_are_unchanged
+    flags as differing. Will be removed."""
+    prep = pipeline['prep']
+    local_ref = {
+        'Topography/DEM.tif': (724.6812, 3.0310516e+07),
+        'Topography/Slope.tif': (21.380106, 874403.56),
+        'Delivery/SDR_baseline.tif': (0.018423056, 769.4574),
+        'Erodibility/LS_factor.tif': (1.8668345, 162287.66),
+        }
+    for rel, (local_mean, local_sum) in local_ref.items():
+        path = prep.catchment_path(*rel.split('/'))
+        with rasterio.open(path) as src:
+            arr = src.read(1)
+        ci_mean = float(np.nanmean(arr))
+        ci_sum = float(np.nansum(arr))
+        print(
+            f'{rel}: ci_mean={ci_mean!r} local_mean={local_mean!r} '
+            f'abs_diff_mean={abs(ci_mean - local_mean):.3e} '
+            f'rel_diff_mean={abs(ci_mean - local_mean) / abs(local_mean):.3e} | '
+            f'ci_sum={ci_sum!r} local_sum={local_sum!r} '
+            f'abs_diff_sum={abs(ci_sum - local_sum):.3e}'
+            )
+
+
 def test_default_outputs_are_unchanged(pipeline):
     """Phase 2 replaced twelve hard-coded literals with resolved parameters.
     At default values the outputs must be identical, and must stay that way:
