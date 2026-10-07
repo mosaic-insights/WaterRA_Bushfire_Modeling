@@ -305,17 +305,25 @@ def test_prep_raster_hashes_absorbs_tiny_float_noise(tmp_path):
 @pytest.mark.xfail(
     reason="Slope.tif/LS_factor.tif/SDR/IC/RUSLE_sum_total drift from "
            "GOLDEN_PREP_HASHES independently of any equation change - "
-           "confirmed not numpy (identical across 2.1.0-2.5.3 on the real "
-           "DEM array) and not PYTHONHASHSEED. Rounding to 6 decimals "
-           "before hashing did not survive a CI round-trip either, so the "
-           "drift is larger than float noise. Most likely cause: rasterio "
-           "and geopandas are unpinned in requirements.txt, and DEM.tif's "
-           "own hash (a pure file read, no computation) also changed "
-           "between two CI runs 18 hours apart with no code change, which "
-           "only an unpinned dependency resolving differently explains. "
-           "Revisit once rasterio/geopandas are pinned (see the pending "
-           "edit to requirements.txt) or this switches to a real "
-           "tolerance check against stored reference arrays.",
+           "every one of them, and only them, traces to slope_from_dem() "
+           "(pre/util.py), called from topography.dem_to_slope, "
+           "rusle.compute_lsi and rusle.compute_sediment_delivery_ratio. "
+           "Confirmed cause: cross-platform floating-point noise in "
+           "np.gradient - running the identical DEM array through the "
+           "identical numpy version (2.1.0) on Windows vs. Linux (WSL) "
+           "gives a different exact result, max abs diff 7e-15 degrees "
+           "over 1422/40898 cells. Ruled out as causes: numpy version "
+           "(identical across 2.1.0-2.5.3 on one platform) and "
+           "PYTHONHASHSEED. A follow-up CI probe found CI's actual mean "
+           "and sum for these layers matching a local run to full "
+           "float64 precision, so there is no evidence of anything "
+           "larger - an earlier-observed DEM.tif hash shift was not "
+           "reproduced and is unexplained, not necessarily related. "
+           "Rounding to 6 decimals before hashing (1e6x looser than the "
+           "confirmed noise) is the fix; an earlier attempt at this "
+           "didn't survive one CI round-trip, for reasons not yet "
+           "re-investigated against this cleaner picture - may be worth "
+           "retrying now.",
     strict=False,
     )
 def test_default_outputs_are_unchanged(pipeline):
