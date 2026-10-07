@@ -302,6 +302,29 @@ def test_prep_raster_hashes_absorbs_tiny_float_noise(tmp_path):
     assert real_change != baseline
 
 
+def test_zzz_slope_max_diff_probe(pipeline):
+    """TEMPORARY - measures the real per-cell max difference between CI's
+    Slope.tif and a committed local reference array. Will be removed."""
+    import os
+    prep = pipeline['prep']
+    ref_path = os.path.join(os.path.dirname(__file__), '_local_slope_reference.npy')
+    local = np.load(ref_path)
+    path = prep.catchment_path('Topography', 'Slope.tif')
+    with rasterio.open(path) as src:
+        ci = src.read(1)
+    diff = np.abs(ci.astype('float64') - local.astype('float64'))
+    finite = np.isfinite(diff)
+    n_differ = int((diff[finite] > 0).sum())
+    max_diff = float(diff[finite].max())
+    worst = np.unravel_index(np.nanargmax(np.where(finite, diff, np.nan)), diff.shape)
+    print(
+        f'shape_match={ci.shape == local.shape} n_differing_cells={n_differ}/{finite.sum()} '
+        f'max_abs_diff={max_diff!r} worst_idx={worst} '
+        f'ci_val={ci[worst]!r} local_val={local[worst]!r}'
+        )
+    assert False, "diagnostic complete - see captured stdout above"
+
+
 def test_default_outputs_are_unchanged(pipeline):
     """Phase 2 replaced twelve hard-coded literals with resolved parameters.
     At default values the outputs must be identical, and must stay that way:
