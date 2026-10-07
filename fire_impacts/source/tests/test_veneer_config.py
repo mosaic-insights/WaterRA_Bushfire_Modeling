@@ -2,11 +2,13 @@
 Unit tests for veneer_config module, focusing on _detect_parameter function.
 """
 
+import ast
 import pytest
 import logging
 from unittest.mock import MagicMock
 from fire_impacts.source.veneer_config import (
-    _detect_parameter, run_model_simulation, run_succeeded,
+    _detect_parameter, create_file_data_source, run_model_simulation,
+    run_succeeded,
 )
 
 # Configure logging for tests
@@ -240,3 +242,96 @@ class TestRunStatus:
         run_model_simulation(_veneer_reporting('RunIncomplete'))
         assert 'did not complete' in caplog.text
         assert 'RunIncomplete' in caplog.text
+
+
+class FakeVeneerForFiles:
+    """Records the calls create_file_data_source makes, and answers the
+    renaming script the way Source would."""
+
+    def __init__(self, exception=None):
+        self.created = []
+        self.scripts = []
+        self.exception = exception
+        self.model = MagicMock()
+        self.model.run_script.side_effect = self._run_script
+
+    def create_data_source(self, name, data=None, units=None,
+                           reload_on_run=False, **kwargs):
+        self.created.append(dict(name=name, data=data, units=units,
+                                 reload_on_run=reload_on_run))
+
+    def _run_script(self, script, init=False):
+        self.scripts.append(script)
+        return {'Exception': self.exception, 'Response': {'Value': 'x'}}
+
+
+def _string_constants(script):
+    """Every string literal in a script, as IronPython would read it."""
+    return {node.value for node in ast.walk(ast.parse(script))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)}
+
+
+class TestCreateFileDataSource:
+    """Veneer names a file-based data source after the path it was given,
+    not the name the notebook goes on to assign from - which then fails in
+    Source with a NullReferenceException. create_file_data_source gives the
+    data source the name the caller asked for."""
+
+    PATH = 'C:\Projects\Runs\2001_fire\stochastic\source_inputs\fire_tss.csv'
+
+    def test_source_is_asked_to_load_the_file_with_its_units(self):
+        v = FakeVeneerForFiles()
+        create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+
+        [call] = v.created
+        assert call['name'] == self.PATH
+        assert call['data'] is None
+        assert call['units'] == 'kg/day'
+        assert call['reload_on_run'] is True
+
+    def test_the_data_source_is_renamed_to_the_name_asked_for(self):
+        v = FakeVeneerForFiles()
+        create_file_data_source(v, 'fire_tss', self.PATH)
+
+        [script] = v.scripts
+        strings = _string_constants(script)
+        assert 'fire_tss' in strings
+        assert 'Name' in script and 'fire_tss' in script
+
+    def test_a_windows_path_reaches_source_intact(self):
+        """Pasted in raw, '\2001_fire' and '\fire_tss' would be read as
+        escape sequences and the data source never found."""
+        v = FakeVeneerForFiles()
+        create_file_data_source(v, 'fire_tss', self.PATH)
+
+        [script] = v.scripts
+        assert self.PATH in _string_constants(script)
+
+    def test_a_non_ascii_path_reaches_source_as_written(self):
+        """IronPython 2 leaves a backslash-u escape in an ordinary string
+        as literal characters, so an accented folder name has to arrive as
+        itself."""
+        path = 'C:\\Users\\Jos\u00e9\\fire_tss.csv'
+        v = FakeVeneerForFiles()
+        create_file_data_source(v, 'fire_tss', path)
+
+        [script] = v.scripts
+        assert '\\u00e9' not in script
+        assert path in _string_constants(script)
+
+    def test_any_other_data_source_with_that_name_is_replaced(self):
+        """Part B leaves an in-memory data source of the same name, and a
+        failed assignment leaves an empty one."""
+        v = FakeVeneerForFiles()
+        create_file_data_source(v, 'fire_tss', self.PATH)
+
+        assert 'RemoveGroup' in v.scripts[0]
+
+    def test_a_failure_in_source_is_raised(self):
+        v = FakeVeneerForFiles(exception={'Message': 'no such data source'})
+        with pytest.raises(Exception, match='no such data source'):
+            create_file_data_source(v, 'fire_tss', self.PATH)
+
+    def test_it_returns_the_name_to_assign_from(self):
+        v = FakeVeneerForFiles()
+        assert create_file_data_source(v, 'fire_tss', self.PATH) == 'fire_tss'

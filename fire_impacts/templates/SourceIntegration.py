@@ -97,6 +97,7 @@ from fire_impacts.source import (
     detect_functional_unit,
     configure_load_distributor_model,
     create_veneer_data_sources,
+    create_file_data_source,
     assign_fire_sediment_timeseries,
     assign_rainfall_timeseries,
     run_model_simulation,
@@ -436,9 +437,8 @@ single_project
 # scenario inputs.
 
 # %%
-# Source names a file-backed data source after the CSV's filename stem,
-# so the files are named after the two data sources — that is what makes
-# the names Source registers agree with the ones assigned below.
+# One CSV per data source, named after it so the files are easy to tell
+# apart in this run's folder.
 tss_csv = SOURCE_OUTPUT / f'{TSS_SOURCE}.csv'
 rain_csv = SOURCE_OUTPUT / f'{RAINFALL_SOURCE}.csv'
 
@@ -460,35 +460,22 @@ write_replicate_csvs(SOURCE_REPLICATE)
 # %% [markdown]
 # ### Recreate the data sources backed by the on-disk CSVs
 #
-# Delete the in-memory data sources Part B created and recreate them
-# under the same names with `reload_on_run=True`, so Source re-reads the
-# CSV at every run.
+# Replace the in-memory data sources Part B created with ones Source loads
+# from the two CSVs, under the same names, with `reload_on_run=True` so
+# Source re-reads the files at the start of every run.
+#
+# `create_file_data_source` sees to the names. Left to itself, Veneer
+# names a file-based data source after the file's full path, and the
+# assignments below would then find nothing called `source.tss_data_source`
+# — which Source reports as a `NullReferenceException`.
 
 # %%
-for name in (TSS_SOURCE, RAINFALL_SOURCE):
-    try:
-        v.delete_data_source(name)
-    except Exception as e:
-        logging.info(f'(No existing data source {name} to remove: {e})')
+create_file_data_source(
+    v, TSS_SOURCE, tss_csv, units=f'kg/{TIMESTEP_UNITS}')
+create_file_data_source(
+    v, RAINFALL_SOURCE, rain_csv, units=f'mm/{TIMESTEP_UNITS}')
 
-# %%
-# No inline data this time, so Source takes each data source's name from
-# the CSV filename stem — which is why the files were named after
-# `source.tss_data_source` and `source.rainfall_data_source` above.
-v.create_data_source(
-    str(tss_csv), units=f'kg/{TIMESTEP_UNITS}', reload_on_run=True,
-)
-v.create_data_source(
-    str(rain_csv), units=f'mm/{TIMESTEP_UNITS}', reload_on_run=True,
-)
-
-# Confirm the names Source registered: these should be TSS_SOURCE and
-# RAINFALL_SOURCE. If they are not, your Source version derives a name
-# from a filename differently. Changing the study.toml settings will not
-# help — they name the CSVs as well, so Source would just derive a new
-# name from the new stem. Pass the names Source actually reports to the
-# `tss_source_name` / `rainfall_source_name` arguments in the cell below
-# instead.
+# Both names should be listed here, and no CSV paths.
 [ds['Name'] for ds in v.data_sources()]
 
 # %% [markdown]

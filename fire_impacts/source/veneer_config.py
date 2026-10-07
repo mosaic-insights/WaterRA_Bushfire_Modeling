@@ -6,6 +6,7 @@ Load Distributor constituent-generation model, push fire-impact
 time-series as Veneer data sources, and trigger simulation runs.
 """
 
+import json
 import pandas as pd
 import veneer
 from typing import Optional, Dict, List
@@ -453,6 +454,67 @@ def create_veneer_data_sources(
     )
     logger.info("Data sources created successfully")
 
+
+def create_file_data_source(
+    v: veneer.Veneer,
+    name: str,
+    path,
+    units: Optional[str] = None,
+    reload_on_run: bool = True,
+) -> str:
+    """
+    Create a data source that Source loads from a CSV file, under a name.
+
+    Parameters:
+    - v: Active Veneer connection object.
+    - name: Name to give the data source - the one to assign from.
+    - path: CSV file Source loads (and, with reload_on_run, re-reads at
+      the start of every run).
+    - units: Units for the series, as for v.create_data_source.
+    - reload_on_run: Re-read the file before each run (default True).
+
+    Returns:
+    - name, for passing on to the assignment functions.
+    ------------------------------------------------------------------------
+    Notes:
+    - Veneer names a file-based data source after the path it was given,
+      not the file's stem. Assigning from ``name`` would then find no such
+      data source, and Source fails with a NullReferenceException - the
+      same error a column/catchment name mismatch gives. So the data
+      source is renamed here; the file it loads from is stored separately
+      and is unaffected.
+    - Any other data source already called ``name`` is removed first - an
+      in-memory one of the same name, say, or the empty one a failed
+      assignment leaves behind. Requires Veneer's "Allow Scripts".
+    ------------------------------------------------------------------------
+    """
+    path = str(path)
+    logger.info(f"Creating data source '{name}' from {path}")
+    v.create_data_source(path, units=units, reload_on_run=reload_on_run)
+
+    # String literals IronPython reads back unchanged. Pasted in raw, a
+    # Windows path's '\2001...' and '\f...' would become escape sequences;
+    # and non-ASCII characters go in as themselves, because IronPython 2
+    # leaves a \u escape in an ordinary string as literal characters.
+    path_literal = json.dumps(path, ensure_ascii=False)
+    name_literal = json.dumps(name, ensure_ascii=False)
+    script = (
+        'dm = scenario.Network.DataManager\n'
+        'grp = dm.DataGroups.FirstOrDefault('
+        f'lambda g: g.Name == {path_literal})\n'
+        'if grp is None:\n'
+        '    raise Exception('
+        f'"No data source was created from " + {path_literal})\n'
+        'for other in [g for g in dm.DataGroups\n'
+        f'              if g.Name == {name_literal} and not g is grp]:\n'
+        '    dm.RemoveGroup(other)\n'
+        f'grp.Name = {name_literal}\n'
+        'result = grp.Name\n'
+    )
+    response = v.model.run_script(script, init=True)
+    if response.get('Exception') is not None:
+        raise Exception(response['Exception'])
+    return name
 
 
 # ---------------------------------------------------------------------------
