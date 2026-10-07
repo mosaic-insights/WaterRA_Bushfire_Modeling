@@ -121,6 +121,8 @@ CATCHMENT   = study.catchment.name
 BOUNDARY    = study.catchment.boundary
 DEM         = study.catchment.dem          # None -> download national DEM
 ARIDITY     = study.catchment.aridity
+SUBCATCHMENTS = study.catchment.subcatchments   # None -> no subcatchments
+SUBCATCHMENT_ID_FIELD = study.catchment.subcatchment_id_field
 EVENT       = study.event.name
 FIRE_START  = study.event.fire_start
 FIRE_END    = study.event.fire_end
@@ -182,6 +184,36 @@ proj.add_catchment(BOUNDARY, name=CATCHMENT)
 
 # %%
 proj.catchments
+
+# %% [markdown]
+# ### Subcatchments (optional)
+#
+# Results can be summarised over *subcatchments* — the reporting units of
+# a downstream model, for instance — as well as over the whole catchment.
+# Point `catchment.subcatchments` in `study.toml` at a polygon coverage of
+# them and the cell below registers it with the project; leave that
+# setting out and the cell does nothing.
+#
+# `catchment.subcatchment_id_field` names the attribute in that coverage
+# that identifies each subcatchment, and it becomes the label on every
+# subcatchment output — so it wants to match the names used in whatever
+# you feed the results to. For a Source model, that means Source's own
+# subcatchment names.
+#
+# Registering here, with the catchment, is what lets the *Simulation* and
+# *SimulationEnsemble* notebooks run in either order, or *Simulation* not
+# at all. Change either setting later and re-run this cell to register the
+# new values, then re-run the simulations: their subcatchment outputs are
+# labelled when they are written.
+#
+# > Without subcatchments every model still runs, over the catchment as a
+# > whole; only the subcatchment summaries, maps and the loads for Source
+# > are left out.
+
+# %%
+if SUBCATCHMENTS:
+    proj.add_subcatchments(
+        CATCHMENT, SUBCATCHMENTS, label_field=SUBCATCHMENT_ID_FIELD)
 
 # %% [markdown]
 # ## Pre-processing steps

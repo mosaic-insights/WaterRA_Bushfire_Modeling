@@ -380,25 +380,25 @@ sc_debris_12min = debris_post['aggregated']
 
 # %% [markdown]
 # The label field is normally captured when the subcatchment coverage is
-# registered — the *Simulation* notebook does that with
+# registered — the *PrepareData* notebook does that with
 # ``add_subcatchments(..., label_field=...)`` — and is then read back from
-# the project's ``settings.json``. If it was missed, the cell below
-# registers `catchment.subcatchment_id_field` now, and it is persisted for
-# every future session against this project.
+# the project's ``settings.json``. If it was missed, as it is in a project
+# prepared before that cell existed, the cell below registers
+# `catchment.subcatchment_id_field` now, and it is persisted for every
+# future session against this project.
 #
 # `catchment.subcatchments` is optional: leave that setting out and this
-# cell does nothing, exactly as the equivalent cell in *Simulation* does.
+# cell does nothing, exactly as the equivalent cell in *PrepareData* does.
 #
 # A field already registered is left alone — the persisted value wins, so
 # editing `catchment.subcatchment_id_field` in `study.toml` does not
-# change it from here. Re-run the *Simulation* notebook's subcatchment
+# change it from here. Re-run the *PrepareData* notebook's subcatchment
 # cell to change it.
 #
 # > This notebook needs a subcatchment coverage to have been registered
-# > already. If you have not run *Simulation*, set
-# > `catchment.subcatchments` in `study.toml` and run its subcatchment
-# > cell first; without it the combined-load cells below have nothing to
-# > aggregate to.
+# > already, by *PrepareData*. If it was not, set `catchment.subcatchments`
+# > in `study.toml` and run PrepareData's subcatchment cell first; without
+# > it the combined-load cells below have nothing to aggregate to.
 
 # %%
 if SUBCATCHMENTS and proj.subcatchment_label_field(CATCHMENT) is None:

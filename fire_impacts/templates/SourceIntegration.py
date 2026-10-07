@@ -251,14 +251,15 @@ if labelled_by is None:
     logging.warning(
         'This run recorded no subcatchment label field, so the columns '
         'below are raw subcatchment IDs. Set catchment.subcatchments and '
-        'catchment.subcatchment_id_field in study.toml and re-run '
-        'SimulationEnsemble to label them.')
+        'catchment.subcatchment_id_field in study.toml, re-run '
+        "PrepareData's subcatchment cell to register them, then re-run "
+        'SimulationEnsemble to label the loads.')
 elif labelled_by != SUBCATCHMENT_ID_FIELD:
     logging.warning(
         f'These loads were labelled by {labelled_by!r}, but '
         f'catchment.subcatchment_id_field is now '
-        f'{SUBCATCHMENT_ID_FIELD!r}. Re-run SimulationEnsemble if you '
-        f'meant to relabel them.')
+        f'{SUBCATCHMENT_ID_FIELD!r}. If you meant to relabel them, re-run '
+        f"PrepareData's subcatchment cell, then SimulationEnsemble.")
 
 print(f'Load columns are labelled by {labelled_by!r}:')
 list(next(iter(combined_loads.values())).columns)

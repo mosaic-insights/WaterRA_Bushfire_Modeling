@@ -54,8 +54,6 @@ EVENT       = study.event.name
 ENSEMBLE    = study.ensemble.name
 N_REPLICATES = study.ensemble.num_replicates
 INSPECT_REPLICATE = study.ensemble.inspect_replicate
-SUBCATCHMENTS = study.catchment.subcatchments
-SUBCATCHMENT_ID_FIELD = study.catchment.subcatchment_id_field
 MEAN_ANNUAL_RAINFALL = study.ensemble.mean_annual_rainfall
 AVERAGE_TEMPERATURE  = study.ensemble.average_temperature
 
@@ -101,30 +99,12 @@ ctx = RunContext.solo_run(
 ctx
 
 # %% [markdown]
-# ### Subcatchments (optional)
-#
-# Results can be summarised over *subcatchments* — the reporting units of
-# a downstream model, for instance — as well as over the whole catchment.
-# Point `catchment.subcatchments` in `study.toml` at a polygon coverage of
-# them and the cell below registers it; leave that setting out and the
-# cell does nothing.
-#
-# `catchment.subcatchment_id_field` names the attribute in that coverage
-# that identifies each subcatchment, and it becomes the label on every
-# subcatchment output — so it wants to match the names used in whatever
-# you feed the results to.
-#
-# > Every *simulation* in this notebook runs either way. Without
-# > subcatchments the models run over the catchment as a whole and the
-# > subcatchment summary tables are simply not written. Only the
-# > `plot_subcatchments()` cells in the results sections below need them,
-# > and those will stop with a message naming `add_subcatchments()` if
-# > you have not set the file. Skip those cells, or set the setting.
-
-# %%
-if SUBCATCHMENTS:
-    proj.add_subcatchments(
-        CATCHMENT, SUBCATCHMENTS, label_field=SUBCATCHMENT_ID_FIELD)
+# > **Subcatchments.** Results are summarised over subcatchments as well
+# > as the whole catchment when *PrepareData* has registered a coverage of
+# > them — it does when `catchment.subcatchments` is set in `study.toml`.
+# > Every simulation here runs either way; without them the subcatchment
+# > summary tables are simply not written, and the `plot_subcatchments()`
+# > cells further down stop with a message naming `add_subcatchments()`.
 
 # %% [markdown]
 # ## Rainfall data
@@ -403,7 +383,7 @@ results['erosion_daily_time_series']
 #
 # Examples of the different visualisations for our example catchment are shown in the following cells.
 #
-# > The `plot_subcatchments()` cells need `catchment.subcatchments` to have been set at the top of this notebook. Without it no subcatchment summary was written, and those cells stop with a message naming `add_subcatchments()` — skip them and read the whole-catchment rasters instead.
+# > The `plot_subcatchments()` cells need subcatchments registered by *PrepareData*, which it does when `catchment.subcatchments` is set in `study.toml`. Without them no subcatchment summary was written, and those cells stop with a message naming `add_subcatchments()` — skip them and read the whole-catchment rasters instead.
 
 # %%
 # To see a complete picture of sediment eroded across the catchment:
