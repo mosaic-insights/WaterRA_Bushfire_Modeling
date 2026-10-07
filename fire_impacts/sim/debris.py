@@ -1254,7 +1254,8 @@ def aggregate_debris_to_subcatchments(
     # Map headwater IDs to subcatchment IDs, then sum within each SC
     sc_map = hw_allocations.set_index(HW_ID)[SC_ID].to_dict()
     scaled = scaled.rename(columns=sc_map)
-    aggregated = scaled.groupby(level=0, axis=1).sum()
+    # Group the columns via a transpose: pandas 3 removed groupby(axis=1)
+    aggregated = scaled.T.groupby(level=0).sum().T
 
     logger.info(
         f'Aggregated debris timeseries from '
