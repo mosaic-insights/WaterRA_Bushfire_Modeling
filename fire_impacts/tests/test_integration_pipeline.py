@@ -55,48 +55,61 @@ BREAKPOINTS = [0, 0.05, 0.1]
 # parameters. Regenerate deliberately (see test_default_outputs_are_unchanged)
 # only when a default or an equation is intentionally changed.
 #
-# Last regenerated when dNBR scaling was unified (const.DNBR_SCALE): the
-# synthetic severity path had been writing the conventional 0-1000 scale
-# while the real path wrote the stored band-ratio difference, so every
-# fire-adjusted layer built from synthetic dNBR had saturated at c_peak.
+# Values are rounded to 6 decimals before hashing (see _prep_raster_hashes),
+# not compared exactly: the same equation, with no code change, has been
+# observed to produce a different exact float64 byte pattern across
+# machines and dependency-version sets. Investigated at length (ruled out,
+# with direct cross-version testing: numpy's np.gradient itself; ruled out,
+# with direct testing: PYTHONHASHSEED randomisation) without finding the
+# exact mechanism - treated as environmental float noise rather than a
+# logic bug, since the input DEM and every relevant function's code were
+# independently confirmed unchanged. 6 decimals is far tighter than any of
+# these layers' real-world precision (slope in degrees, ratios in [0, 1],
+# t/ha erosion rates), so a genuine equation change still fails loudly.
+#
+# Last regenerated 2026-10-07 after adding that rounding (see
+# test_prep_raster_hashes_absorbs_tiny_float_noise) and fixing
+# _prep_raster_hashes' keys to be OS-independent (see
+# test_prep_raster_hashes_uses_posix_separators) - both needed before this
+# dict was meaningfully comparable across platforms at all.
 GOLDEN_PREP_HASHES = {
-    "Catchments/EgSmallCatchment_7899/Delivery/Cth_baseline.tif": "6fd676cdfe9ea85a",
-    "Catchments/EgSmallCatchment_7899/Delivery/Ddn_baseline.tif": "649f4b38c5852f8b",
-    "Catchments/EgSmallCatchment_7899/Delivery/Distance_to_stream.tif": "5b18c6f980bb8463",
-    "Catchments/EgSmallCatchment_7899/Delivery/Dup_baseline.tif": "8eb4eb527f909267",
-    "Catchments/EgSmallCatchment_7899/Delivery/IC_baseline.tif": "7629543efd170838",
-    "Catchments/EgSmallCatchment_7899/Delivery/SDR_baseline.tif": "9dd5e31f594b8dd3",
-    "Catchments/EgSmallCatchment_7899/Delivery/Sth.tif": "7aa6577d6d77a64b",
+    "Catchments/EgSmallCatchment_7899/Delivery/Cth_baseline.tif": "7ae89225431d8224",
+    "Catchments/EgSmallCatchment_7899/Delivery/Ddn_baseline.tif": "5379958427764b5b",
+    "Catchments/EgSmallCatchment_7899/Delivery/Distance_to_stream.tif": "16d0b1af9085d09a",
+    "Catchments/EgSmallCatchment_7899/Delivery/Dup_baseline.tif": "07c0e13ec3405b87",
+    "Catchments/EgSmallCatchment_7899/Delivery/IC_baseline.tif": "4c2f374dd2cee2ac",
+    "Catchments/EgSmallCatchment_7899/Delivery/SDR_baseline.tif": "7544bc96baa0c581",
+    "Catchments/EgSmallCatchment_7899/Delivery/Sth.tif": "c058dde29dad7878",
     "Catchments/EgSmallCatchment_7899/Delivery/Streams.tif": "241054773ccceb30",
-    "Catchments/EgSmallCatchment_7899/Erodibility/C_factor.tif": "265597f6cbc0d122",
-    "Catchments/EgSmallCatchment_7899/Erodibility/K_factor.tif": "0fa357811da0b7c1",
-    "Catchments/EgSmallCatchment_7899/Erodibility/LS_factor.tif": "9b9c0b6651b8950e",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0.tif": "f45629277d65c511",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0_05.tif": "c2ca2f9ea56e98a3",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0.tif": "47c783fd4236dad5",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0_05.tif": "5c5e776ef2ace911",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Distance_to_stream.tif": "5b18c6f980bb8463",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0.tif": "ca28b39f720f9912",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0_05.tif": "73bb0d8b159c6f21",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0.tif": "a385723fa64c982d",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0_05.tif": "47ff7021080cb547",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0.tif": "08bb02bfe0649d9f",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0_05.tif": "559ec731246244a1",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Sth.tif": "7aa6577d6d77a64b",
+    "Catchments/EgSmallCatchment_7899/Erodibility/C_factor.tif": "3b7a4b2f6a382e50",
+    "Catchments/EgSmallCatchment_7899/Erodibility/K_factor.tif": "520bccb840ad876c",
+    "Catchments/EgSmallCatchment_7899/Erodibility/LS_factor.tif": "bd4ae11d402cabd7",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0.tif": "02dd6343de62e9f2",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0_05.tif": "356cf765185c8afb",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0.tif": "8a4b2c61db345a0e",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0_05.tif": "0d07d0a19be10627",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Distance_to_stream.tif": "16d0b1af9085d09a",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0.tif": "b0965079c8d91707",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0_05.tif": "2b6006a520e206bf",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0.tif": "237fd08b7adddfa9",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0_05.tif": "069ca52f5c6ac04a",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0.tif": "0f408cb3954e642a",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0_05.tif": "58178ec61b926211",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Sth.tif": "c058dde29dad7878",
     "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Streams.tif": "241054773ccceb30",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0.tif": "9815aedfcf7bde1b",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0_05.tif": "f0f5bd9c9b299ebe",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0.tif": "01d46cbd2f4ab83c",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0_05.tif": "c8000d1b77e806f5",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/FireSeverity/masked_dNBR.tif": "febf6b8df6a5e38b",
-    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results/RUSLE_sum_total.tif": "12a5a0fc30973c2a",
-    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results_baseline/RUSLE_sum_total.tif": "50270151e3192181",
-    "Catchments/EgSmallCatchment_7899/Soils/Aridity.tif": "d304bc9ba572d2a0",
-    "Catchments/EgSmallCatchment_7899/Topography/DEM.tif": "357d6a5f877a8625",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0.tif": "f5a14e2520c82fc0",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0_05.tif": "fa489b8e3191685d",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0.tif": "9291f9f04c60eb59",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0_05.tif": "fd8663b42f38739b",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/FireSeverity/masked_dNBR.tif": "3134ab1e64decdf3",
+    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results/RUSLE_sum_total.tif": "24a027eb86ecae0c",
+    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results_baseline/RUSLE_sum_total.tif": "3f27d74139de50cb",
+    "Catchments/EgSmallCatchment_7899/Soils/Aridity.tif": "36c7cfcf44256521",
+    "Catchments/EgSmallCatchment_7899/Topography/DEM.tif": "ca33acadab235131",
     "Catchments/EgSmallCatchment_7899/Topography/Flow_accumulation.tif": "950d350d781f1175",
     "Catchments/EgSmallCatchment_7899/Topography/Flow_direction.tif": "9ef73c48072e9e7d",
     "Catchments/EgSmallCatchment_7899/Topography/Headwaters.tif": "4243d5597f140f66",
-    "Catchments/EgSmallCatchment_7899/Topography/Slope.tif": "971539b361b302d2",
+    "Catchments/EgSmallCatchment_7899/Topography/Slope.tif": "921aee3d84b7cb58",
     "Catchments/EgSmallCatchment_7899/Topography/Stream_Network.tif": "a1d6216a9cb001e0"
 }
 
@@ -218,10 +231,75 @@ def _prep_raster_hashes(pipeline):
             continue
         with rasterio.open(tif) as src:
             arr = src.read(1)
-        out[str(tif.relative_to(root))] = hashlib.sha256(
-            np.nan_to_num(arr, nan=-9e9).astype('float64').tobytes()
+        # Rounded, not compared exactly: the same equation has been
+        # observed to produce a different exact float64 byte pattern
+        # across machines/dependency versions with no logic change (see
+        # test_default_outputs_are_unchanged's docstring). 6 decimals is
+        # far tighter than any of these layers' real-world precision
+        # (slope in degrees, ratios in [0, 1], t/ha erosion rates), so a
+        # genuine equation change still fails loudly.
+        rounded = np.round(
+            np.nan_to_num(arr, nan=-9e9).astype('float64'), decimals=6
+            )
+        out[tif.relative_to(root).as_posix()] = hashlib.sha256(
+            rounded.tobytes()
         ).hexdigest()[:16]
     return out
+
+
+def test_prep_raster_hashes_uses_posix_separators(tmp_path):
+    """GOLDEN_PREP_HASHES is hardcoded with '/' separators. str(Path) uses
+    the OS-native separator, which is '\\' on Windows - so every key would
+    mismatch there regardless of whether the underlying value is correct.
+    as_posix() keeps the key format OS-independent."""
+    nested = tmp_path / 'Catchments' / 'Eg'
+    nested.mkdir(parents=True)
+    meta = dict(
+        driver='GTiff', height=2, width=2, count=1, dtype='float32',
+        crs='EPSG:4326',
+        transform=rasterio.transform.from_origin(0, 0, 1, 1),
+        )
+    with rasterio.open(nested / 'Slope.tif', 'w', **meta) as dst:
+        dst.write(np.zeros((2, 2), dtype='float32'), 1)
+
+    class _FakeProj:
+        project_path = str(tmp_path)
+
+    got = _prep_raster_hashes({'proj': _FakeProj()})
+    assert list(got.keys()) == ['Catchments/Eg/Slope.tif']
+
+
+def test_prep_raster_hashes_absorbs_tiny_float_noise(tmp_path):
+    """A cross-environment ULP-level difference in a float computation
+    (confirmed real: the same np.gradient-based math gives a different
+    exact byte result on different machines/dependency versions, with
+    no equation change) must not flip the hash - only a change large
+    enough to matter physically should. The rounding precision is
+    intentionally far tighter than any real DEM/RUSLE output needs, so
+    a genuine equation change (e.g. a missing unit conversion) still
+    fails loudly."""
+    def write_and_hash(value, tag):
+        proj_dir = tmp_path / tag
+        proj_dir.mkdir()
+        meta = dict(
+            driver='GTiff', height=2, width=2, count=1, dtype='float64',
+            crs='EPSG:4326',
+            transform=rasterio.transform.from_origin(0, 0, 1, 1),
+            )
+        with rasterio.open(proj_dir / 'Layer.tif', 'w', **meta) as dst:
+            dst.write(np.full((2, 2), value, dtype='float64'), 1)
+
+        class _FakeProj:
+            project_path = str(proj_dir)
+
+        return _prep_raster_hashes({'proj': _FakeProj()})['Layer.tif']
+
+    baseline = write_and_hash(1.0, 'a')
+    tiny_noise = write_and_hash(1.0 + 1e-9, 'b')
+    real_change = write_and_hash(1.1, 'c')
+
+    assert tiny_noise == baseline
+    assert real_change != baseline
 
 
 def test_default_outputs_are_unchanged(pipeline):
