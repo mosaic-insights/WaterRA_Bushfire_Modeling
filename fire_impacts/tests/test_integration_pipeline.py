@@ -55,61 +55,64 @@ BREAKPOINTS = [0, 0.05, 0.1]
 # parameters. Regenerate deliberately (see test_default_outputs_are_unchanged)
 # only when a default or an equation is intentionally changed.
 #
-# Values are rounded to 6 decimals before hashing (see _prep_raster_hashes),
-# not compared exactly: the same equation, with no code change, has been
-# observed to produce a different exact float64 byte pattern across
-# machines and dependency-version sets. Investigated at length (ruled out,
-# with direct cross-version testing: numpy's np.gradient itself; ruled out,
-# with direct testing: PYTHONHASHSEED randomisation) without finding the
-# exact mechanism - treated as environmental float noise rather than a
-# logic bug, since the input DEM and every relevant function's code were
-# independently confirmed unchanged. 6 decimals is far tighter than any of
-# these layers' real-world precision (slope in degrees, ratios in [0, 1],
-# t/ha erosion rates), so a genuine equation change still fails loudly.
+# Values are rounded to 4 decimals before hashing (see _prep_raster_hashes)
+# for a confirmed, measured reason, not a guess: Slope.tif/LS_factor.tif/
+# SDR/IC/RUSLE_sum_total's shared np.gradient-based computation (see
+# fire_impacts.pre.util.slope_from_dem) gives a different exact float64
+# result on Windows vs. Linux for the identical input (confirmed directly
+# by running it on the same real DEM array under WSL: max abs diff ~1e-14),
+# which, once rounded to float32 for storage, occasionally lands on the
+# opposite side of a float32 rounding boundary - a measured gap of 2
+# float32 ULPs (3.8e-6 at Slope.tif's ~48 max magnitude). 4 decimals (1e-4)
+# gives a >=26x margin above that for every layer actually observed to
+# drift, while being a no-op (not a loss of real precision) for the much
+# larger-magnitude layers that have never drifted (e.g. Ddn_t0.tif,
+# ~2.2e6) - you cannot round in more precision than float32 carries. Also
+# far coarser than any of these layers' real-world precision (slope in
+# degrees, ratios in [0, 1], t/ha erosion rates), so a genuine equation
+# change still fails loudly.
 #
-# Last regenerated 2026-10-07 after adding that rounding (see
-# test_prep_raster_hashes_absorbs_tiny_float_noise) and fixing
-# _prep_raster_hashes' keys to be OS-independent (see
-# test_prep_raster_hashes_uses_posix_separators) - both needed before this
-# dict was meaningfully comparable across platforms at all.
+# Last regenerated 2026-10-07 after narrowing the rounding from 6 decimals
+# (confirmed, by this same cross-platform measurement, to be ~4x too
+# tight to absorb the real gap) to 4.
 GOLDEN_PREP_HASHES = {
-    "Catchments/EgSmallCatchment_7899/Delivery/Cth_baseline.tif": "7ae89225431d8224",
-    "Catchments/EgSmallCatchment_7899/Delivery/Ddn_baseline.tif": "5379958427764b5b",
-    "Catchments/EgSmallCatchment_7899/Delivery/Distance_to_stream.tif": "16d0b1af9085d09a",
-    "Catchments/EgSmallCatchment_7899/Delivery/Dup_baseline.tif": "07c0e13ec3405b87",
-    "Catchments/EgSmallCatchment_7899/Delivery/IC_baseline.tif": "4c2f374dd2cee2ac",
-    "Catchments/EgSmallCatchment_7899/Delivery/SDR_baseline.tif": "7544bc96baa0c581",
-    "Catchments/EgSmallCatchment_7899/Delivery/Sth.tif": "c058dde29dad7878",
+    "Catchments/EgSmallCatchment_7899/Delivery/Cth_baseline.tif": "fa247872cb9f685c",
+    "Catchments/EgSmallCatchment_7899/Delivery/Ddn_baseline.tif": "4413cb2b5b1575c6",
+    "Catchments/EgSmallCatchment_7899/Delivery/Distance_to_stream.tif": "3e1e38233322ad6c",
+    "Catchments/EgSmallCatchment_7899/Delivery/Dup_baseline.tif": "9c0fa1dfd358a879",
+    "Catchments/EgSmallCatchment_7899/Delivery/IC_baseline.tif": "f2fd1bbb1d2a1731",
+    "Catchments/EgSmallCatchment_7899/Delivery/SDR_baseline.tif": "b279f97e02c5dc73",
+    "Catchments/EgSmallCatchment_7899/Delivery/Sth.tif": "f63ba54195d26648",
     "Catchments/EgSmallCatchment_7899/Delivery/Streams.tif": "241054773ccceb30",
-    "Catchments/EgSmallCatchment_7899/Erodibility/C_factor.tif": "3b7a4b2f6a382e50",
-    "Catchments/EgSmallCatchment_7899/Erodibility/K_factor.tif": "520bccb840ad876c",
-    "Catchments/EgSmallCatchment_7899/Erodibility/LS_factor.tif": "bd4ae11d402cabd7",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0.tif": "02dd6343de62e9f2",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0_05.tif": "356cf765185c8afb",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0.tif": "8a4b2c61db345a0e",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0_05.tif": "0d07d0a19be10627",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Distance_to_stream.tif": "16d0b1af9085d09a",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0.tif": "b0965079c8d91707",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0_05.tif": "2b6006a520e206bf",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0.tif": "237fd08b7adddfa9",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0_05.tif": "069ca52f5c6ac04a",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0.tif": "0f408cb3954e642a",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0_05.tif": "58178ec61b926211",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Sth.tif": "c058dde29dad7878",
+    "Catchments/EgSmallCatchment_7899/Erodibility/C_factor.tif": "99b40c9167161e52",
+    "Catchments/EgSmallCatchment_7899/Erodibility/K_factor.tif": "e34a7e1ff8781fac",
+    "Catchments/EgSmallCatchment_7899/Erodibility/LS_factor.tif": "686e0de9d26a4419",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0.tif": "4b13a0690ac297f8",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Cth_t0_05.tif": "2baeedc2c7acf222",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0.tif": "cb8cdf920512c515",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Ddn_t0_05.tif": "7b1bad53c38c2f5c",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Distance_to_stream.tif": "3e1e38233322ad6c",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0.tif": "30c02839dd21d8f2",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Dup_t0_05.tif": "92ba4aadae0957b7",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0.tif": "085a39478a289380",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/IC_t0_05.tif": "99e6f1071f9e68c5",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0.tif": "df4fb381ca89906d",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/SDR_t0_05.tif": "70c6e7a373ab70a0",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Sth.tif": "f63ba54195d26648",
     "Catchments/EgSmallCatchment_7899/Events/2019_fire/Delivery/Streams.tif": "241054773ccceb30",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0.tif": "f5a14e2520c82fc0",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0_05.tif": "fa489b8e3191685d",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0.tif": "ba06b3d882f8d127",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/C_factor_adjusted_t0_05.tif": "2baeedc2c7acf222",
     "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0.tif": "9291f9f04c60eb59",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0_05.tif": "fd8663b42f38739b",
-    "Catchments/EgSmallCatchment_7899/Events/2019_fire/FireSeverity/masked_dNBR.tif": "3134ab1e64decdf3",
-    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results/RUSLE_sum_total.tif": "24a027eb86ecae0c",
-    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results_baseline/RUSLE_sum_total.tif": "3f27d74139de50cb",
-    "Catchments/EgSmallCatchment_7899/Soils/Aridity.tif": "36c7cfcf44256521",
-    "Catchments/EgSmallCatchment_7899/Topography/DEM.tif": "ca33acadab235131",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/Erodibility/K_factor_adjusted_t0_05.tif": "fbfce4fee61d0e23",
+    "Catchments/EgSmallCatchment_7899/Events/2019_fire/FireSeverity/masked_dNBR.tif": "e1f9baa0587e4a82",
+    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results/RUSLE_sum_total.tif": "845e1cfb3e329df0",
+    "Catchments/EgSmallCatchment_7899/Runs/2019_fire/historical/Results_baseline/RUSLE_sum_total.tif": "1f49c71a709903ce",
+    "Catchments/EgSmallCatchment_7899/Soils/Aridity.tif": "0297be5e5bc110b1",
+    "Catchments/EgSmallCatchment_7899/Topography/DEM.tif": "0b2a3111d1fcf0a2",
     "Catchments/EgSmallCatchment_7899/Topography/Flow_accumulation.tif": "950d350d781f1175",
     "Catchments/EgSmallCatchment_7899/Topography/Flow_direction.tif": "9ef73c48072e9e7d",
     "Catchments/EgSmallCatchment_7899/Topography/Headwaters.tif": "4243d5597f140f66",
-    "Catchments/EgSmallCatchment_7899/Topography/Slope.tif": "921aee3d84b7cb58",
+    "Catchments/EgSmallCatchment_7899/Topography/Slope.tif": "022dcb08f5ce4e57",
     "Catchments/EgSmallCatchment_7899/Topography/Stream_Network.tif": "a1d6216a9cb001e0"
 }
 
@@ -231,15 +234,26 @@ def _prep_raster_hashes(pipeline):
             continue
         with rasterio.open(tif) as src:
             arr = src.read(1)
-        # Rounded, not compared exactly: the same equation has been
-        # observed to produce a different exact float64 byte pattern
-        # across machines/dependency versions with no logic change (see
-        # test_default_outputs_are_unchanged's docstring). 6 decimals is
-        # far tighter than any of these layers' real-world precision
-        # (slope in degrees, ratios in [0, 1], t/ha erosion rates), so a
-        # genuine equation change still fails loudly.
+        # Rounded, not compared exactly: the same equation, with no code
+        # change, has been confirmed (by direct cross-platform testing -
+        # see test_default_outputs_are_unchanged's docstring) to produce
+        # a different exact float64 byte pattern. The mechanism: these
+        # rasters are written as float32, and a ~1e-15 cross-platform
+        # difference in the float64 math occasionally lands a value right
+        # on a float32 rounding boundary, tipping ~13% of Slope.tif's
+        # cells to the adjacent representable float32 - a confirmed,
+        # measured gap of 2 float32 ULPs (3.8e-6 at Slope.tif's ~48 max
+        # magnitude). 4 decimals gives a >=26x margin above that for
+        # every layer actually observed to drift (Slope/LS_factor/SDR/IC/
+        # RUSLE_sum_total, magnitude <= ~48), while being a no-op - not a
+        # loss of real precision - for the much larger-magnitude layers
+        # (e.g. Ddn_t0.tif, ~2.2e6) that have never drifted, since you
+        # cannot round in more precision than float32 actually carries.
+        # Still far coarser than any of these layers' real-world
+        # precision (slope in degrees, ratios in [0, 1], t/ha erosion
+        # rates), so a genuine equation change still fails loudly.
         rounded = np.round(
-            np.nan_to_num(arr, nan=-9e9).astype('float64'), decimals=6
+            np.nan_to_num(arr, nan=-9e9).astype('float64'), decimals=4
             )
         out[tif.relative_to(root).as_posix()] = hashlib.sha256(
             rounded.tobytes()
@@ -300,29 +314,6 @@ def test_prep_raster_hashes_absorbs_tiny_float_noise(tmp_path):
 
     assert tiny_noise == baseline
     assert real_change != baseline
-
-
-def test_zzz_slope_max_diff_probe(pipeline):
-    """TEMPORARY - measures the real per-cell max difference between CI's
-    Slope.tif and a committed local reference array. Will be removed."""
-    import os
-    prep = pipeline['prep']
-    ref_path = os.path.join(os.path.dirname(__file__), '_local_slope_reference.npy')
-    local = np.load(ref_path)
-    path = prep.catchment_path('Topography', 'Slope.tif')
-    with rasterio.open(path) as src:
-        ci = src.read(1)
-    diff = np.abs(ci.astype('float64') - local.astype('float64'))
-    finite = np.isfinite(diff)
-    n_differ = int((diff[finite] > 0).sum())
-    max_diff = float(diff[finite].max())
-    worst = np.unravel_index(np.nanargmax(np.where(finite, diff, np.nan)), diff.shape)
-    print(
-        f'shape_match={ci.shape == local.shape} n_differing_cells={n_differ}/{finite.sum()} '
-        f'max_abs_diff={max_diff!r} worst_idx={worst} '
-        f'ci_val={ci[worst]!r} local_val={local[worst]!r}'
-        )
-    assert False, "diagnostic complete - see captured stdout above"
 
 
 def test_default_outputs_are_unchanged(pipeline):
