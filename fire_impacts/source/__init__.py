@@ -14,6 +14,7 @@ from .veneer_config import (
     assign_fire_sediment_timeseries,
     assign_rainfall_timeseries,
     run_model_simulation,
+    run_succeeded,
     save_model,
     configure_source_model_with_fire_data,
     LIKELY_CONSTITUENTS,
@@ -54,6 +55,7 @@ __all__ = [
     'assign_fire_sediment_timeseries',
     'assign_rainfall_timeseries',
     'run_model_simulation',
+    'run_succeeded',
     'save_model',
     'configure_source_model_with_fire_data',
 

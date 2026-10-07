@@ -17,6 +17,7 @@ from fire_impacts.source import (
     assign_fire_sediment_timeseries,
     assign_rainfall_timeseries,
     run_model_simulation,
+    run_succeeded,
     save_model,
     configure_source_model_with_fire_data
 )
@@ -96,7 +97,7 @@ def example_import_timeseries_workflow():
     )
     
     # Check results
-    if results['Status'] == 'Finished':
+    if run_succeeded(results):
         logger.info("Simulation completed successfully")
         if 'Results' in results:
             df = results['Results'].as_dataframe()

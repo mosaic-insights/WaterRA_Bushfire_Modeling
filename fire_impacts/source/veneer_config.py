@@ -548,6 +548,26 @@ def assign_rainfall_timeseries(
 # Simulation runner and model saver
 # ---------------------------------------------------------------------------
 
+# The run status Source reports for a run that completed: the name of its
+# RunResultType, as Veneer passes it through. Anything else - RunIncomplete,
+# say - means the run did not.
+RUN_SUCCESS = 'RunSuccess'
+
+
+def run_succeeded(results: Dict) -> bool:
+    """
+    Return whether a Source run completed successfully.
+
+    Parameters:
+    - results: Dict returned by Veneer's retrieve_run(), or by
+      run_model_simulation().
+
+    Returns:
+    - True if its 'Status' is RUN_SUCCESS.
+    """
+    return results.get('Status') == RUN_SUCCESS
+
+
 def run_model_simulation(
     v: veneer.Veneer,
     start_date: str = '01/01/1900',
@@ -565,7 +585,7 @@ def run_model_simulation(
 
     Returns:
     - Dict returned by Veneer's retrieve_run(), including at minimum
-      a 'Status' key ('Finished' on success).
+      a 'Status' key - see run_succeeded().
     """
     logger.info(
         f"Running simulation from {start_date} to {end_date}"
@@ -577,12 +597,14 @@ def run_model_simulation(
     results = v.retrieve_run()
 
     logger.info(
-        f"Simulation completed with status: {results['Status']}"
+        f"Simulation completed with status: {results.get('Status')}"
     )
 
-    # Log the run log at debug level if the simulation did not finish
-    if results['Status'] != 'Finished':
-        logger.warning("Simulation did not complete successfully")
+    # Log the run log at debug level if the simulation did not succeed
+    if not run_succeeded(results):
+        logger.warning(
+            "Simulation did not complete successfully (status: %s)",
+            results.get('Status'))
         if 'RunLog' in results:
             logger.debug(
                 "Run log:\n" + '\n'.join(results['RunLog'])

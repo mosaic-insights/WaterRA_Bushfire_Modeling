@@ -5,7 +5,9 @@ Unit tests for veneer_config module, focusing on _detect_parameter function.
 import pytest
 import logging
 from unittest.mock import MagicMock
-from fire_impacts.source.veneer_config import _detect_parameter
+from fire_impacts.source.veneer_config import (
+    _detect_parameter, run_model_simulation, run_succeeded,
+)
 
 # Configure logging for tests
 logging.basicConfig(level=logging.DEBUG)
@@ -206,3 +208,35 @@ class TestDetectParameter:
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
+
+
+def _veneer_reporting(status):
+    """A Veneer stand-in whose next run reports the given status."""
+    v = MagicMock()
+    v.retrieve_run.return_value = {'Status': status, 'RunLog': ['a line']}
+    return v
+
+
+class TestRunStatus:
+    """Source reports a run's outcome as the name of its RunResultType:
+    'RunSuccess' when it ran, something else (e.g. 'RunIncomplete') when
+    it did not."""
+
+    def test_a_successful_run_is_recognised(self):
+        assert run_succeeded({'Status': 'RunSuccess'})
+
+    @pytest.mark.parametrize('status', ['RunIncomplete', 'Finished', ''])
+    def test_anything_else_is_not_a_success(self, status):
+        assert not run_succeeded({'Status': status})
+
+    def test_a_result_with_no_status_is_not_a_success(self):
+        assert not run_succeeded({})
+
+    def test_a_successful_run_is_not_reported_as_a_failure(self, caplog):
+        run_model_simulation(_veneer_reporting('RunSuccess'))
+        assert 'did not complete' not in caplog.text
+
+    def test_an_unsuccessful_run_is_reported_with_its_status(self, caplog):
+        run_model_simulation(_veneer_reporting('RunIncomplete'))
+        assert 'did not complete' in caplog.text
+        assert 'RunIncomplete' in caplog.text

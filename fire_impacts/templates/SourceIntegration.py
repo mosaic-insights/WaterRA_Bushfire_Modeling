@@ -100,6 +100,7 @@ from fire_impacts.source import (
     assign_fire_sediment_timeseries,
     assign_rainfall_timeseries,
     run_model_simulation,
+    run_succeeded,
     save_model,
 )
 
@@ -524,6 +525,13 @@ for rep in replicate_ids:
     logging.info(f'Replicate {rep:02d}: status={result.get("Status")}')
 
 # %%
+# Source reports 'RunSuccess' for a run that completed. A replicate that
+# did not is named here rather than left for the results to look odd.
+failed = {rep: r.get('Status') for rep, r in source_runs.items()
+          if not run_succeeded(r)}
+if failed:
+    logging.warning(f'{len(failed)} of {len(source_runs)} Source runs did '
+                    f'not succeed: {failed}')
 {rep: r.get('Status') for rep, r in source_runs.items()}
 
 # %% [markdown]
