@@ -1684,6 +1684,19 @@ class FireImpactsProject(object):
         """
         fig, ax = toputil.fig_ax_admin(existing_figure, existing_axes)
 
+        # Nothing to colour by (e.g. the debris-flow tables for a fire
+        # that burnt no headwater): plot plain shapes rather than fail
+        # to build a colour scale from no values.
+        if non_geo_data is not None:
+            values = pd.to_numeric(
+                non_geo_data[colour_col], errors='coerce')
+            if not np.isfinite(values).any():
+                logger.warning(
+                    "No values to colour the map by '%s'; plotting "
+                    "plain shapes.", colour_col,
+                )
+                non_geo_data = None
+
         this_crs, cbar, ax = toputil.plot_spatial_vector(
             ax,
             polygons,

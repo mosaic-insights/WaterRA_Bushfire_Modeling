@@ -316,47 +316,85 @@ def prep_debris_flow_simulation(
             'columns: %s', nan_cols,
         )
     condition_data = condition_data.fillna(0.0)
-    # Remove headwaters where mean dNBR is below the debris-flow burn threshold.
-    n_before = len(condition_data)
-
-    condition_data = condition_data[
-        condition_data[DNBR_MEAN] >= dnbr_threshold
-    ].copy()
-
-    n_removed = n_before - len(condition_data)
-
-    if n_removed > 0:
-        logger.info(
-            "%d headwaters removed from debris-flow analysis because "
-            "mean dNBR was below %s.",
-            n_removed, dnbr_threshold,
-        )
 
     # Load the headwaters topographic summary
     topo_data = pd.read_csv(
         ctx.catchment_path('Topography', 'Headwaters.csv'),
     )
 
-    # Inner-join condition and topographic data.  Log the row accounting
-    # so it is easy to see how many headwaters were excluded and why.
-    n_condition = len(condition_data)
-    n_topo = len(topo_data)
-    fire_impact_data = pd.merge(
-        condition_data, topo_data, on=id_field, how='inner'
+    fire_impact_data = _join_burnt_headwaters(
+        condition_data, topo_data, id_field, dnbr_threshold,
     )
-    n_joined = len(fire_impact_data)
 
-    # Headwaters in topo but not condition were already excluded upstream
-    pre_excluded = n_topo - n_joined
+    return debris_flow_load(
+        dem_data, slope_h_ratio, transform, flow_acc_data,
+        flow_dir_data, clay0_5, clay5_15, out_path,
+        fire_impact_data, hf_lookup, debris_lookup, dem_meta, id_field,
+        debris=p,
+    )
+
+
+def _join_burnt_headwaters(condition_data, topo_data, id_field,
+                           dnbr_threshold):
+    """
+    Keep the headwaters burnt enough for debris flow, joined to their
+    topographic summary.
+
+    Parameters:
+    - condition_data: Per-headwater soil/slope/aridity/dNBR summary.
+    - topo_data: Per-headwater topographic summary (Headwaters.csv).
+    - id_field: Headwater ID column shared by both tables.
+    - dnbr_threshold: Mean dNBR, on the 0-1000 scale, below which a
+      headwater is too lightly burnt for debris flow.
+
+    Returns:
+    - The inner join of the burnt headwaters' condition data with
+      topo_data. Empty, with a warning, when no headwater is burnt
+      enough: the event then simply produces no debris flow.
+    """
+    # Headwaters with no condition data were excluded upstream (e.g. by
+    # summary_stats' masked-dNBR NaN filter). Counted before the dNBR
+    # filter so its removals are not reported here as well.
+    n_topo = len(topo_data)
+    pre_excluded = (~topo_data[id_field].isin(condition_data[id_field])).sum()
     if pre_excluded > 0:
         logger.info(
             '%d of %d headwaters already excluded upstream '
             '(not present in condition data).',
             pre_excluded, n_topo,
         )
+
+    # Remove headwaters where mean dNBR is below the debris-flow burn
+    # threshold.
+    burnt = condition_data[DNBR_MEAN] >= dnbr_threshold
+    n_removed = int((~burnt).sum())
+    if n_removed > 0:
+        logger.info(
+            "%d headwaters removed from debris-flow analysis because "
+            "mean dNBR was below %s.",
+            n_removed, dnbr_threshold,
+        )
+    if not burnt.any():
+        highest = (
+            f'the highest headwater mean dNBR is '
+            f'{condition_data[DNBR_MEAN].max():.1f}'
+            if len(condition_data) else 'no headwater has dNBR data'
+        )
+        logger.warning(
+            'No headwaters reach the debris-flow dNBR threshold of %s '
+            '(%s), so this event produces no debris flow. Check the '
+            'fire dates and FireSeverity/masked_dNBR.tif if the fire '
+            'should have burnt this catchment.',
+            dnbr_threshold, highest,
+        )
+    condition_data = condition_data[burnt].copy()
+
+    fire_impact_data = pd.merge(
+        condition_data, topo_data, on=id_field, how='inner'
+    )
     # Headwaters in condition but not topo is unexpected — both files
     # should derive from the same Headwaters.shp
-    if n_joined < n_condition:
+    if len(fire_impact_data) < len(condition_data):
         condition_ids = set(condition_data[id_field])
         topo_ids = set(topo_data[id_field])
         missing_from_topo = sorted(condition_ids - topo_ids)
@@ -372,13 +410,7 @@ def prep_debris_flow_simulation(
             f'{topo_data[id_field].min()}–'
             f'{topo_data[id_field].max()}.'
         )
-
-    return debris_flow_load(
-        dem_data, slope_h_ratio, transform, flow_acc_data,
-        flow_dir_data, clay0_5, clay5_15, out_path,
-        fire_impact_data, hf_lookup, debris_lookup, dem_meta, id_field,
-        debris=p,
-    )
+    return fire_impact_data
 
 
 # ---------------------------------------------------------------------------
@@ -1692,9 +1724,10 @@ def debris_flow(
             f"Year{year}_num_events"
         ] = year_results[year]["event_counts"]
 
+        # default: no headwater burnt enough for debris flow
         max_events = max(
-            len(ev)
-            for ev in year_results[year]["rainfall_events"]
+            (len(ev) for ev in year_results[year]["rainfall_events"]),
+            default=0,
         )
 
         # Build per-event rainfall and date columns for this year
