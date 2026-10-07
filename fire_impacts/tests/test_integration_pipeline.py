@@ -326,6 +326,7 @@ def test_zzz_magnitude_probe(pipeline):
             f'ci_sum={ci_sum!r} local_sum={local_sum!r} '
             f'abs_diff_sum={abs(ci_sum - local_sum):.3e}'
             )
+    assert False, "diagnostic complete - see captured stdout above"
 
 
 @pytest.mark.xfail(
