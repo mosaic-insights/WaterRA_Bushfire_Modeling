@@ -302,22 +302,6 @@ def test_prep_raster_hashes_absorbs_tiny_float_noise(tmp_path):
     assert real_change != baseline
 
 
-@pytest.mark.xfail(
-    reason="Slope.tif/LS_factor.tif/SDR/IC/RUSLE_sum_total drift from "
-           "GOLDEN_PREP_HASHES independently of any equation change - "
-           "confirmed not numpy (identical across 2.1.0-2.5.3 on the real "
-           "DEM array) and not PYTHONHASHSEED. Rounding to 6 decimals "
-           "before hashing did not survive a CI round-trip either, so the "
-           "drift is larger than float noise. Most likely cause: rasterio "
-           "and geopandas are unpinned in requirements.txt, and DEM.tif's "
-           "own hash (a pure file read, no computation) also changed "
-           "between two CI runs 18 hours apart with no code change, which "
-           "only an unpinned dependency resolving differently explains. "
-           "Revisit once rasterio/geopandas are pinned (see the pending "
-           "edit to requirements.txt) or this switches to a real "
-           "tolerance check against stored reference arrays.",
-    strict=False,
-    )
 def test_zzz_magnitude_probe(pipeline):
     """TEMPORARY - measures how far CI's actual values are from a local
     Windows reference, for the layers test_default_outputs_are_unchanged
@@ -344,6 +328,22 @@ def test_zzz_magnitude_probe(pipeline):
             )
 
 
+@pytest.mark.xfail(
+    reason="Slope.tif/LS_factor.tif/SDR/IC/RUSLE_sum_total drift from "
+           "GOLDEN_PREP_HASHES independently of any equation change - "
+           "confirmed not numpy (identical across 2.1.0-2.5.3 on the real "
+           "DEM array) and not PYTHONHASHSEED. Rounding to 6 decimals "
+           "before hashing did not survive a CI round-trip either, so the "
+           "drift is larger than float noise. Most likely cause: rasterio "
+           "and geopandas are unpinned in requirements.txt, and DEM.tif's "
+           "own hash (a pure file read, no computation) also changed "
+           "between two CI runs 18 hours apart with no code change, which "
+           "only an unpinned dependency resolving differently explains. "
+           "Revisit once rasterio/geopandas are pinned (see the pending "
+           "edit to requirements.txt) or this switches to a real "
+           "tolerance check against stored reference arrays.",
+    strict=False,
+    )
 def test_default_outputs_are_unchanged(pipeline):
     """Phase 2 replaced twelve hard-coded literals with resolved parameters.
     At default values the outputs must be identical, and must stay that way:
