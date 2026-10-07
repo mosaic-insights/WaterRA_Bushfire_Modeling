@@ -316,6 +316,37 @@ def test_prep_raster_hashes_absorbs_tiny_float_noise(tmp_path):
     assert real_change != baseline
 
 
+def test_zzz_max_diff_probe_all_layers(pipeline):
+    """TEMPORARY - measures the real per-cell max diff for every layer
+    still differing after 4-decimal rounding, against committed local
+    reference arrays. Will be removed."""
+    import os
+    prep = pipeline['prep']
+    here = os.path.dirname(__file__)
+    layers = {
+        'slope': 'Topography/Slope.tif',
+        'ls': 'Erodibility/LS_factor.tif',
+        'ic_baseline': 'Delivery/IC_baseline.tif',
+        'ic_t0': 'Events/2019_fire/Delivery/IC_t0.tif',
+        'ic_t0_05': 'Events/2019_fire/Delivery/IC_t0_05.tif',
+        'rusle': 'Runs/2019_fire/historical/Results/RUSLE_sum_total.tif',
+        }
+    for tag, rel in layers.items():
+        local = np.load(os.path.join(here, f'_ref_{tag}.npy'))
+        path = prep.catchment_path(*rel.split('/'))
+        with rasterio.open(path) as src:
+            ci = src.read(1)
+        diff = np.abs(ci.astype('float64') - local.astype('float64'))
+        finite = np.isfinite(diff)
+        n_differ = int((diff[finite] > 0).sum())
+        max_diff = float(diff[finite].max()) if finite.any() else 0.0
+        print(
+            f'{tag}: n_differing_cells={n_differ}/{int(finite.sum())} '
+            f'max_abs_diff={max_diff!r} local_max_magnitude={np.nanmax(np.abs(local))!r}'
+            )
+    assert False, "diagnostic complete - see captured stdout above"
+
+
 def test_default_outputs_are_unchanged(pipeline):
     """Phase 2 replaced twelve hard-coded literals with resolved parameters.
     At default values the outputs must be identical, and must stay that way:
