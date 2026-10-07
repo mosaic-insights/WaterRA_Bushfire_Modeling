@@ -352,3 +352,26 @@ def test_an_unsupported_source_timestep_is_refused_at_load(tmp_path, value):
     assert 'source.timestep' in message
     assert repr(value) in message
     assert "'D'" in message and "'h'" in message
+
+
+def test_source_connects_to_an_open_source_unless_a_project_is_named(
+        tmp_path):
+    study = load_study(str(write_study(tmp_path)))
+    assert study.source.project_file is None
+    assert study.source.plugins == []
+    assert study.source.detached is False
+
+
+def test_source_paths_resolve_against_the_file_including_each_plugin(
+        tmp_path):
+    """The plugin list is the first list of paths in the schema; each entry
+    has to resolve against study.toml as a single path setting does, or a
+    relative plugin path would mean something different per notebook."""
+    study = load_study(str(write_study(tmp_path, MINIMAL + (
+        "\n[source]\n"
+        "project_file = 'models/Cat.rsproj'\n"
+        "plugins = ['plugins/A.dll', 'plugins/B.dll']\n"))))
+    assert study.source.project_file == str(tmp_path / 'models' / 'Cat.rsproj')
+    assert study.source.plugins == [
+        str(tmp_path / 'plugins' / 'A.dll'),
+        str(tmp_path / 'plugins' / 'B.dll')]

@@ -5,6 +5,7 @@ eWater Source model configuration module for fire impacts modeling.
 from .veneer_config import (
     connect_to_veneer,
     check_load_distributor_plugin,
+    check_plugins_loaded,
     configure_load_distributor_model,
     detect_constituent,
     detect_functional_unit,
@@ -18,6 +19,12 @@ from .veneer_config import (
     LIKELY_CONSTITUENTS,
     LIKELY_FUNCTIONAL_UNITS,
     LOAD_DISTRIBUTOR_DLL,
+)
+
+from .launch import (
+    SourceSession,
+    open_source,
+    veneer_command_line,
 )
 
 from .utils import (
@@ -38,6 +45,7 @@ __all__ = [
     # Main configuration functions
     'connect_to_veneer',
     'check_load_distributor_plugin',
+    'check_plugins_loaded',
     'configure_load_distributor_model',
     'detect_constituent',
     'detect_functional_unit',
@@ -48,6 +56,11 @@ __all__ = [
     'run_model_simulation',
     'save_model',
     'configure_source_model_with_fire_data',
+
+    # Opening the Source model a study names
+    'SourceSession',
+    'open_source',
+    'veneer_command_line',
     
     # Utility functions
     'validate_csv_files',

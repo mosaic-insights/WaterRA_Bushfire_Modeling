@@ -194,14 +194,56 @@ SOURCE_TIMESTEPS = {
 
 @dataclass(frozen=True)
 class SourceIntegrationSettings:
-    """Connecting to a running eWater Source instance via Veneer."""
+    """Connecting to eWater Source via Veneer.
+
+    Either to a Source you already have open with Veneer running, or -
+    when project_file is set - to a Veneer command line the notebook
+    starts for you, loading that project without the Source interface.
+    """
 
     port: int = field(default=9876, metadata={
         'example': '9876',
-        'help': 'Veneer port for the running Source instance. 9876 is the '
-                'conventional one; note that connect_to_veneer() in the '
-                'library defaults to 9877, which the notebooks never use '
-                'because they always pass this setting.'})
+        'help': 'Veneer port: the one the Source you have open is serving '
+                'on, or the one to start the command line on (it moves to '
+                'the next free port if that one is taken).'})
+    project_file: str | None = field(default=None, metadata={
+        'path': True, 'example': "'models/MyModel.rsproj'",
+        'help': 'Source project to open in a Veneer command line. The '
+                'notebook saves its changes to new project files, never '
+                'this one. Leave it out to use the Source you already have '
+                'open instead. Setting it needs either '
+                'veneer_command_line, or source_dir and veneer_dir.'})
+    veneer_command_line: str | None = field(default=None, metadata={
+        'path': True,
+        'example': "'C:/veneer_cmd/FlowMatters.Source.VeneerCmd.exe'",
+        'help': 'a Veneer command line already built for your Source '
+                "version, e.g. by veneer-py's create_command_line."})
+    source_dir: str | None = field(default=None, metadata={
+        'path': True,
+        'example': "'C:/Program Files/eWater/Source 5.42.0.12345'",
+        'help': 'instead of veneer_command_line: the Source install '
+                'directory, holding RiverSystem.Forms.exe. A command line is '
+                'built from it and veneer_dir, once, and reused.'})
+    veneer_dir: str | None = field(default=None, metadata={
+        'path': True, 'example': "'C:/Veneer/Source 5.42'",
+        'help': 'with source_dir: the Veneer release built for that same '
+                'Source version.'})
+    command_line_dir: str | None = field(default=None, metadata={
+        'path': True, 'example': "'C:/veneer_cmd/Source 5.42'",
+        'help': 'with source_dir: where to build the command line - a full '
+                'copy of Source, hundreds of MB. default: under '
+                '%LOCALAPPDATA%/fire_impacts/veneer_cmd, named after '
+                'source_dir.'})
+    plugins: list[str] = field(default_factory=list, metadata={
+        'path': True,
+        'example': "['C:/Plugins/FlowMatters.Source.LoadDistributor.dll']",
+        'help': 'plugin DLLs your project needs that are not registered in '
+                "Source's Plugin Manager, loaded into the command line. "
+                'Typically the Load Distributor.'})
+    detached: bool = field(default=False, metadata={
+        'example': 'false',
+        'help': 'start the command line in its own console window. Set '
+                'true if it hangs when started from a VS Code notebook.'})
     constituent: str | None = field(default=None, metadata={
         'example': "'TSS'",
         'help': 'default: auto-detected'})
@@ -223,7 +265,8 @@ class SourceIntegrationSettings:
         'help': 'how your Source install writes run-period dates'})
     output_dir: str = field(default='source_inputs', metadata={
         'example': "'source_inputs'",
-        'help': 'where the generated CSVs are written, inside the project'})
+        'help': 'where the generated CSVs and modified Source projects are '
+                'written, inside the run directory'})
     load_attenuation: float = field(default=10.0, metadata={
         'example': '10.0',
         'help': 'Load Distributor attenuation'})
@@ -531,9 +574,13 @@ def _resolve_paths(settings, root):
             if not entry.metadata.get('path'):
                 continue
             raw = getattr(value, entry.name)
-            if raw in (None, ''):
+            if raw in (None, '', []):
                 continue
-            changes[entry.name] = os.path.abspath(os.path.join(root, raw))
+            if isinstance(raw, list):
+                changes[entry.name] = [
+                    os.path.abspath(os.path.join(root, item)) for item in raw]
+            else:
+                changes[entry.name] = os.path.abspath(os.path.join(root, raw))
         groups[group.name] = replace(value, **changes) if changes else value
 
     return replace(settings, **groups)

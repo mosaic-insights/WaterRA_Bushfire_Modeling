@@ -41,10 +41,23 @@
 #    `Catchments/<catchment>/Runs/<event>/<ensemble>/` and the driving
 #    rainfall under `Catchments/<catchment>/Ensembles/<ensemble>/`; the
 #    RunContext built below resolves both.
-# 2. Your Source project is open in Source with the
+# 2. A Source model the notebook can reach through Veneer, with the
 #    [**Load Distributor**](https://github.com/flowmatters/source-loaddistributor)
-#    plugin loaded, and Veneer is running on `source.port` — 9876 unless
-#    you change it in `study.toml`.
+#    plugin. Either:
+#    * **Source already open** — your project loaded in Source, and Veneer
+#      running on `source.port` (9876 unless you change it in
+#      `study.toml`) with **Allow Scripts** ticked. Leave
+#      `source.project_file` out of `study.toml`.
+#    * **Started by the notebook** — set `source.project_file` to your
+#      project, and the notebook opens it in a Veneer command line
+#      (Source without its interface). Tell it which command line with
+#      `source.veneer_command_line`, or give `source.source_dir` and
+#      `source.veneer_dir` and it builds one, once. List any plugin the
+#      project needs that is not registered in Source's Plugin Manager
+#      in `source.plugins`.
+#
+#    Either way the notebook saves its changes to new project files, and
+#    never writes to the one you started from.
 # 3. The Source project has a **constituent** you want to use for the
 #    fire-derived sediment load — typically `TSS`.  If one is not
 #    already defined, create it in Source before running this notebook.
@@ -77,8 +90,9 @@ from fire_impacts.sim import (
     load_ensemble_rainfall,
 )
 from fire_impacts.source import (
-    connect_to_veneer,
+    open_source,
     check_load_distributor_plugin,
+    check_plugins_loaded,
     detect_constituent,
     detect_functional_unit,
     configure_load_distributor_model,
@@ -94,8 +108,8 @@ from fire_impacts.source import (
 #
 # From `study.toml`, the same file the other notebooks read. The
 # `[source]` section is the one that matters here: it says which Source
-# instance to talk to, which replicate to push, and what the two data
-# sources this notebook creates are called.
+# to talk to — or which project to start one on — which replicate to
+# push, and what the two data sources this notebook creates are called.
 #
 # `constituent` and `functional_unit` are optional — left unset, the
 # notebook auto-detects them from the running Source model and shows you
@@ -116,7 +130,6 @@ EVENT       = study.event.name
 ENSEMBLE    = study.ensemble.name
 SUBCATCHMENT_ID_FIELD = study.catchment.subcatchment_id_field
 
-PORT        = study.source.port
 SOURCE_REPLICATE = study.source.replicate
 TIMESTEP    = study.source.timestep
 DATE_FORMAT = study.source.date_format
@@ -165,6 +178,15 @@ ctx = RunContext.solo_run(
     proj, event=EVENT, ensemble=ENSEMBLE,
     catchment=CATCHMENT,
 )
+
+# %%
+# Everything this notebook writes — the CSVs Source re-reads, and the
+# modified Source projects — goes in this run's own folder. The loads
+# belong to one fire event, so they cannot live with the ensemble's
+# rainfall, which other events share.
+SOURCE_OUTPUT = Path(ctx.run_path(OUTPUT_DIR))
+SOURCE_OUTPUT.mkdir(parents=True, exist_ok=True)
+SOURCE_OUTPUT
 
 # %% [markdown]
 # ## Load ensemble outputs
@@ -267,21 +289,38 @@ rainfall_totals.head()
 # %% [markdown]
 # ## Connect to Source (Veneer)
 #
-# Source must already be open with your project loaded and Veneer running
-# on `source.port` — 9876 unless you changed it in `study.toml`.
+# With `source.project_file` left out, this connects to the Source you
+# already have open, on `source.port`. With it set, it starts a Veneer
+# command line on that project instead — building the command line first
+# if `study.toml` gives `source.source_dir` and `source.veneer_dir`
+# rather than `source.veneer_command_line`. A first build copies all of
+# Source, so expect that to take a few minutes; later runs reuse it.
+#
+# A command line started here keeps running until the last cell of the
+# notebook closes it, or until the kernel stops.
+#
+# > Started from a VS Code notebook, the command line can hang on its
+# > first request. If it does, set `source.detached = true` to start it
+# > in its own console window.
 
 # %%
-v = connect_to_veneer(port=PORT)
+session = open_source(study.source)
+v = session.v
 v.scenario_info()
 
 # %% [markdown]
 # Confirm the [Load Distributor](https://github.com/flowmatters/source-loaddistributor)
-# plugin is loaded.  Raises if the running Source instance reports a plugin
-# list without it; warns (but does not fail) on older Veneer releases that
-# don't expose a `Plugins` field in `scenario_info()`.
+# plugin is loaded, along with anything listed in `source.plugins`.
+# Raises if the running Source instance reports a plugin list without
+# one of them; warns (but does not fail) on older Veneer releases that
+# don't report `PluginsLoaded`.
+#
+# Missing from a command line? Add the plugin's DLL to `source.plugins`,
+# or register it in Source's Plugin Manager.
 
 # %%
 check_load_distributor_plugin(v)
+check_plugins_loaded(v, study.source.plugins)
 
 # %% [markdown]
 # ## Pick the constituent and functional unit
@@ -371,8 +410,16 @@ end = tss_single.index[-1].strftime(DATE_FORMAT)
 sim_results = run_model_simulation(v, start_date=start, end_date=end)
 sim_results['Status']
 
+# %% [markdown]
+# Save the wired-up model as a new project, alongside this run's other
+# outputs. The project you started from is left as it was.
+
 # %%
-save_model(v, f'{CATCHMENT}_with_fire_inputs_rep{SOURCE_REPLICATE:02d}.rsproj')
+single_project = (
+    SOURCE_OUTPUT
+    / f'{CATCHMENT}_with_fire_inputs_rep{SOURCE_REPLICATE:02d}.rsproj')
+save_model(v, str(single_project))
+single_project
 
 # %% [markdown]
 # # Part A — full ensemble via ReloadOnRun CSVs
@@ -387,14 +434,11 @@ save_model(v, f'{CATCHMENT}_with_fire_inputs_rep{SOURCE_REPLICATE:02d}.rsproj')
 # scenario inputs.
 
 # %%
-source_inputs_dir = Path(ctx.ensemble_path()) / OUTPUT_DIR
-source_inputs_dir.mkdir(parents=True, exist_ok=True)
-
 # Source names a file-backed data source after the CSV's filename stem,
 # so the files are named after the two data sources — that is what makes
 # the names Source registers agree with the ones assigned below.
-tss_csv = source_inputs_dir / f'{TSS_SOURCE}.csv'
-rain_csv = source_inputs_dir / f'{RAINFALL_SOURCE}.csv'
+tss_csv = SOURCE_OUTPUT / f'{TSS_SOURCE}.csv'
+rain_csv = SOURCE_OUTPUT / f'{RAINFALL_SOURCE}.csv'
 
 # %% [markdown]
 # Seed the two CSVs with one replicate's data so the data sources can be
@@ -486,10 +530,27 @@ for rep in replicate_ids:
 #
 # Save the project with the Load Distributor wiring and ReloadOnRun
 # data sources in place, so it can be re-opened and re-run without
-# having to repeat the configuration steps.
+# having to repeat the configuration steps. Like the single-replicate
+# project above, it is a new file in this run's folder.
+#
+# The data sources point at the two CSVs by absolute path, so the saved
+# project finds them as long as this run's folder stays where it is. They
+# hold the last replicate run.
 
 # %%
-save_model(v, f'{CATCHMENT}_with_fire_inputs_ensemble.rsproj')
+ensemble_project = (
+    SOURCE_OUTPUT / f'{CATCHMENT}_with_fire_inputs_ensemble.rsproj')
+save_model(v, str(ensemble_project))
+ensemble_project
+
+# %% [markdown]
+# ## Close the connection
+#
+# Stops the Veneer command line if this notebook started one. A Source you
+# had open yourself is left running.
+
+# %%
+session.close()
 
 # %% [markdown]
 # ## Next steps

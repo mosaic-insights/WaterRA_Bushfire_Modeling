@@ -25,7 +25,7 @@ LIKELY_FUNCTIONAL_UNITS = [
     'Bushland', 'Burned', 'Native Vegetation',
 ]
 
-# Filename of the Load Distributor plugin, as reported by scenario_info().
+# Filename of the Load Distributor plugin, as listed in 'PluginsLoaded'.
 LOAD_DISTRIBUTOR_DLL = 'FlowMatters.Source.LoadDistributor.dll'
 
 
@@ -59,6 +59,57 @@ def connect_to_veneer(port: int = 9877) -> veneer.Veneer:
         raise
 
 
+def _plugin_filename(path) -> str:
+    """Return a plugin path's filename, whichever separator it uses."""
+    return str(path).replace('\\', '/').rsplit('/', 1)[-1]
+
+
+def check_plugins_loaded(v: veneer.Veneer, plugins) -> None:
+    """
+    Verify that each of a list of plugins is loaded in Source.
+
+    Parameters:
+    - v: Veneer connection object.
+    - plugins: Plugin DLLs, as filenames or full paths.
+
+    Returns:
+    - None. Raises if any plugin is known to be absent.
+    ------------------------------------------------------------------------
+    Notes:
+    - Matches on filename only, so the plugin's install directory does not
+      matter.
+    - Reads 'PluginsLoaded' from Veneer's root endpoint (v.status()).
+    - Older Veneer releases omit 'PluginsLoaded'. That case is logged as a
+      warning and allowed through, rather than failing a run that would
+      otherwise work.
+    ------------------------------------------------------------------------
+    """
+    wanted = [_plugin_filename(p) for p in plugins]
+    if not wanted:
+        return
+
+    status = v.status()
+    loaded = status.get('PluginsLoaded') if isinstance(status, dict) else None
+
+    if loaded is None:
+        logger.warning(
+            "Veneer did not report 'PluginsLoaded'; cannot verify that %s "
+            "are loaded. This is expected on older Veneer releases.",
+            ', '.join(wanted),
+        )
+        return
+
+    loaded_names = {_plugin_filename(entry).lower() for entry in loaded}
+    missing = [name for name in wanted if name.lower() not in loaded_names]
+    if missing:
+        raise RuntimeError(
+            f"Plugin(s) not loaded in the connected Source instance: "
+            f"{', '.join(missing)}. "
+            f"Plugins reported: {loaded}"
+        )
+    logger.info("Plugins found: %s", ', '.join(wanted))
+
+
 def check_load_distributor_plugin(v: veneer.Veneer) -> None:
     """
     Verify that the Load Distributor plugin is loaded in Source.
@@ -70,36 +121,10 @@ def check_load_distributor_plugin(v: veneer.Veneer) -> None:
     - None. Raises if the plugin is known to be absent.
     ------------------------------------------------------------------------
     Notes:
-    - Matches on filename only, so the plugin's install directory does not
-      matter.
-    - Older Veneer releases omit 'Plugins' from scenario_info(). That case
-      is logged as a warning and allowed through, rather than failing a run
-      that would otherwise work.
+    - See check_plugins_loaded, which this delegates to.
     ------------------------------------------------------------------------
     """
-    info = v.scenario_info()
-    plugins = info.get('Plugins') if isinstance(info, dict) else None
-
-    if plugins is None:
-        logger.warning(
-            "scenario_info() did not include a 'Plugins' field; cannot verify "
-            "that the Load Distributor plugin (%s) is loaded. This is expected "
-            "on older Veneer releases.",
-            LOAD_DISTRIBUTOR_DLL,
-        )
-        return
-
-    target = LOAD_DISTRIBUTOR_DLL.lower()
-    for entry in plugins:
-        basename = str(entry).replace('\\', '/').rsplit('/', 1)[-1]
-        if basename.lower() == target:
-            logger.info("Load Distributor plugin found: %s", entry)
-            return
-
-    raise RuntimeError(
-        f"Load Distributor plugin '{LOAD_DISTRIBUTOR_DLL}' is not loaded in "
-        f"the connected Source instance. Plugins reported: {plugins}"
-    )
+    check_plugins_loaded(v, [LOAD_DISTRIBUTOR_DLL])
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +452,7 @@ def create_veneer_data_sources(
         rainfall_source_name, rainfall_data, units=f'mm/{timestep}'
     )
     logger.info("Data sources created successfully")
+
 
 
 # ---------------------------------------------------------------------------

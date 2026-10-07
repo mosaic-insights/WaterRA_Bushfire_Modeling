@@ -24,6 +24,7 @@ from fire_impacts.context import RunContext
 from fire_impacts.params import ParameterRecord, resolve_parameters
 from fire_impacts.pre.project import FireImpactsProject
 from fire_impacts.provenance import RunProvenance
+from fire_impacts.source.launch import SourceSession
 from fire_impacts.study import StudyConfigError, StudySettings
 
 TEMPLATE_DIR = pathlib.Path(__file__).resolve().parents[1] / 'templates'
@@ -46,6 +47,7 @@ RECEIVER_TYPES = {
     # templates do; `from fire_impacts import study` would bind the module
     # here and report every settings line as drift.
     'study': StudySettings,
+    'session': SourceSession,
 }
 
 
@@ -266,6 +268,9 @@ def probes(tmp_path_factory):
             run={}, parameters=resolve_parameters([]), inputs={},
             section='Results'),
         StudySettings: StudySettings(),
+        # No Veneer behind it: `session.v` resolves to None and the walk
+        # stops there, which is all a template's use of it needs.
+        SourceSession: SourceSession(v=None, port=9876),
     })
     return _PROBES
 
