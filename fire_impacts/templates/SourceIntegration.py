@@ -483,10 +483,12 @@ rain_csv = SOURCE_OUTPUT / f'{RAINFALL_SOURCE}.csv'
 # (kg/day)` and `rainfall (mm/day)` by default, following
 # `source.timestep`. Source reads them on every reload and drops them from
 # the column names, so the columns are still the bare subcatchment names
-# and `rainfall`. Units cannot instead be applied to the data sources once
-# they exist: a data source reloaded before each run that has been given
-# units that way fails every run on Source 6, with *Loaded units are not
-# commensurate with the previously defined units*.
+# and `rainfall`. That holds whatever the subcatchments are called. Units
+# applied to the data sources once they exist would not: Source re-reads
+# units from the headers on every reload, so a subcatchment whose name
+# Source reads as a unit — `A`, for amperes — would clash with them, and
+# every run would fail with *Loaded units are not commensurate with the
+# previously defined units*.
 
 # %%
 def write_csvs_for(rep: int):

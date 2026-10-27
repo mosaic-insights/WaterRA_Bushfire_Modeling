@@ -327,8 +327,9 @@ def test_every_source_run_uses_the_input_set_study_toml_names():
 
 def test_part_a_puts_units_in_the_csv_headers_not_on_the_data_source():
     """Units given to a reload-on-run data source after it is created
-    break every run on Source 6.x. Part A's CSVs carry them in their
-    headers instead, so its data sources are created without them."""
+    break every run if a column's bare name parses as a unit, since Source
+    re-reads units from the headers on reload. Part A's CSVs carry them in
+    their headers instead, so its data sources are created without them."""
     tree = ast.parse((TEMPLATE_DIR / 'SourceIntegration.py').read_text())
     calls = {}
     for node in ast.walk(tree):
