@@ -46,6 +46,14 @@ class FakeManage:
         self.started = []
         self.killed = []
         self.bound_port = 9877
+        # Whether a Source the user has open is answering, and on which
+        # ports it was asked.
+        self.answering = True
+        self.probed = []
+
+    def is_listening(self, port, **kwargs):
+        self.probed.append(port)
+        return self.answering
 
     def create_command_line(self, veneer_path, source_version=None,
                             source_path=None, dest=None, force=True,
@@ -75,6 +83,7 @@ def manage(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, 'start', fake.start)
     monkeypatch.setattr(launch, 'kill_all_now', fake.kill_all_now)
     monkeypatch.setattr(launch, 'Veneer', FakeVeneer)
+    monkeypatch.setattr(launch, 'is_listening', fake.is_listening)
     return fake
 
 
@@ -118,6 +127,46 @@ def test_without_a_project_file_it_connects_to_the_open_source(manage):
     assert not session.launched
     assert session.v.port == 9880
     assert manage.started == []
+
+
+def test_the_open_source_is_checked_for_on_the_configured_port(manage):
+    launch.open_source(settings(port=9880))
+    assert manage.probed == [9880]
+
+
+def test_nothing_answering_on_the_port_says_what_to_check(manage):
+    """Otherwise the first sign is a connection error from deep in
+    veneer-py, several cells later, that says nothing about study.toml."""
+    manage.answering = False
+    with pytest.raises(StudyConfigError) as exc:
+        launch.open_source(settings(port=9880))
+    message = str(exc.value)
+
+    assert 'port 9880' in message
+    assert 'open the project in Source' in message
+    assert 'Allow Scripts' in message
+    assert 'source.port' in message
+    assert 'set source.project_file' in message
+
+
+def test_a_started_command_line_is_not_probed_for_beforehand(
+        manage, project, prebuilt):
+    """Nothing is listening until it starts; start() finds its own port."""
+    manage.answering = False
+    launch.open_source(settings(
+        project_file=project, veneer_command_line=prebuilt))
+    assert manage.probed == []
+
+
+def test_the_probe_finds_a_listening_port_and_not_a_closed_one():
+    """The real probe, against a socket on this machine."""
+    import socket
+    with socket.socket() as server:
+        server.bind(('127.0.0.1', 0))
+        server.listen()
+        port = server.getsockname()[1]
+        assert launch.is_listening(port)
+    assert not launch.is_listening(port)
 
 
 def test_closing_a_connection_to_an_open_source_leaves_it_running(manage):

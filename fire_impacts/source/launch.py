@@ -27,6 +27,7 @@ installed at all.
 import json
 import logging
 import os
+import socket
 
 from veneer import Veneer
 from veneer.manage import create_command_line, kill_all_now, start
@@ -45,6 +46,11 @@ VENEER_EXE_NAME = 'FlowMatters.Source.VeneerCmd.exe'
 # from. create_command_line's own reuse check is only "the exe exists",
 # which cannot tell that study.toml now names a different Veneer release.
 BUILD_STAMP = 'fire_impacts_command_line.json'
+
+# How long to wait for a Source the user has open to accept a connection.
+# Refused is the usual answer when nothing is there, and comes back at
+# once; this only bounds the wait when something swallows the attempt.
+PROBE_TIMEOUT_S = 2.0
 
 # The settings that only mean something when a command line is started.
 _COMMAND_LINE_SETTINGS = (
@@ -151,6 +157,33 @@ def _require_file(path, setting):
 def _require_dir(path, setting):
     if not os.path.isdir(path):
         raise StudyConfigError(f'source.{setting}: no such directory {path}')
+
+
+###############################################################################
+def is_listening(port, host='localhost', timeout=PROBE_TIMEOUT_S):
+    """
+    Return whether anything accepts a connection on a port.
+
+    Parameters:
+    - port: Port to try.
+    - host: Host to try it on - Veneer's default, unless told otherwise.
+    - timeout: Seconds to wait for the connection.
+
+    Returns:
+    - True if a connection was accepted.
+    --------------------------------------------------------------------
+    Notes:
+    - Only a TCP connection, closed straight away: cheap, and enough to
+      tell "Source is not open, or Veneer is not started" from a Source
+      that is there. Whether what answers is really Veneer is left to the
+      first request, which says so if not.
+    --------------------------------------------------------------------
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 ###############################################################################
@@ -281,6 +314,9 @@ def open_source(settings, *, debug=False):
       with-block.
     --------------------------------------------------------------------
     Notes:
+    - Without ``project_file``, the port is checked before returning, so
+      a Source that is not open says so here rather than as a connection
+      error at the first request.
     - A started command line loads ``project_file`` but never writes to
       it; changes reach disk only through v.model.save() to a filename
       the caller chooses.
@@ -304,6 +340,17 @@ def open_source(settings, *, debug=False):
                 f'  - to have the notebook start Source without its '
                 f'interface: set source.project_file to the project to '
                 f'open.')
+        if not is_listening(settings.port):
+            raise StudyConfigError(
+                f'No Source/Veneer is answering on port {settings.port}, '
+                f'and source.project_file is not set, so the notebook '
+                f'expects a Source you have open. To fix it, either:\n'
+                f'  - open the project in Source, and start Veneer with '
+                f'Allow Scripts ticked;\n'
+                f'  - check that the port Veneer shows matches source.port '
+                f'in study.toml; or\n'
+                f'  - set source.project_file to have the notebook start '
+                f'Source for you, without its interface.')
         v = Veneer(settings.port)
         logger.info('Connecting to the Source already open on port %s',
                     settings.port)
