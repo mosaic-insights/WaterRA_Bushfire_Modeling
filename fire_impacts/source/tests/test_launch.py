@@ -144,6 +144,45 @@ def test_plugins_without_a_project_file_are_refused(manage, tmp_path):
         launch.open_source(settings(plugins=[touch(tmp_path / 'A.dll')]))
 
 
+def test_the_refusal_says_how_to_get_either_way_of_connecting(
+        manage, tmp_path):
+    """Someone with Source open in its interface, holding a study.toml
+    that names a command line, needs to be told both ways out: comment the
+    command-line settings out to use the open Source, or set project_file
+    to have the notebook start one."""
+    with pytest.raises(StudyConfigError) as exc:
+        launch.open_source(settings(
+            port=9880, veneer_command_line=str(tmp_path),
+            source_dir=str(tmp_path)))
+    message = str(exc.value)
+
+    assert 'source.veneer_command_line' in message
+    assert 'source.source_dir' in message
+    assert 'comment' in message and '9880' in message
+    assert 'set source.project_file' in message
+
+
+def test_a_connection_to_an_open_source_says_so_and_how_to_start_one(
+        manage):
+    text = launch.open_source(settings(port=9880)).describe()
+
+    assert 'already have open' in text
+    assert '9880' in text
+    assert 'source.project_file' in text
+
+
+def test_a_started_command_line_says_so_and_how_to_use_an_open_source(
+        manage, project, prebuilt):
+    session = launch.open_source(settings(
+        project_file=project, veneer_command_line=prebuilt))
+    text = session.describe()
+
+    assert 'command line' in text
+    assert project in text
+    assert str(manage.bound_port) in text
+    assert 'comment' in text
+
+
 # ---------------------------------------------------------------------------
 # Choosing a command line
 # ---------------------------------------------------------------------------

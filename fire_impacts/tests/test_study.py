@@ -362,6 +362,15 @@ def test_source_connects_to_an_open_source_unless_a_project_is_named(
     assert study.source.detached is False
 
 
+def test_source_input_set_is_left_alone_unless_named(tmp_path):
+    study = load_study(str(write_study(tmp_path)))
+    assert study.source.input_set is None
+
+    named = load_study(str(write_study(tmp_path, MINIMAL + (
+        "\n[source]\ninput_set = 'Default Input Set'\n"))))
+    assert named.source.input_set == 'Default Input Set'
+
+
 def test_source_paths_resolve_against_the_file_including_each_plugin(
         tmp_path):
     """The plugin list is the first list of paths in the schema; each entry

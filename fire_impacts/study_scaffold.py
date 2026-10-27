@@ -189,6 +189,30 @@ def _group_comment(group_type):
 
 
 ###############################################################################
+def _heading_comment(title, text):
+    """
+    Return a ruled heading that sets a block of settings apart.
+
+    Parameters:
+    - title: A few words naming the block.
+    - text: What the block is for, and when to leave it alone.
+
+    Returns:
+    - List of comment lines: the rule with the title in it, then the text.
+    --------------------------------------------------------------------
+    Notes:
+    - For a section whose settings are alternatives, such as [source]'s
+      command-line ones. Help on each setting cannot say "leave all of
+      these out" for the block as a whole, and a user who sees only one
+      of them live has no way to tell where the others end.
+    --------------------------------------------------------------------
+    """
+    rule = f'# --- {title} '
+    rule += '-' * max(3, _COMMENT_WIDTH + 2 - len(rule))
+    return [rule, *_wrapped_comment(text)]
+
+
+###############################################################################
 def scaffold_text(seed=None):
     """
     Generate a commented study.toml from the schema.
@@ -236,6 +260,9 @@ def scaffold_text(seed=None):
             dotted = f'{group.name}.{entry.name}'
             meta = entry.metadata
             is_path = bool(meta.get('path'))
+
+            if meta.get('heading'):
+                out.extend(['', *_heading_comment(*meta['heading']), ''])
 
             out.extend(_wrapped_comment(meta.get('help', '')))
 

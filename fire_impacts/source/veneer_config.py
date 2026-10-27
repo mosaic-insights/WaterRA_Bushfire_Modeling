@@ -634,7 +634,7 @@ def run_model_simulation(
     v: veneer.Veneer,
     start_date: str = '01/01/1900',
     end_date: str = '31/12/1901',
-    input_set: str = 'Default',
+    input_set: Optional[str] = None,
 ) -> Dict:
     """
     Run a Source simulation and return the run-result dictionary.
@@ -643,7 +643,9 @@ def run_model_simulation(
     - v: Active Veneer connection object.
     - start_date: Simulation start date in DD/MM/YYYY format.
     - end_date: Simulation end date in DD/MM/YYYY format.
-    - input_set: Name of the Source input set to activate before running.
+    - input_set: Name of the Source input set to select before running -
+      'Default Input Set' is Source's standard one. None, the default,
+      selects nothing and runs with whichever is already selected.
 
     Returns:
     - Dict returned by Veneer's retrieve_run(), including at minimum
@@ -653,8 +655,9 @@ def run_model_simulation(
         f"Running simulation from {start_date} to {end_date}"
     )
 
-    # Select the requested input set then trigger the run
-    v.model.simulation.select_input_set(input_set)
+    if input_set is not None:
+        logger.info(f"Selecting input set '{input_set}'")
+        v.model.simulation.select_input_set(input_set)
     v.run_model(start=start_date, end=end_date)
     results = v.retrieve_run()
 

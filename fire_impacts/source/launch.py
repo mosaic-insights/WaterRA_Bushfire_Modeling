@@ -80,6 +80,37 @@ class SourceSession:
         return bool(self._processes)
 
     ###########################################################################
+    def describe(self):
+        """
+        Return which way this session reached Source, and how to switch.
+
+        Returns:
+        - A few lines of text, for a notebook to print when it connects.
+        --------------------------------------------------------------------
+        Notes:
+        - The choice is made by study.toml rather than by anything in the
+          notebook, so it is easy to be on the other one without knowing.
+          Saying so at connect time, along with how to get the other way,
+          saves reading a connection error backwards.
+        --------------------------------------------------------------------
+        """
+        if self.project_file is not None:
+            return (
+                f'Started a Veneer command line (Source without its '
+                f'interface) on {self.project_file}, serving on port '
+                f'{self.port}. It stops when this session is closed.\n'
+                f'To use a Source you have open instead, comment out '
+                f'source.project_file and the other "Command line only" '
+                f'settings in study.toml.')
+        return (
+            f'Using the Source you already have open, with Veneer serving '
+            f'on port {self.port}.\n'
+            f'To have the notebook start Source for you instead, set '
+            f'source.project_file in study.toml, with '
+            f'source.veneer_command_line or source.source_dir and '
+            f'source.veneer_dir.')
+
+    ###########################################################################
     def close(self):
         """
         Stop the command line this session started, if any.
@@ -261,11 +292,18 @@ def open_source(settings, *, debug=False):
         stray = [name for name in _COMMAND_LINE_SETTINGS
                  if _is_set(getattr(settings, name))]
         if stray:
+            named = ', '.join('source.' + s for s in stray)
             raise StudyConfigError(
-                f'{", ".join("source." + s for s in stray)} only apply when '
-                f'the notebook starts a Veneer command line, which it does '
-                f'when source.project_file is set. Set source.project_file, '
-                f'or remove these to use the Source you have open.')
+                f'study.toml sets {named} but not source.project_file, so '
+                f'it is not clear how to reach Source: {named} only '
+                f'apply when the notebook starts Source for you, and '
+                f'source.project_file is what turns that on. Either:\n'
+                f'  - to use the Source you have open, with Veneer serving '
+                f'on port {settings.port}: comment out or delete {named}; '
+                f'or\n'
+                f'  - to have the notebook start Source without its '
+                f'interface: set source.project_file to the project to '
+                f'open.')
         v = Veneer(settings.port)
         logger.info('Connecting to the Source already open on port %s',
                     settings.port)

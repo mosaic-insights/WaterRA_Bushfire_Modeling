@@ -194,11 +194,18 @@ SOURCE_TIMESTEPS = {
 
 @dataclass(frozen=True)
 class SourceIntegrationSettings:
-    """Connecting to eWater Source via Veneer.
+    """Connecting to eWater Source via Veneer, in one of two ways.
 
-    Either to a Source you already have open with Veneer running, or -
-    when project_file is set - to a Veneer command line the notebook
-    starts for you, loading that project without the Source interface.
+    The Source you have open: load your project in Source, start Veneer
+    with Allow Scripts ticked, and leave every setting in the "Command
+    line only" block below commented out. A new study.toml starts out
+    this way.
+
+    Started for you: set project_file, and either veneer_command_line or
+    source_dir and veneer_dir. The notebook opens the project in a Veneer
+    command line - Source without its interface - and stops it at the end.
+
+    The SourceIntegration notebook prints which way it connected.
     """
 
     port: int = field(default=9876, metadata={
@@ -207,6 +214,11 @@ class SourceIntegrationSettings:
                 'on, or the one to start the command line on (it moves to '
                 'the next free port if that one is taken).'})
     project_file: str | None = field(default=None, metadata={
+        'heading': (
+            'Command line only',
+            'Setting project_file has the notebook start Source for you. '
+            'To use the Source you have open instead, leave every setting '
+            'from here down to detached commented out.'),
         'path': True, 'example': "'models/MyModel.rsproj'",
         'help': 'Source project to open in a Veneer command line. The '
                 'notebook saves its changes to new project files, never '
@@ -245,11 +257,19 @@ class SourceIntegrationSettings:
         'help': 'start the command line in its own console window. Set '
                 'true if it hangs when started from a VS Code notebook.'})
     constituent: str | None = field(default=None, metadata={
+        'heading': (
+            'Either way',
+            'These apply however the notebook connects to Source.'),
         'example': "'TSS'",
         'help': 'default: auto-detected'})
     functional_unit: str | None = field(default=None, metadata={
         'example': "'Forested'",
         'help': 'default: auto-detected'})
+    input_set: str | None = field(default=None, metadata={
+        'example': "'Default Input Set'",
+        'help': 'Source input set to select before each run. Leave it out '
+                'to run with whichever input set the project already has '
+                'selected.'})
     replicate: int = field(default=0, metadata={
         'example': '0',
         'help': 'which ensemble replicate to push into Source. Distinct '

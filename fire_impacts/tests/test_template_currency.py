@@ -310,6 +310,21 @@ def test_no_template_references_a_method_without_calling_it(template):
     )
 
 
+def test_every_source_run_uses_the_input_set_study_toml_names():
+    """Part B and the Part A loop each run Source. One left on the
+    function's default would ignore source.input_set without a word."""
+    tree = ast.parse((TEMPLATE_DIR / 'SourceIntegration.py').read_text())
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and getattr(node.func, 'id', None) == 'run_model_simulation']
+
+    assert len(calls) >= 2
+    for call in calls:
+        assert 'input_set' in {kw.arg for kw in call.keywords}, (
+            f'SourceIntegration.py:{call.lineno} runs Source without '
+            f'passing input_set')
+
+
 @pytest.mark.parametrize(
     'template', templates(), ids=lambda p: p.name)
 def test_every_template_parses(template):
