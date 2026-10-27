@@ -515,6 +515,21 @@ class TestEnsureConstituent:
         assert v.added == []
         assert "'TSS'" in caplog.text
 
+    def test_an_exact_match_wins_over_one_differing_in_case(self):
+        v = FakeConstituents(['tss', 'TSS', 'Tss'])
+        assert ensure_constituent(v, 'TSS') == 'TSS'
+        assert v.added == []
+
+    def test_several_matches_differing_only_in_case_are_refused(self):
+        """Neither is obviously the one meant, and creating a third would
+        only add to the confusion."""
+        v = FakeConstituents(['Salt', 'tss', 'Tss'])
+        with pytest.raises(ValueError) as raised:
+            ensure_constituent(v, 'TSS')
+        assert "'tss'" in str(raised.value) and "'Tss'" in str(raised.value)
+        assert 'source.constituent' in str(raised.value)
+        assert v.added == []
+
     def test_left_unnamed_a_likely_constituent_is_picked(self):
         v = FakeConstituents(['Salt', 'Fine Sediment'])
         assert ensure_constituent(v) == 'Fine Sediment'

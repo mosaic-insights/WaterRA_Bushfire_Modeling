@@ -270,8 +270,9 @@ def ensure_constituent(
     - The constituent name exactly as it appears in Source.
     ------------------------------------------------------------------------
     Notes:
-    - A named constituent matches one in the model regardless of case,
-      rather than creating a second that differs only in case.
+    - A named constituent matches one in the model exactly, or else
+      regardless of case, rather than creating a second that differs only
+      in case. Raises ValueError if several differ from it only in case.
     - Unlike detect_constituent, this never falls back to an unrelated
       constituent (Salt, say): configuring the Load Distributor replaces
       that constituent's generation models. It creates `default` instead,
@@ -294,6 +295,12 @@ def ensure_constituent(
                 f"'{same_but_case[0]}' in the Source model; using "
                 f"'{same_but_case[0]}'.")
             return same_but_case[0]
+        if same_but_case:
+            raise ValueError(
+                f"The Source model has no constituent '{constituent}', but "
+                f"has several differing from it only in case: "
+                f"{', '.join(repr(c) for c in same_but_case)}. Set "
+                f"source.constituent to the one to use, exactly as written.")
         return _add_constituent(v, constituent, available)
 
     if candidate_list is None:
