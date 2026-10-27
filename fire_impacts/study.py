@@ -246,7 +246,9 @@ class SourceIntegrationSettings:
                 'true if it hangs when started from a VS Code notebook.'})
     constituent: str | None = field(default=None, metadata={
         'example': "'TSS'",
-        'help': 'default: auto-detected'})
+        'help': 'created in Source if the model lacks it. Default: '
+                "auto-detected, or 'TSS' created if nothing in the model "
+                'looks like sediment'})
     functional_unit: str | None = field(default=None, metadata={
         'example': "'Forested'",
         'help': 'default: auto-detected'})

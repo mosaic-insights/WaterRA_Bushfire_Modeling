@@ -8,10 +8,12 @@ from .veneer_config import (
     check_plugins_loaded,
     configure_load_distributor_model,
     detect_constituent,
+    ensure_constituent,
     detect_functional_unit,
     load_fire_impact_data,
     create_veneer_data_sources,
     create_file_data_source,
+    restricted_data_source_name,
     assign_fire_sediment_timeseries,
     assign_rainfall_timeseries,
     run_model_simulation,
@@ -19,6 +21,7 @@ from .veneer_config import (
     save_model,
     configure_source_model_with_fire_data,
     LIKELY_CONSTITUENTS,
+    DEFAULT_CONSTITUENT,
     LIKELY_FUNCTIONAL_UNITS,
     LOAD_DISTRIBUTOR_DLL,
 )
@@ -41,6 +44,7 @@ from .utils import (
 __all__ = [
     # Configuration constants
     'LIKELY_CONSTITUENTS',
+    'DEFAULT_CONSTITUENT',
     'LIKELY_FUNCTIONAL_UNITS',
     'LOAD_DISTRIBUTOR_DLL',
 
@@ -50,10 +54,12 @@ __all__ = [
     'check_plugins_loaded',
     'configure_load_distributor_model',
     'detect_constituent',
+    'ensure_constituent',
     'detect_functional_unit',
     'load_fire_impact_data',
     'create_veneer_data_sources',
     'create_file_data_source',
+    'restricted_data_source_name',
     'assign_fire_sediment_timeseries',
     'assign_rainfall_timeseries',
     'run_model_simulation',

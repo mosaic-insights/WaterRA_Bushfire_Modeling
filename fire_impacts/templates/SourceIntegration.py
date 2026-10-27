@@ -58,11 +58,13 @@
 #
 #    Either way the notebook saves its changes to new project files, and
 #    never writes to the one you started from.
-# 3. The Source project has a **constituent** you want to use for the
-#    fire-derived sediment load — typically `TSS`.  If one is not
-#    already defined, create it in Source before running this notebook.
-#    The notebook auto-detects a likely candidate; name it in
-#    `source.constituent` if the guess is wrong.
+# 3. A **constituent** for the fire-derived sediment load — typically
+#    `TSS`. Name it in `source.constituent`, or leave that out and the
+#    notebook picks a likely one (`TSS`, `Sediment` and so on) from the
+#    model. Either way, if the model does not have it the notebook
+#    creates it — `TSS`, when left to pick and nothing in the model looks
+#    like sediment — and says so. Creating one needs **Allow Scripts**,
+#    which the Veneer command line has on.
 # 4. Subcatchment names in Source match the labels used in the ensemble
 #    output columns — the attribute named by
 #    `catchment.subcatchment_id_field` in `study.toml`. That setting is
@@ -93,7 +95,7 @@ from fire_impacts.source import (
     open_source,
     check_load_distributor_plugin,
     check_plugins_loaded,
-    detect_constituent,
+    ensure_constituent,
     detect_functional_unit,
     configure_load_distributor_model,
     create_veneer_data_sources,
@@ -115,7 +117,7 @@ from fire_impacts.source import (
 #
 # `constituent` and `functional_unit` are optional — left unset, the
 # notebook auto-detects them from the running Source model and shows you
-# what it picked.
+# what it picked. A constituent the model lacks is created.
 #
 # Running the cell prints each setting and where it came from, so you can
 # check the notebook is about to do what you expect.
@@ -328,14 +330,21 @@ check_plugins_loaded(v, study.source.plugins)
 # %% [markdown]
 # ## Pick the constituent and functional unit
 #
-# `detect_constituent` and `detect_functional_unit` pick the most
-# likely candidates (`TSS`, `Forested` etc.) out of the running Source
-# model. Set `source.constituent` or `source.functional_unit` in
-# `study.toml` to override them; leave either one out and it is
-# auto-detected. The cell prints what it ended up with either way.
+# `ensure_constituent` and `detect_functional_unit` pick the most likely
+# candidates (`TSS`, `Forested` etc.) out of the running Source model.
+# Set `source.constituent` or `source.functional_unit` in `study.toml` to
+# override them; leave either one out and it is auto-detected. The cell
+# prints what it ended up with either way.
+#
+# The constituent does not have to exist yet. One named in
+# `source.constituent` that the model lacks is created. Left to pick, the
+# notebook takes a constituent that looks like sediment, and creates
+# `TSS` if there is none — rather than borrow an unrelated one such as
+# salt, whose generation models the next step would replace. The log says
+# when it creates one.
 
 # %%
-CONSTITUENT = study.source.constituent or detect_constituent(v)
+CONSTITUENT = ensure_constituent(v, study.source.constituent)
 FUNCTIONAL_UNIT = study.source.functional_unit or detect_functional_unit(v)
 CONSTITUENT, FUNCTIONAL_UNIT
 
@@ -465,9 +474,17 @@ write_replicate_csvs(SOURCE_REPLICATE)
 # Source re-reads the files at the start of every run.
 #
 # `create_file_data_source` sees to the names. Left to itself, Veneer
-# names a file-based data source after the file's full path, and the
-# assignments below would then find nothing called `source.tss_data_source`
-# — which Source reports as a `NullReferenceException`.
+# names a file-based data source after the file's full path — and with
+# Source's interface open, Source then turns that path's backslashes and
+# full stop into underscores. Either way the assignments below would find
+# nothing called `source.tss_data_source`, which Source reports as a
+# `NullReferenceException`. So the data source is renamed, and its units
+# applied under the new name.
+#
+# For the same reason, `source.tss_data_source` and
+# `source.rainfall_data_source` cannot contain `.`, `@`, `>`, `,` or a
+# backslash: Source's interface would change the name. The data sources
+# are refused, with a name to use instead, rather than lost.
 
 # %%
 create_file_data_source(

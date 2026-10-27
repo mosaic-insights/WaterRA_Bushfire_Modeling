@@ -62,6 +62,15 @@ When `constituent` or `functional_unit` parameters are `None`, the module uses t
 4. If no match found, uses the first available constituent from the model
 5. Logs the selection process for debugging
 
+`configure_source_model_with_fire_data` and the SourceIntegration notebook use
+`ensure_constituent` instead, which creates the constituent when the model lacks it:
+
+- A constituent you name is used if the model has it (matching regardless of
+  case), and created with veneer-py's `v.model.add_constituent` if not.
+- Left unnamed, it picks a match from `LIKELY_CONSTITUENTS` as above, but never
+  falls back to an unrelated constituent: with no match it creates
+  `DEFAULT_CONSTITUENT` (`'TSS'`) and logs the constituents it passed over.
+
 ### Functional Unit Detection
 1. Queries the model for available functional units using `v.model.catchment.functional_units()`
 2. Filters out 'Water' as it's typically not a target for sediment/fire data

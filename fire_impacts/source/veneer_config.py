@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 # Checked in order; the first substring match wins.
 LIKELY_CONSTITUENTS = ['TSS', 'Sediment', 'Contaminant', 'Pollutant']
+# Created by ensure_constituent when the model has none of the above.
+DEFAULT_CONSTITUENT = 'TSS'
 LIKELY_FUNCTIONAL_UNITS = [
     'Forested', 'Forest', 'Urban',
     'Bushland', 'Burned', 'Native Vegetation',
@@ -132,6 +134,23 @@ def check_load_distributor_plugin(v: veneer.Veneer) -> None:
 # Auto-detection helpers
 # ---------------------------------------------------------------------------
 
+def _first_match(options, candidate_list, param_name) -> Optional[str]:
+    """
+    Return the first option containing one of the candidate substrings
+    (case-insensitive), earlier candidates taking priority; or None.
+    """
+    for candidate in candidate_list:
+        for option in options:
+            if candidate.lower() in option.lower():
+                logger.info(
+                    f"Selected {param_name}: '{option}' "
+                    f"(matched '{candidate}') "
+                    f"from available: {options}"
+                )
+                return option
+    return None
+
+
 def _detect_parameter(
     getter_func,
     candidate_list: List[str],
@@ -186,17 +205,9 @@ def _detect_parameter(
     if not available_options:
         raise ValueError(f"No {param_name} found in model")
 
-    # Return the first option that contains one of the candidate
-    # substrings — earlier candidates have higher priority.
-    for candidate in candidate_list:
-        for option in available_options:
-            if candidate.lower() in option.lower():
-                logger.info(
-                    f"Selected {param_name}: '{option}' "
-                    f"(matched '{candidate}') "
-                    f"from available: {available_options}"
-                )
-                return option
+    option = _first_match(available_options, candidate_list, param_name)
+    if option is not None:
+        return option
 
     # No candidate matched — fall back to the first available option
     selected = next(iter(available_options))
@@ -234,6 +245,85 @@ def detect_constituent(
         candidate_list=candidate_list,
         param_name="constituents",
     )
+
+
+def ensure_constituent(
+    v: veneer.Veneer,
+    constituent: Optional[str] = None,
+    candidate_list: Optional[List[str]] = None,
+    default: str = DEFAULT_CONSTITUENT,
+) -> str:
+    """
+    Return the constituent to load fire sediment into, creating it in the
+    Source model if the model does not have it.
+
+    Parameters:
+    - v: Active Veneer connection object.
+    - constituent: Constituent to use (eg source.constituent). Created if
+      the model lacks it. Left as None, one is picked from the model.
+    - candidate_list: Constituent substrings to pick from, in order, when
+      constituent is None. Defaults to LIKELY_CONSTITUENTS.
+    - default: Constituent to create when constituent is None and the
+      model has nothing matching candidate_list (default 'TSS').
+
+    Returns:
+    - The constituent name exactly as it appears in Source.
+    ------------------------------------------------------------------------
+    Notes:
+    - A named constituent matches one in the model regardless of case,
+      rather than creating a second that differs only in case.
+    - Unlike detect_constituent, this never falls back to an unrelated
+      constituent (Salt, say): configuring the Load Distributor replaces
+      that constituent's generation models. It creates `default` instead,
+      and says which constituents it passed over.
+    - Creating a constituent uses veneer-py's add_constituent, which
+      requires Veneer's "Allow Scripts".
+    ------------------------------------------------------------------------
+    """
+    available = list(dict.fromkeys(v.model.get_constituents()))
+
+    if constituent is not None:
+        if constituent in available:
+            logger.info(f"Using provided constituent: '{constituent}'")
+            return constituent
+        same_but_case = [c for c in available
+                         if c.lower() == constituent.lower()]
+        if len(same_but_case) == 1:
+            logger.warning(
+                f"Constituent '{constituent}' is called "
+                f"'{same_but_case[0]}' in the Source model; using "
+                f"'{same_but_case[0]}'.")
+            return same_but_case[0]
+        return _add_constituent(v, constituent, available)
+
+    if candidate_list is None:
+        candidate_list = LIKELY_CONSTITUENTS
+    match = _first_match(available, candidate_list, 'constituent')
+    if match is not None:
+        return match
+
+    if available:
+        logger.warning(
+            f"None of the model's constituents {available} looks like "
+            f"sediment (checked for {candidate_list}), so creating "
+            f"'{default}'. If one of them is the one to use, name it in "
+            f"source.constituent.")
+    return _add_constituent(v, default, available)
+
+
+def _add_constituent(v: veneer.Veneer, constituent: str,
+                     available: List[str]) -> str:
+    """Create a constituent in Source, and check that it now exists."""
+    v.model.add_constituent(constituent)
+    if constituent not in v.model.get_constituents():
+        raise RuntimeError(
+            f"Asked Source to create constituent '{constituent}', but the "
+            f"model still does not have it. Create it in Source and "
+            f"re-run.")
+    logger.info(
+        f"Created constituent '{constituent}' in the Source model "
+        f"(it had {available or 'none'}).")
+    return constituent
 
 
 def detect_functional_unit(
@@ -419,6 +509,43 @@ def load_fire_impact_data(
 # Veneer data source management
 # ---------------------------------------------------------------------------
 
+def restricted_data_source_name(name: str) -> str:
+    """
+    Return the name the Source interface gives a data source called `name`.
+
+    Parameters:
+    - name: A data source name, as given to Veneer.
+
+    Returns:
+    - The name with '.', '@', '>', ',' and backslash each replaced by an
+      underscore, cut to 200 characters, and stripped of surrounding
+      spaces.
+    ------------------------------------------------------------------------
+    Notes:
+    - This mirrors Source's DataManager.RestrictName. Source applies it
+      when its interface shows a data source, and the new name sticks. So
+      with the interface open, a data source Veneer creates from a file
+      path ends up named after the path with its backslashes and full stop
+      turned into underscores. A Veneer command line keeps the name as
+      given.
+    ------------------------------------------------------------------------
+    """
+    for reserved in '.@>,\\':
+        name = name.replace(reserved, '_')
+    return name[:200].strip(' ')
+
+
+def _check_data_source_name(name: str) -> None:
+    """Refuse a data source name the Source interface would change."""
+    restricted = restricted_data_source_name(name)
+    if restricted != name:
+        raise ValueError(
+            f"Source would rename data source '{name}' to '{restricted}' "
+            f"when its interface is open, and then not find it under the "
+            f"name asked for. Use a name without '.', '@', '>', ',' or "
+            f"backslashes, such as '{restricted}'.")
+
+
 def create_veneer_data_sources(
     v: veneer.Veneer,
     tss_data: pd.DataFrame,
@@ -441,7 +568,14 @@ def create_veneer_data_sources(
 
     Returns:
     - None
+    ------------------------------------------------------------------------
+    Notes:
+    - Raises ValueError for a name the Source interface would change; see
+      restricted_data_source_name.
+    ------------------------------------------------------------------------
     """
+    _check_data_source_name(tss_source_name)
+    _check_data_source_name(rainfall_source_name)
     logger.info(
         f"Creating data sources: "
         f"'{tss_source_name}', '{rainfall_source_name}'"
@@ -478,42 +612,68 @@ def create_file_data_source(
     ------------------------------------------------------------------------
     Notes:
     - Veneer names a file-based data source after the path it was given,
-      not the file's stem. Assigning from ``name`` would then find no such
-      data source, and Source fails with a NullReferenceException - the
-      same error a column/catchment name mismatch gives. So the data
-      source is renamed here; the file it loads from is stored separately
-      and is unaffected.
+      not the file's stem, and with its interface open Source then turns
+      that path's backslashes and full stop into underscores (see
+      restricted_data_source_name). Assigning from ``name`` would find no
+      such data source, and Source fails with a NullReferenceException -
+      the same error a column/catchment name mismatch gives. So the data
+      source is renamed here, whichever of the two names it has; the file
+      it loads from is stored separately and is unaffected.
+    - Units are applied after the rename, under ``name``. veneer-py would
+      otherwise look the data source up under the path, and fail when the
+      interface has renamed it.
     - Any other data source already called ``name`` is removed first - an
       in-memory one of the same name, say, or the empty one a failed
-      assignment leaves behind. Requires Veneer's "Allow Scripts".
+      assignment leaves behind - as is any left from an earlier attempt
+      under either version of the path. Requires Veneer's "Allow Scripts".
+    - Raises ValueError for a ``name`` the Source interface would itself
+      change.
     ------------------------------------------------------------------------
     """
+    _check_data_source_name(name)
     path = str(path)
     logger.info(f"Creating data source '{name}' from {path}")
-    v.create_data_source(path, units=units, reload_on_run=reload_on_run)
+    v.create_data_source(path, reload_on_run=reload_on_run)
 
     # String literals IronPython reads back unchanged. Pasted in raw, a
     # Windows path's '\2001...' and '\f...' would become escape sequences;
     # and non-ASCII characters go in as themselves, because IronPython 2
     # leaves a \u escape in an ordinary string as literal characters.
-    path_literal = json.dumps(path, ensure_ascii=False)
-    name_literal = json.dumps(name, ensure_ascii=False)
+    def literal(s):
+        return json.dumps(s, ensure_ascii=False)
+
+    # Source's own renaming rule where it has one, so a version whose rule
+    # differs is still matched; the copy here otherwise.
     script = (
+        f'raw = {literal(path)}\n'
+        'try:\n'
+        '    import clr\n'
+        "    clr.AddReference('RiverSystem')\n"
+        '    from RiverSystem.DataManagement.DataManager import DataManager\n'
+        '    restricted = DataManager.RestrictName(raw)\n'
+        'except Exception:\n'
+        f'    restricted = {literal(restricted_data_source_name(path))}\n'
+        f'name = {literal(name)}\n'
         'dm = scenario.Network.DataManager\n'
-        'grp = dm.DataGroups.FirstOrDefault('
-        f'lambda g: g.Name == {path_literal})\n'
-        'if grp is None:\n'
-        '    raise Exception('
-        f'"No data source was created from " + {path_literal})\n'
+        'from_file = [g for g in dm.DataGroups\n'
+        '             if g.Name == raw or g.Name == restricted]\n'
+        'if not from_file:\n'
+        '    raise Exception("No data source was created from " + raw)\n'
+        '# The one just created: Veneer adds it after any earlier ones.\n'
+        'grp = from_file[-1]\n'
         'for other in [g for g in dm.DataGroups\n'
-        f'              if g.Name == {name_literal} and not g is grp]:\n'
+        '              if g.Name in (name, raw, restricted)\n'
+        '              and not g is grp]:\n'
         '    dm.RemoveGroup(other)\n'
-        f'grp.Name = {name_literal}\n'
+        'grp.Name = name\n'
         'result = grp.Name\n'
     )
     response = v.model.run_script(script, init=True)
     if response.get('Exception') is not None:
         raise Exception(response['Exception'])
+
+    if units is not None:
+        v.model.set_data_source_units(name, units)
     return name
 
 
@@ -710,7 +870,8 @@ def configure_source_model_with_fire_data(
     Run the complete workflow to configure a Source model with fire data.
 
     Connects to Veneer, auto-detects or uses the provided constituent
-    and functional unit, configures the Load Distributor model, loads
+    (creating it if need be) and functional unit, configures the Load
+    Distributor model, loads
     and pushes fire-impact time series, and optionally runs a test
     simulation and saves the result.
 
@@ -722,7 +883,8 @@ def configure_source_model_with_fire_data(
     - output_model_name: If provided, save the configured model under
       this filename.
     - constituent: Constituent name (e.g. 'TSS').  Auto-detected from
-      the model if not supplied.
+      the model if not supplied, and created in the model if it lacks
+      it - see ensure_constituent.
     - functional_unit: Functional unit name (e.g. 'Forested').
       Auto-detected from the model if not supplied.
     - load_attenuation: LoadAttenuation parameter for Load Distributor.
@@ -743,11 +905,9 @@ def configure_source_model_with_fire_data(
     v = connect_to_veneer(port)
 
     # Step 2 — resolve constituent and functional unit, auto-detecting
-    # from the model if the caller did not specify them.
-    if constituent is None:
-        constituent = detect_constituent(v)
-    else:
-        logger.info(f"Using provided constituent: '{constituent}'")
+    # from the model if the caller did not specify them, and creating the
+    # constituent if the model lacks it.
+    constituent = ensure_constituent(v, constituent)
 
     if functional_unit is None:
         functional_unit = detect_functional_unit(v)
