@@ -12,6 +12,11 @@ import veneer
 from typing import Optional, Dict, List
 import logging
 
+from .._source_names import (
+    data_source_name_problem,
+    restricted_data_source_name,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -523,41 +528,12 @@ def load_fire_impact_data(
 # Veneer data source management
 # ---------------------------------------------------------------------------
 
-def restricted_data_source_name(name: str) -> str:
-    """
-    Return the name the Source interface gives a data source called `name`.
-
-    Parameters:
-    - name: A data source name, as given to Veneer.
-
-    Returns:
-    - The name with '.', '@', '>', ',' and backslash each replaced by an
-      underscore, cut to 200 characters, and stripped of surrounding
-      spaces.
-    ------------------------------------------------------------------------
-    Notes:
-    - This mirrors Source's DataManager.RestrictName. Source applies it
-      when its interface shows a data source, and the new name sticks. So
-      with the interface open, a data source Veneer creates from a file
-      path ends up named after the path with its backslashes and full stop
-      turned into underscores. A Veneer command line keeps the name as
-      given.
-    ------------------------------------------------------------------------
-    """
-    for reserved in '.@>,\\':
-        name = name.replace(reserved, '_')
-    return name[:200].strip(' ')
-
-
 def _check_data_source_name(name: str) -> None:
-    """Refuse a data source name the Source interface would change."""
-    restricted = restricted_data_source_name(name)
-    if restricted != name:
-        raise ValueError(
-            f"Source would rename data source '{name}' to '{restricted}' "
-            f"when its interface is open, and then not find it under the "
-            f"name asked for. Use a name without '.', '@', '>', ',' or "
-            f"backslashes, such as '{restricted}'.")
+    """Refuse a data source name the Source interface would change - see
+    restricted_data_source_name."""
+    problem = data_source_name_problem(name)
+    if problem is not None:
+        raise ValueError(problem)
 
 
 def create_veneer_data_sources(
