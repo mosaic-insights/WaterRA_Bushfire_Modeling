@@ -611,12 +611,17 @@ def create_file_data_source(
       source is renamed here, whichever of the two names it has; the file
       it loads from is stored separately and is unaffected.
     - With reload_on_run, units are refused (ValueError): give them in the
-      CSV's column headers instead, as write_data_source_csv does. On
-      Source 6.x, units applied to such a data source after it is created
-      break its reload, and every run then fails with "Could not reload
-      file ... Loaded units are not commensurate with the previously
-      defined units". Units in the headers are read on every load, so the
-      file describes itself and the reload succeeds.
+      CSV's column headers instead, as write_data_source_csv does. Units
+      given here are applied once, after the file is loaded, but Source
+      re-reads each column's units from its header on every reload. A
+      bare column name that Source parses as a unit - 'A', amperes, say -
+      then clashes with the units applied, and every run fails with "Could
+      not reload file ... Loaded units are not commensurate with the
+      previously defined units". Units in the headers work whatever the
+      columns are called, and the columns here are subcatchment names,
+      which are not ours to choose. (Seen on Source 5.60 and 6.10; with
+      column names that do not parse as units, applied units do survive
+      the reload.)
     - Without reload_on_run, units are applied after the rename, under
       ``name``. veneer-py would otherwise look the data source up under the
       path, and fail when the interface has renamed it.
@@ -631,11 +636,14 @@ def create_file_data_source(
     _check_data_source_name(name)
     if reload_on_run and units is not None:
         raise ValueError(
-            f"Data source '{name}' is reloaded before each run, so its "
-            f"units have to be in the CSV's column headers - '<column> "
-            f"({units})' - not given here: applied afterwards, Source 6.x "
-            f"fails every run with 'Loaded units are not commensurate with "
-            f"the previously defined units'. See write_data_source_csv.")
+            f"Data source '{name}' is reloaded before each run, so put its "
+            f"units in the CSV's column headers - '<column> ({units})' - "
+            f"rather than giving them here. Source re-reads units from the "
+            f"headers on every reload, and if any bare column name parses "
+            f"as a unit ('A' is amperes) it clashes with units applied "
+            f"afterwards: every run then fails with 'Loaded units are not "
+            f"commensurate with the previously defined units'. See "
+            f"write_data_source_csv.")
     path = str(path)
     logger.info(f"Creating data source '{name}' from {path}")
     v.create_data_source(path, reload_on_run=reload_on_run)
@@ -697,9 +705,9 @@ def write_data_source_csv(data: pd.DataFrame, path, units: str) -> None:
     Notes:
     - Each column is headed '<column> (<units>)'. Source loads that as a
       column named <column> in those units, on every load, so a data
-      source reloaded before each run keeps its units without any being
-      applied to it - which on Source 6.x would break the reload. See
-      create_file_data_source.
+      source reloaded before each run keeps its units whatever its columns
+      are called. Units applied to it instead break the reload of any
+      column whose bare name parses as a unit. See create_file_data_source.
     ------------------------------------------------------------------------
     """
     data.rename(columns=lambda c: f'{c} ({units})').to_csv(path)

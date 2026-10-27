@@ -420,12 +420,18 @@ class TestCreateFileDataSource:
         assert v.units == {}
 
     def test_units_for_a_file_source_reloads_are_refused(self):
-        """Source 6.x fails every run of a reload-on-run data source given
-        units after it was created: 'Loaded units are not commensurate with
-        the previously defined units'. Units belong in the CSV headers."""
+        """Source re-reads each column's units from the CSV header on every
+        reload. A bare column name that parses as a unit - 'A', amperes -
+        then clashes with units applied after creation, and every run fails:
+        'Loaded units are not commensurate with the previously defined
+        units'. Units in the headers work whatever the columns are called,
+        and subcatchment names are not ours to choose."""
         v = FakeSource()
-        with pytest.raises(ValueError, match='header'):
+        with pytest.raises(ValueError) as raised:
             create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+        message = str(raised.value)
+        assert "'<column> (kg/day)'" in message
+        assert 'parses as a unit' in message
         assert v.created == []
 
     def test_the_interface_rule_comes_from_source_when_it_has_one(
@@ -498,8 +504,10 @@ class TestCreateFileDataSource:
 
 class TestWriteReplicateCsvs:
     """Part A's CSVs carry their units in their column headers - "A (ML/d)"
-    loads as column "A" in ML/d - because units applied to a reload-on-run
-    data source after it is created break its reload on Source 6.x."""
+    loads as column "A" in ML/d. Source re-reads them on every reload, so
+    they hold whatever the subcatchments are called; units applied after
+    creation break the reload of any column whose bare name parses as a
+    unit."""
 
     @staticmethod
     def _replicate(columns=('SC1', 'SC2')):
