@@ -848,9 +848,29 @@ def save_model(v: veneer.Veneer, filename: str) -> None:
 
     Returns:
     - None
+    --------------------------------------------------------------------
+    Notes:
+    - Saving needs the project handler that opened the project. When the
+      Veneer server gives scripts none, the save fails, and this says so
+      instead of passing on a bare AttributeError.
+    --------------------------------------------------------------------
     """
     logger.info(f"Saving model as '{filename}'")
-    v.model.save(filename)
+    try:
+        v.model.save(filename)
+    except Exception as exc:
+        # The first form is what veneer-py raised before it named the cause
+        if not any(sign in str(exc) for sign in
+                   ("attribute 'CallBackHandler'", 'project_handler is None')):
+            raise
+        raise RuntimeError(
+            f"Could not save the model as '{filename}': the Veneer server on "
+            f"port {v.port} gave the save script no project handler, so it "
+            f"cannot save the project it has open. Check that nothing else "
+            f"(such as a Source with Veneer running) is listening on port "
+            f"{v.port}, and report the Veneer build behind it. "
+            f"Veneer said: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

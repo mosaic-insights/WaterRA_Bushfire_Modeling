@@ -14,7 +14,7 @@ import pandas as pd
 from fire_impacts.source.veneer_config import (
     _detect_parameter, create_file_data_source, create_veneer_data_sources,
     ensure_constituent, restricted_data_source_name, run_model_simulation,
-    run_succeeded,
+    run_succeeded, save_model,
 )
 
 # Configure logging for tests
@@ -560,3 +560,43 @@ class TestEnsureConstituent:
         v = FakeConstituents([], adds=False)
         with pytest.raises(RuntimeError, match='TSS'):
             ensure_constituent(v, 'TSS')
+
+
+class TestSaveModel:
+    """save_model explains a Veneer that gives scripts no project handler."""
+
+    OLD_VENEER_PY = "{'Message': \"'NoneType' object has no attribute 'CallBackHandler'\"}"
+    NEW_VENEER_PY = ("{'Message': 'Cannot save: this Veneer server gave the script no "
+                     "project handler (project_handler is None), ... Server process: "
+                     "C:\\Somewhere\\Host.exe (process 1234)'}")
+
+    def _veneer(self, error=None):
+        v = MagicMock()
+        v.port = 9880
+        if error is not None:
+            v.model.save.side_effect = Exception(error)
+        return v
+
+    def test_it_saves_to_the_filename(self):
+        v = self._veneer()
+        save_model(v, 'out.rsproj')
+        v.model.save.assert_called_once_with('out.rsproj')
+
+    @pytest.mark.parametrize('error', [OLD_VENEER_PY, NEW_VENEER_PY])
+    def test_a_missing_project_handler_is_explained(self, error):
+        with pytest.raises(RuntimeError) as err:
+            save_model(self._veneer(error), 'out.rsproj')
+        message = str(err.value)
+        assert 'out.rsproj' in message
+        assert '9880' in message
+        assert 'project handler' in message
+        assert err.value.__cause__ is not None
+
+    def test_the_server_process_is_passed_on(self):
+        with pytest.raises(RuntimeError, match='Host.exe'):
+            save_model(self._veneer(self.NEW_VENEER_PY), 'out.rsproj')
+
+    def test_any_other_failure_is_raised_unchanged(self):
+        with pytest.raises(Exception, match='disk full') as err:
+            save_model(self._veneer('disk full'), 'out.rsproj')
+        assert not isinstance(err.value, RuntimeError)
