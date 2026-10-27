@@ -31,6 +31,47 @@ def test_every_setting_appears_in_the_scaffold():
                 f'{group.name}.{entry.name} is missing from the scaffold')
 
 
+# The [source] settings that only apply when the notebook starts Source
+# itself. Left live in a study.toml handed on from someone who did, they
+# are what stops a user with Source open in its interface from connecting.
+COMMAND_LINE_ONLY = (
+    'project_file', 'veneer_command_line', 'source_dir', 'veneer_dir',
+    'command_line_dir', 'plugins', 'detached',
+)
+
+
+def test_the_command_line_settings_are_set_apart_in_the_scaffold():
+    lines = scaffold_text().splitlines()
+    start = lines.index('[source]')
+    section = lines[start:]
+    section = section[:next(
+        (i for i, ln in enumerate(section[1:], 1) if ln.startswith('[')),
+        len(section))]
+
+    def line_of(name):
+        return next(i for i, ln in enumerate(section)
+                    if ln.startswith(f'# {name} = '))
+
+    headings = [i for i, ln in enumerate(section) if ln.startswith('# ---')]
+    assert len(headings) == 2, section
+    opens, closes = headings
+
+    assert 'command line' in section[opens].lower()
+    # The heading itself says how to get the other way.
+    heading_text = ' '.join(section[opens:line_of('project_file')])
+    assert 'commented out' in heading_text
+
+    assert line_of('port') < opens
+    for name in COMMAND_LINE_ONLY:
+        assert opens < line_of(name) < closes, name
+    for name in ('constituent', 'replicate', 'input_set'):
+        assert closes < line_of(name), name
+
+
+def test_the_scaffold_suggests_sources_standard_input_set_name():
+    assert "# input_set = 'Default Input Set'" in scaffold_text()
+
+
 def _live_settings(text):
     """Dotted names of the settings a scaffold writes uncommented."""
     live = []

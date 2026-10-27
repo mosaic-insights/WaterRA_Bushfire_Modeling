@@ -43,11 +43,15 @@
 #    RunContext built below resolves both.
 # 2. A Source model the notebook can reach through Veneer, with the
 #    [**Load Distributor**](https://github.com/flowmatters/source-loaddistributor)
-#    plugin. Either:
+#    plugin. `study.toml` decides which of two ways the notebook reaches
+#    it — nothing in the notebook does:
 #    * **Source already open** — your project loaded in Source, and Veneer
 #      running on `source.port` (9876 unless you change it in
 #      `study.toml`) with **Allow Scripts** ticked. Leave
-#      `source.project_file` out of `study.toml`.
+#      `source.project_file`, and every other setting in the
+#      *Command line only* block of `[source]`, commented out. A new
+#      `study.toml` starts out this way; one copied from someone who used
+#      a command line may not.
 #    * **Started by the notebook** — set `source.project_file` to your
 #      project, and the notebook opens it in a Veneer command line
 #      (Source without its interface). Tell it which command line with
@@ -56,8 +60,9 @@
 #      project needs that is not registered in Source's Plugin Manager
 #      in `source.plugins`.
 #
-#    Either way the notebook saves its changes to new project files, and
-#    never writes to the one you started from.
+#    The *Connect to Source* cell prints which way it connected. Either
+#    way the notebook saves its changes to new project files, and never
+#    writes to the one you started from.
 # 3. The Source project has a **constituent** you want to use for the
 #    fire-derived sediment load — typically `TSS`.  If one is not
 #    already defined, create it in Source before running this notebook.
@@ -133,6 +138,7 @@ ENSEMBLE    = study.ensemble.name
 SUBCATCHMENT_ID_FIELD = study.catchment.subcatchment_id_field
 
 SOURCE_REPLICATE = study.source.replicate
+INPUT_SET   = study.source.input_set
 TIMESTEP    = study.source.timestep
 DATE_FORMAT = study.source.date_format
 OUTPUT_DIR  = study.source.output_dir
@@ -299,6 +305,9 @@ rainfall_totals.head()
 # rather than `source.veneer_command_line`. A first build copies all of
 # Source, so expect that to take a few minutes; later runs reuse it.
 #
+# The cell prints which of the two it did, and what to change in
+# `study.toml` to get the other.
+#
 # A command line started here keeps running until the last cell of the
 # notebook closes it, or until the kernel stops.
 #
@@ -308,6 +317,7 @@ rainfall_totals.head()
 
 # %%
 session = open_source(study.source)
+print(session.describe())
 v = session.v
 v.scenario_info()
 
@@ -405,12 +415,17 @@ assign_rainfall_timeseries(v, rainfall_source_name=RAINFALL_SOURCE)
 # Run the Source simulation over the period of the data.  Source expects
 # the run-period dates in the format your install writes them — `dd/mm/yyyy`
 # unless you change `source.date_format` in `study.toml`.
+#
+# Source runs with whichever input set the project has selected, unless
+# `source.input_set` names one to select first — `'Default Input Set'` is
+# Source's standard one.
 
 # %%
 start = tss_single.index[0].strftime(DATE_FORMAT)
 end = tss_single.index[-1].strftime(DATE_FORMAT)
 
-sim_results = run_model_simulation(v, start_date=start, end_date=end)
+sim_results = run_model_simulation(
+    v, start_date=start, end_date=end, input_set=INPUT_SET)
 sim_results['Status']
 
 # %% [markdown]
@@ -507,7 +522,8 @@ for rep in replicate_ids:
     write_replicate_csvs(rep)
     start = combined_loads[rep].index[0].strftime(DATE_FORMAT)
     end = combined_loads[rep].index[-1].strftime(DATE_FORMAT)
-    result = run_model_simulation(v, start_date=start, end_date=end)
+    result = run_model_simulation(
+        v, start_date=start, end_date=end, input_set=INPUT_SET)
     source_runs[rep] = result
     logging.info(f'Replicate {rep:02d}: status={result.get("Status")}')
 

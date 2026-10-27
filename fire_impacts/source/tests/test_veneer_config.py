@@ -244,6 +244,27 @@ class TestRunStatus:
         assert 'RunIncomplete' in caplog.text
 
 
+class TestInputSet:
+    """Source names its standard input set 'Default Input Set', and a
+    project may have others. Guessing a name selects nothing or the wrong
+    one, so none is selected unless the caller names it."""
+
+    def test_no_input_set_leaves_source_on_the_one_already_selected(self):
+        v = _veneer_reporting('RunSuccess')
+        run_model_simulation(v)
+        v.model.simulation.select_input_set.assert_not_called()
+
+    def test_a_named_input_set_is_selected_before_the_run(self):
+        v = _veneer_reporting('RunSuccess')
+        run_model_simulation(v, input_set='Default Input Set')
+
+        v.model.simulation.select_input_set.assert_called_once_with(
+            'Default Input Set')
+        names = [name for name, _, _ in v.mock_calls]
+        assert (names.index('model.simulation.select_input_set')
+                < names.index('run_model'))
+
+
 class FakeVeneerForFiles:
     """Records the calls create_file_data_source makes, and answers the
     renaming script the way Source would."""

@@ -46,6 +46,14 @@ class FakeManage:
         self.started = []
         self.killed = []
         self.bound_port = 9877
+        # Whether a Source the user has open is answering, and on which
+        # ports it was asked.
+        self.answering = True
+        self.probed = []
+
+    def is_listening(self, port, **kwargs):
+        self.probed.append(port)
+        return self.answering
 
     def create_command_line(self, veneer_path, source_version=None,
                             source_path=None, dest=None, force=True,
@@ -75,6 +83,7 @@ def manage(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, 'start', fake.start)
     monkeypatch.setattr(launch, 'kill_all_now', fake.kill_all_now)
     monkeypatch.setattr(launch, 'Veneer', FakeVeneer)
+    monkeypatch.setattr(launch, 'is_listening', fake.is_listening)
     return fake
 
 
@@ -120,6 +129,46 @@ def test_without_a_project_file_it_connects_to_the_open_source(manage):
     assert manage.started == []
 
 
+def test_the_open_source_is_checked_for_on_the_configured_port(manage):
+    launch.open_source(settings(port=9880))
+    assert manage.probed == [9880]
+
+
+def test_nothing_answering_on_the_port_says_what_to_check(manage):
+    """Otherwise the first sign is a connection error from deep in
+    veneer-py, several cells later, that says nothing about study.toml."""
+    manage.answering = False
+    with pytest.raises(StudyConfigError) as exc:
+        launch.open_source(settings(port=9880))
+    message = str(exc.value)
+
+    assert 'port 9880' in message
+    assert 'open the project in Source' in message
+    assert 'Allow Scripts' in message
+    assert 'source.port' in message
+    assert 'set source.project_file' in message
+
+
+def test_a_started_command_line_is_not_probed_for_beforehand(
+        manage, project, prebuilt):
+    """Nothing is listening until it starts; start() finds its own port."""
+    manage.answering = False
+    launch.open_source(settings(
+        project_file=project, veneer_command_line=prebuilt))
+    assert manage.probed == []
+
+
+def test_the_probe_finds_a_listening_port_and_not_a_closed_one():
+    """The real probe, against a socket on this machine."""
+    import socket
+    with socket.socket() as server:
+        server.bind(('127.0.0.1', 0))
+        server.listen()
+        port = server.getsockname()[1]
+        assert launch.is_listening(port)
+    assert not launch.is_listening(port)
+
+
 def test_closing_a_connection_to_an_open_source_leaves_it_running(manage):
     session = launch.open_source(settings())
     session.close()
@@ -142,6 +191,45 @@ def test_command_line_settings_without_a_project_file_are_refused(
 def test_plugins_without_a_project_file_are_refused(manage, tmp_path):
     with pytest.raises(StudyConfigError, match='source.plugins'):
         launch.open_source(settings(plugins=[touch(tmp_path / 'A.dll')]))
+
+
+def test_the_refusal_says_how_to_get_either_way_of_connecting(
+        manage, tmp_path):
+    """Someone with Source open in its interface, holding a study.toml
+    that names a command line, needs to be told both ways out: comment the
+    command-line settings out to use the open Source, or set project_file
+    to have the notebook start one."""
+    with pytest.raises(StudyConfigError) as exc:
+        launch.open_source(settings(
+            port=9880, veneer_command_line=str(tmp_path),
+            source_dir=str(tmp_path)))
+    message = str(exc.value)
+
+    assert 'source.veneer_command_line' in message
+    assert 'source.source_dir' in message
+    assert 'comment' in message and '9880' in message
+    assert 'set source.project_file' in message
+
+
+def test_a_connection_to_an_open_source_says_so_and_how_to_start_one(
+        manage):
+    text = launch.open_source(settings(port=9880)).describe()
+
+    assert 'already have open' in text
+    assert '9880' in text
+    assert 'source.project_file' in text
+
+
+def test_a_started_command_line_says_so_and_how_to_use_an_open_source(
+        manage, project, prebuilt):
+    session = launch.open_source(settings(
+        project_file=project, veneer_command_line=prebuilt))
+    text = session.describe()
+
+    assert 'command line' in text
+    assert project in text
+    assert str(manage.bound_port) in text
+    assert 'comment' in text
 
 
 # ---------------------------------------------------------------------------
