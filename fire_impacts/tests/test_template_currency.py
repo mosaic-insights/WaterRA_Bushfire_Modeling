@@ -325,6 +325,28 @@ def test_every_source_run_uses_the_input_set_study_toml_names():
             f'passing input_set')
 
 
+def test_part_a_puts_units_in_the_csv_headers_not_on_the_data_source():
+    """Units given to a reload-on-run data source after it is created
+    break every run on Source 6.x. Part A's CSVs carry them in their
+    headers instead, so its data sources are created without them."""
+    tree = ast.parse((TEMPLATE_DIR / 'SourceIntegration.py').read_text())
+    calls = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            calls.setdefault(node.func.id, []).append(node)
+
+    assert len(calls.get('create_file_data_source', [])) == 2
+    for call in calls['create_file_data_source']:
+        assert 'units' not in {kw.arg for kw in call.keywords}, (
+            f'SourceIntegration.py:{call.lineno} gives a file data source '
+            f'units')
+    # The library's, which writes the headers, not a local copy.
+    assert 'write_replicate_csvs' in calls
+    assert not any(isinstance(node, ast.FunctionDef)
+                   and node.name == 'write_replicate_csvs'
+                   for node in ast.walk(tree))
+
+
 @pytest.mark.parametrize(
     'template', templates(), ids=lambda p: p.name)
 def test_every_template_parses(template):
