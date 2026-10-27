@@ -105,6 +105,7 @@ from fire_impacts.source import (
     configure_load_distributor_model,
     create_veneer_data_sources,
     create_file_data_source,
+    write_replicate_csvs,
     assign_fire_sediment_timeseries,
     assign_rainfall_timeseries,
     run_model_simulation,
@@ -408,9 +409,9 @@ tss_single.head(), rain_single.head()
 #
 # Source is told as much: the data sources below are labelled
 # `kg/{TIMESTEP_UNITS}` and `mm/{TIMESTEP_UNITS}` — `kg/day` and `mm/day`
-# by default — and Part A labels its CSV-backed sources the same way.
-# Source reads those labels, so they have to follow `source.timestep`
-# rather than assume daily.
+# by default — and Part A writes the same units into its CSVs' column
+# headers. Source reads those labels, so they have to follow
+# `source.timestep` rather than assume daily.
 
 # %%
 create_veneer_data_sources(
@@ -477,16 +478,26 @@ rain_csv = SOURCE_OUTPUT / f'{RAINFALL_SOURCE}.csv'
 # Seed the two CSVs with one replicate's data so the data sources can be
 # created with valid content.  The loop below will overwrite them
 # per-replicate.
+#
+# Each CSV carries its units in its column headers — `<subcatchment>
+# (kg/day)` and `rainfall (mm/day)` by default, following
+# `source.timestep`. Source reads them on every reload and drops them from
+# the column names, so the columns are still the bare subcatchment names
+# and `rainfall`. Units cannot instead be applied to the data sources once
+# they exist: a data source reloaded before each run that has been given
+# units that way fails every run on Source 6, with *Loaded units are not
+# commensurate with the previously defined units*.
 
 # %%
-def write_replicate_csvs(rep: int):
+def write_csvs_for(rep: int):
     """Overwrite the two on-disk CSVs with data for a given replicate."""
-    loads = combined_loads[rep]
-    rain = rainfall_totals[[rep]].rename(columns={rep: 'rainfall'})
-    loads.to_csv(tss_csv)
-    rain.to_csv(rain_csv)
+    write_replicate_csvs(
+        combined_loads[rep], rainfall_totals[rep], tss_csv, rain_csv,
+        TIMESTEP_UNITS)
 
-write_replicate_csvs(SOURCE_REPLICATE)
+write_csvs_for(SOURCE_REPLICATE)
+# The first line of each, to check the headers.
+tss_csv.read_text().splitlines()[0], rain_csv.read_text().splitlines()[0]
 
 # %% [markdown]
 # ### Recreate the data sources backed by the on-disk CSVs
@@ -500,14 +511,12 @@ write_replicate_csvs(SOURCE_REPLICATE)
 # Source's interface open, Source then turns that path's backslashes and
 # full stop into underscores. Either way the assignments below would find
 # nothing called `source.tss_data_source`, which Source reports as a
-# `NullReferenceException`. So the data source is renamed, and its units
-# applied under the new name.
+# `NullReferenceException`. So the data source is renamed. Its units come
+# from the CSV headers written above, so none are given here.
 
 # %%
-create_file_data_source(
-    v, TSS_SOURCE, tss_csv, units=f'kg/{TIMESTEP_UNITS}')
-create_file_data_source(
-    v, RAINFALL_SOURCE, rain_csv, units=f'mm/{TIMESTEP_UNITS}')
+create_file_data_source(v, TSS_SOURCE, tss_csv)
+create_file_data_source(v, RAINFALL_SOURCE, rain_csv)
 
 # Both names should be listed here, and no CSV paths.
 [ds['Name'] for ds in v.data_sources()]
@@ -538,7 +547,7 @@ source_runs = {}
 
 for rep in replicate_ids:
     logging.info(f'Replicate {rep:02d}: writing CSVs and running Source')
-    write_replicate_csvs(rep)
+    write_csvs_for(rep)
     start = combined_loads[rep].index[0].strftime(DATE_FORMAT)
     end = combined_loads[rep].index[-1].strftime(DATE_FORMAT)
     result = run_model_simulation(

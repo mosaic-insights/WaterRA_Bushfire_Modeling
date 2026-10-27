@@ -14,8 +14,9 @@ import pandas as pd
 from fire_impacts.source.veneer_config import (
     _detect_parameter, create_file_data_source, create_veneer_data_sources,
     ensure_constituent, restricted_data_source_name, run_model_simulation,
-    run_succeeded, save_model,
+    run_succeeded, save_model, write_replicate_csvs,
 )
+from fire_impacts.study import SOURCE_TIMESTEPS
 
 # Configure logging for tests
 logging.basicConfig(level=logging.DEBUG)
@@ -409,13 +410,23 @@ class TestCreateFileDataSource:
         """veneer-py applies a file's units by looking the data source up
         under the path - which the interface has already renamed."""
         v = FakeSource(gui=gui)
-        create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+        create_file_data_source(
+            v, 'fire_tss', self.PATH, units='kg/day', reload_on_run=False)
         assert v.units == {'fire_tss': 'kg/day'}
 
     def test_no_units_are_applied_unless_asked_for(self):
         v = FakeSource()
         create_file_data_source(v, 'fire_tss', self.PATH)
         assert v.units == {}
+
+    def test_units_for_a_file_source_reloads_are_refused(self):
+        """Source 6.x fails every run of a reload-on-run data source given
+        units after it was created: 'Loaded units are not commensurate with
+        the previously defined units'. Units belong in the CSV headers."""
+        v = FakeSource()
+        with pytest.raises(ValueError, match='header'):
+            create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+        assert v.created == []
 
     def test_the_interface_rule_comes_from_source_when_it_has_one(
             self, monkeypatch):
@@ -437,7 +448,7 @@ class TestCreateFileDataSource:
             monkeypatch.setitem(sys.modules, name, module)
 
         v = FakeSource(rename=other_rule)
-        create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+        create_file_data_source(v, 'fire_tss', self.PATH)
         assert v.names == ['fire_tss']
 
     def test_any_other_data_source_with_that_name_is_replaced(self):
@@ -483,6 +494,68 @@ class TestCreateFileDataSource:
     def test_it_returns_the_name_to_assign_from(self):
         v = FakeSource()
         assert create_file_data_source(v, 'fire_tss', self.PATH) == 'fire_tss'
+
+
+class TestWriteReplicateCsvs:
+    """Part A's CSVs carry their units in their column headers - "A (ML/d)"
+    loads as column "A" in ML/d - because units applied to a reload-on-run
+    data source after it is created break its reload on Source 6.x."""
+
+    @staticmethod
+    def _replicate(columns=('SC1', 'SC2')):
+        index = pd.date_range('2001-01-01', periods=3, freq='D', name='Date')
+        loads = pd.DataFrame(
+            {c: [1.5, 2.0, 0.0] for c in columns}, index=index)
+        rainfall = pd.Series([0.0, 12.5, 3.0], index=index, name=4)
+        return loads, rainfall
+
+    @staticmethod
+    def _header(path):
+        with open(path, encoding='utf-8') as f:
+            return f.readline().rstrip('\n').split(',')
+
+    def test_each_header_carries_its_units(self, tmp_path):
+        loads, rainfall = self._replicate()
+        tss, rain = tmp_path / 'fire_tss.csv', tmp_path / 'rain.csv'
+        write_replicate_csvs(loads, rainfall, tss, rain, 'day')
+
+        assert self._header(tss) == ['Date', 'SC1 (kg/day)', 'SC2 (kg/day)']
+        assert self._header(rain) == ['Date', 'rainfall (mm/day)']
+
+    def test_the_units_follow_the_timestep(self, tmp_path):
+        loads, rainfall = self._replicate()
+        tss, rain = tmp_path / 'fire_tss.csv', tmp_path / 'rain.csv'
+        write_replicate_csvs(loads, rainfall, tss, rain, 'hour')
+
+        assert self._header(tss)[1:] == ['SC1 (kg/hour)', 'SC2 (kg/hour)']
+        assert self._header(rain)[1:] == ['rainfall (mm/hour)']
+
+    def test_the_values_and_dates_are_written_unchanged(self, tmp_path):
+        loads, rainfall = self._replicate()
+        tss, rain = tmp_path / 'fire_tss.csv', tmp_path / 'rain.csv'
+        write_replicate_csvs(loads, rainfall, tss, rain, 'day')
+
+        back = pd.read_csv(tss, index_col=0, parse_dates=True)
+        assert list(back.index) == list(loads.index)
+        assert back.to_numpy().tolist() == loads.to_numpy().tolist()
+        rain_back = pd.read_csv(rain, index_col=0, parse_dates=True)
+        assert rain_back.iloc[:, 0].tolist() == rainfall.tolist()
+
+    def test_every_timestep_writes_units_source_reads_from_a_header(self):
+        """Checked on Source 6.10: 'kg/day', 'mm/day', 'kg/hour' and
+        'mm/hour' load from a header with their units. A spelling Source
+        does not know - 'kg/hr', say - is not an error: the column loads
+        named 'X (kg/hr)', with no units, and nothing matches it. So a new
+        timestep's unit word has to be checked against Source first."""
+        checked_on_source = {'day', 'hour'}
+        assert {t['units'] for t in SOURCE_TIMESTEPS.values()} <= (
+            checked_on_source)
+
+    def test_the_callers_frame_is_left_as_it_was(self, tmp_path):
+        loads, rainfall = self._replicate()
+        write_replicate_csvs(
+            loads, rainfall, tmp_path / 'a.csv', tmp_path / 'b.csv', 'day')
+        assert list(loads.columns) == ['SC1', 'SC2']
 
 
 class TestCreateVeneerDataSources:

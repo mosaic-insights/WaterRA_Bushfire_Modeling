@@ -594,7 +594,8 @@ def create_file_data_source(
     - name: Name to give the data source - the one to assign from.
     - path: CSV file Source loads (and, with reload_on_run, re-reads at
       the start of every run).
-    - units: Units for the series, as for v.create_data_source.
+    - units: Units for the series, as for v.create_data_source. Only for a
+      data source that is not reloaded; see Notes.
     - reload_on_run: Re-read the file before each run (default True).
 
     Returns:
@@ -609,9 +610,16 @@ def create_file_data_source(
       the same error a column/catchment name mismatch gives. So the data
       source is renamed here, whichever of the two names it has; the file
       it loads from is stored separately and is unaffected.
-    - Units are applied after the rename, under ``name``. veneer-py would
-      otherwise look the data source up under the path, and fail when the
-      interface has renamed it.
+    - With reload_on_run, units are refused (ValueError): give them in the
+      CSV's column headers instead, as write_data_source_csv does. On
+      Source 6.x, units applied to such a data source after it is created
+      break its reload, and every run then fails with "Could not reload
+      file ... Loaded units are not commensurate with the previously
+      defined units". Units in the headers are read on every load, so the
+      file describes itself and the reload succeeds.
+    - Without reload_on_run, units are applied after the rename, under
+      ``name``. veneer-py would otherwise look the data source up under the
+      path, and fail when the interface has renamed it.
     - Any other data source already called ``name`` is removed first - an
       in-memory one of the same name, say, or the empty one a failed
       assignment leaves behind - as is any left from an earlier attempt
@@ -621,6 +629,13 @@ def create_file_data_source(
     ------------------------------------------------------------------------
     """
     _check_data_source_name(name)
+    if reload_on_run and units is not None:
+        raise ValueError(
+            f"Data source '{name}' is reloaded before each run, so its "
+            f"units have to be in the CSV's column headers - '<column> "
+            f"({units})' - not given here: applied afterwards, Source 6.x "
+            f"fails every run with 'Loaded units are not commensurate with "
+            f"the previously defined units'. See write_data_source_csv.")
     path = str(path)
     logger.info(f"Creating data source '{name}' from {path}")
     v.create_data_source(path, reload_on_run=reload_on_run)
@@ -665,6 +680,62 @@ def create_file_data_source(
     if units is not None:
         v.model.set_data_source_units(name, units)
     return name
+
+
+def write_data_source_csv(data: pd.DataFrame, path, units: str) -> None:
+    """
+    Write a CSV for a file data source, with its units in every header.
+
+    Parameters:
+    - data: Series to write, one column each, indexed by datetime.
+    - path: CSV file to write.
+    - units: Units of every column, as Source spells them (e.g. 'kg/day').
+
+    Returns:
+    - None
+    ------------------------------------------------------------------------
+    Notes:
+    - Each column is headed '<column> (<units>)'. Source loads that as a
+      column named <column> in those units, on every load, so a data
+      source reloaded before each run keeps its units without any being
+      applied to it - which on Source 6.x would break the reload. See
+      create_file_data_source.
+    ------------------------------------------------------------------------
+    """
+    data.rename(columns=lambda c: f'{c} ({units})').to_csv(path)
+
+
+def write_replicate_csvs(
+    loads: pd.DataFrame,
+    rainfall: pd.Series,
+    tss_csv,
+    rainfall_csv,
+    timestep_units: str,
+) -> None:
+    """
+    Write one replicate's loads and rainfall to the CSVs Part A reloads.
+
+    Parameters:
+    - loads: Sediment loads, kg per timestep, one column per subcatchment
+      named as in the Source model.
+    - rainfall: Rainfall, mm per timestep.
+    - tss_csv: CSV the sediment data source loads.
+    - rainfall_csv: CSV the rainfall data source loads.
+    - timestep_units: Unit word for one timestep - study.source's
+      timestep_units, e.g. 'day', so loads are headed 'kg/day'.
+
+    Returns:
+    - None
+    ------------------------------------------------------------------------
+    Notes:
+    - The rainfall column is called 'rainfall', the name Source's runoff
+      models look for; assign_rainfall_timeseries assigns from it.
+    ------------------------------------------------------------------------
+    """
+    write_data_source_csv(loads, tss_csv, f'kg/{timestep_units}')
+    write_data_source_csv(
+        rainfall.to_frame('rainfall'), rainfall_csv,
+        f'mm/{timestep_units}')
 
 
 # ---------------------------------------------------------------------------
