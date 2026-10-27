@@ -552,6 +552,24 @@ class TestEnsureConstituent:
         assert v.added == ['TSS']
         assert 'Salt' in caplog.text and 'source.constituent' in caplog.text
 
+    @pytest.mark.parametrize('model', [
+        ['Pollutant_N', 'Salt'], ['Contaminant'], ['Nitrogen Pollutant']])
+    def test_left_unnamed_only_sediment_is_looked_for(self, model, caplog):
+        """detect_constituent's candidates include 'Contaminant' and
+        'Pollutant', which as often name a nutrient - and the Load
+        Distributor step would replace its generation models."""
+        v = FakeConstituents(model)
+        assert ensure_constituent(v) == 'TSS'
+        assert v.added == ['TSS']
+        assert model[0] in caplog.text
+
+    @pytest.mark.parametrize('name', [
+        'TSS', 'tss_load', 'Fine Sediment', 'Total Suspended Solids'])
+    def test_left_unnamed_a_sediment_constituent_is_found(self, name):
+        v = FakeConstituents(['Nitrogen', name])
+        assert ensure_constituent(v) == name
+        assert v.added == []
+
     def test_a_constituent_source_did_not_create_is_reported(self):
         v = FakeConstituents([], adds=False)
         with pytest.raises(RuntimeError, match='TSS'):

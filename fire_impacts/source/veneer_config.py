@@ -21,7 +21,11 @@ logger = logging.getLogger(__name__)
 
 # Checked in order; the first substring match wins.
 LIKELY_CONSTITUENTS = ['TSS', 'Sediment', 'Contaminant', 'Pollutant']
-# Created by ensure_constituent when the model has none of the above.
+# What ensure_constituent looks for. Sediment only: 'Contaminant' and
+# 'Pollutant' above as often name a nutrient, whose generation models the
+# Load Distributor step would replace.
+SEDIMENT_CONSTITUENTS = ['TSS', 'Sediment', 'Suspended Solid']
+# Created by ensure_constituent when the model has none of those.
 DEFAULT_CONSTITUENT = 'TSS'
 LIKELY_FUNCTIONAL_UNITS = [
     'Forested', 'Forest', 'Urban',
@@ -262,7 +266,7 @@ def ensure_constituent(
     - constituent: Constituent to use (eg source.constituent). Created if
       the model lacks it. Left as None, one is picked from the model.
     - candidate_list: Constituent substrings to pick from, in order, when
-      constituent is None. Defaults to LIKELY_CONSTITUENTS.
+      constituent is None. Defaults to SEDIMENT_CONSTITUENTS.
     - default: Constituent to create when constituent is None and the
       model has nothing matching candidate_list (default 'TSS').
 
@@ -273,10 +277,13 @@ def ensure_constituent(
     - A named constituent matches one in the model exactly, or else
       regardless of case, rather than creating a second that differs only
       in case. Raises ValueError if several differ from it only in case.
-    - Unlike detect_constituent, this never falls back to an unrelated
-      constituent (Salt, say): configuring the Load Distributor replaces
-      that constituent's generation models. It creates `default` instead,
-      and says which constituents it passed over.
+    - Unlike detect_constituent, this only ever picks a sediment
+      constituent: configuring the Load Distributor replaces the chosen
+      constituent's generation models, so taking over a nutrient or salt
+      one would wreck it. That rules out detect_constituent's fallback to
+      the first constituent, and its 'Contaminant' and 'Pollutant'
+      candidates. With no sediment constituent it creates `default`, and
+      says which constituents it passed over.
     - Creating a constituent uses veneer-py's add_constituent, which
       requires Veneer's "Allow Scripts".
     ------------------------------------------------------------------------
@@ -304,7 +311,7 @@ def ensure_constituent(
         return _add_constituent(v, constituent, available)
 
     if candidate_list is None:
-        candidate_list = LIKELY_CONSTITUENTS
+        candidate_list = SEDIMENT_CONSTITUENTS
     match = _first_match(available, candidate_list, 'constituent')
     if match is not None:
         return match
