@@ -261,7 +261,9 @@ class SourceIntegrationSettings:
             'Either way',
             'These apply however the notebook connects to Source.'),
         'example': "'TSS'",
-        'help': 'default: auto-detected'})
+        'help': 'created in Source if the model lacks it. Default: '
+                "auto-detected, or 'TSS' created if nothing in the model "
+                'looks like sediment'})
     functional_unit: str | None = field(default=None, metadata={
         'example': "'Forested'",
         'help': 'default: auto-detected'})

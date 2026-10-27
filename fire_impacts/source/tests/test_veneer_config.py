@@ -3,11 +3,17 @@ Unit tests for veneer_config module, focusing on _detect_parameter function.
 """
 
 import ast
+import sys
 import pytest
 import logging
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
+
+import pandas as pd
+
 from fire_impacts.source.veneer_config import (
-    _detect_parameter, create_file_data_source, run_model_simulation,
+    _detect_parameter, create_file_data_source, create_veneer_data_sources,
+    ensure_constituent, restricted_data_source_name, run_model_simulation,
     run_succeeded,
 )
 
@@ -265,25 +271,86 @@ class TestInputSet:
                 < names.index('run_model'))
 
 
-class FakeVeneerForFiles:
-    """Records the calls create_file_data_source makes, and answers the
-    renaming script the way Source would."""
+def _gui_name(name):
+    """What the Source interface makes of a new data source's name: its
+    data sources tree renames each group it shows with DataManager's
+    RestrictName rule, and the rename sticks."""
+    for c in '.@>,\\':
+        name = name.replace(c, '_')
+    return name[:200].strip(' ')
 
-    def __init__(self, exception=None):
+
+class FakeGroup:
+    def __init__(self, name):
+        self.Name = name
+
+
+class FakeDataManager:
+    def __init__(self, names=()):
+        self.DataGroups = [FakeGroup(n) for n in names]
+
+    def RemoveGroup(self, group):
+        self.DataGroups.remove(group)
+
+
+class FakeSource:
+    """Stands in for Veneer and the Source behind it.
+
+    Data sources are named as Veneer and Source name them: after the path
+    for a file, put through the interface's renaming rule when Source has
+    its interface open (gui=True). Scripts sent to Source are run against a
+    fake data manager, and units are looked up by name, the way veneer-py
+    looks them up."""
+
+    def __init__(self, gui=True, groups=(), rename=_gui_name):
+        self.gui = gui
+        self.rename = rename
+        self.dm = FakeDataManager(groups)
         self.created = []
         self.scripts = []
-        self.exception = exception
+        self.units = {}
         self.model = MagicMock()
         self.model.run_script.side_effect = self._run_script
+        self.model.set_data_source_units.side_effect = self._set_units
+
+    @property
+    def names(self):
+        return [g.Name for g in self.dm.DataGroups]
 
     def create_data_source(self, name, data=None, units=None,
                            reload_on_run=False, **kwargs):
         self.created.append(dict(name=name, data=data, units=units,
                                  reload_on_run=reload_on_run))
+        # Veneer replaces a data source of exactly that name, and the
+        # replacement keeps the name as given.
+        existing = [g for g in self.dm.DataGroups if g.Name == name]
+        for g in existing:
+            self.dm.RemoveGroup(g)
+        shown_as = self.rename(name) if self.gui and not existing else name
+        self.dm.DataGroups.append(FakeGroup(shown_as))
+        if data is None and units is not None:
+            self._set_units(name, units)
+
+    def _set_units(self, name, units):
+        if name not in self.names:
+            raise AssertionError('Unknown data source: ' + name)
+        self.units[name] = units
 
     def _run_script(self, script, init=False):
         self.scripts.append(script)
-        return {'Exception': self.exception, 'Response': {'Value': 'x'}}
+        scope = {'scenario': SimpleNamespace(
+            Network=SimpleNamespace(DataManager=self.dm))}
+        try:
+            exec(script, scope)
+        except Exception as e:
+            return {'Exception': str(e), 'Response': None}
+        return {'Exception': None,
+                'Response': {'Value': scope.get('result')}}
+
+
+class FakeSourceThatLoadsNothing(FakeSource):
+    def create_data_source(self, name, data=None, units=None, **kwargs):
+        self.created.append(dict(name=name, data=data, units=units))
 
 
 def _string_constants(script):
@@ -292,67 +359,204 @@ def _string_constants(script):
             if isinstance(node, ast.Constant) and isinstance(node.value, str)}
 
 
+class TestRestrictedDataSourceName:
+    """The Source interface renames data sources, replacing characters it
+    reserves for its own paths with underscores."""
+
+    def test_reserved_characters_become_underscores(self):
+        assert (restricted_data_source_name(r'C:\Runs\a.b@c>d,e.csv')
+                == 'C:_Runs_a_b_c_d_e_csv')
+
+    def test_other_characters_are_kept(self):
+        name = 'C:/runs/fire-2001 (rep #1):tss'
+        assert restricted_data_source_name(name) == name
+
+    def test_long_names_are_cut_to_200_characters(self):
+        assert restricted_data_source_name('x' * 250) == 'x' * 200
+
+    def test_surrounding_spaces_are_trimmed_after_cutting(self):
+        name = ' ' + 'x' * 198 + '  y'
+        assert restricted_data_source_name(name) == 'x' * 198
+
+
 class TestCreateFileDataSource:
     """Veneer names a file-based data source after the path it was given,
-    not the name the notebook goes on to assign from - which then fails in
-    Source with a NullReferenceException. create_file_data_source gives the
+    and the Source interface then renames it, replacing every backslash
+    and full stop with an underscore. Neither is the name the notebook
+    goes on to assign from, and assigning from a name Source does not have
+    fails with a NullReferenceException. create_file_data_source gives the
     data source the name the caller asked for."""
 
-    PATH = 'C:\Projects\Runs\2001_fire\stochastic\source_inputs\fire_tss.csv'
+    PATH = r'C:\Projects\Runs\2001_fire\stochastic\source_inputs\fire_tss.csv'
 
-    def test_source_is_asked_to_load_the_file_with_its_units(self):
-        v = FakeVeneerForFiles()
-        create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+    @pytest.mark.parametrize('gui', [True, False])
+    def test_the_data_source_ends_up_with_the_name_asked_for(self, gui):
+        v = FakeSource(gui=gui)
+        create_file_data_source(v, 'fire_tss', self.PATH)
+        assert v.names == ['fire_tss']
+
+    def test_source_is_asked_to_load_the_file_and_reload_it(self):
+        v = FakeSource()
+        create_file_data_source(v, 'fire_tss', self.PATH)
 
         [call] = v.created
         assert call['name'] == self.PATH
         assert call['data'] is None
-        assert call['units'] == 'kg/day'
         assert call['reload_on_run'] is True
 
-    def test_the_data_source_is_renamed_to_the_name_asked_for(self):
-        v = FakeVeneerForFiles()
+    @pytest.mark.parametrize('gui', [True, False])
+    def test_units_are_applied_under_the_new_name(self, gui):
+        """veneer-py applies a file's units by looking the data source up
+        under the path - which the interface has already renamed."""
+        v = FakeSource(gui=gui)
+        create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+        assert v.units == {'fire_tss': 'kg/day'}
+
+    def test_no_units_are_applied_unless_asked_for(self):
+        v = FakeSource()
         create_file_data_source(v, 'fire_tss', self.PATH)
+        assert v.units == {}
 
-        [script] = v.scripts
-        strings = _string_constants(script)
-        assert 'fire_tss' in strings
-        assert 'Name' in script and 'fire_tss' in script
+    def test_the_interface_rule_comes_from_source_when_it_has_one(
+            self, monkeypatch):
+        """A Source version whose rule differs from the one built in here
+        still has its data source found."""
+        def other_rule(name):
+            return name.replace('\\', '_').replace('_', '-')
 
-    def test_a_windows_path_reaches_source_intact(self):
-        """Pasted in raw, '\2001_fire' and '\fire_tss' would be read as
-        escape sequences and the data source never found."""
-        v = FakeVeneerForFiles()
+        dm_module = ModuleType('RiverSystem.DataManagement.DataManager')
+        dm_module.DataManager = SimpleNamespace(RestrictName=other_rule)
+        clr = ModuleType('clr')
+        clr.AddReference = lambda name: None
+        for name, module in [
+                ('clr', clr),
+                ('RiverSystem', ModuleType('RiverSystem')),
+                ('RiverSystem.DataManagement',
+                 ModuleType('RiverSystem.DataManagement')),
+                ('RiverSystem.DataManagement.DataManager', dm_module)]:
+            monkeypatch.setitem(sys.modules, name, module)
+
+        v = FakeSource(rename=other_rule)
+        create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+        assert v.names == ['fire_tss']
+
+    def test_any_other_data_source_with_that_name_is_replaced(self):
+        """Part B leaves an in-memory data source of the same name, and a
+        failed assignment leaves an empty one."""
+        v = FakeSource(groups=['fire_tss', 'stochastic_rain'])
         create_file_data_source(v, 'fire_tss', self.PATH)
+        assert sorted(v.names) == ['fire_tss', 'stochastic_rain']
 
-        [script] = v.scripts
-        assert self.PATH in _string_constants(script)
+    def test_one_left_over_from_an_earlier_attempt_is_removed(self):
+        """A run that failed after creating the data source leaves it
+        behind under the interface's version of the path."""
+        v = FakeSource(groups=[_gui_name(self.PATH), 'stochastic_rain'])
+        create_file_data_source(v, 'fire_tss', self.PATH)
+        assert sorted(v.names) == ['fire_tss', 'stochastic_rain']
 
     def test_a_non_ascii_path_reaches_source_as_written(self):
         """IronPython 2 leaves a backslash-u escape in an ordinary string
         as literal characters, so an accented folder name has to arrive as
         itself."""
         path = 'C:\\Users\\Jos\u00e9\\fire_tss.csv'
-        v = FakeVeneerForFiles()
+        v = FakeSource()
         create_file_data_source(v, 'fire_tss', path)
 
         [script] = v.scripts
         assert '\\u00e9' not in script
         assert path in _string_constants(script)
+        assert v.names == ['fire_tss']
 
-    def test_any_other_data_source_with_that_name_is_replaced(self):
-        """Part B leaves an in-memory data source of the same name, and a
-        failed assignment leaves an empty one."""
-        v = FakeVeneerForFiles()
-        create_file_data_source(v, 'fire_tss', self.PATH)
-
-        assert 'RemoveGroup' in v.scripts[0]
-
-    def test_a_failure_in_source_is_raised(self):
-        v = FakeVeneerForFiles(exception={'Message': 'no such data source'})
-        with pytest.raises(Exception, match='no such data source'):
+    def test_a_file_source_could_not_load_is_reported(self):
+        v = FakeSourceThatLoadsNothing()
+        with pytest.raises(Exception, match='No data source was created'):
             create_file_data_source(v, 'fire_tss', self.PATH)
 
+    @pytest.mark.parametrize('name', ['fire.tss', 'fire,tss', 'runs\\tss'])
+    def test_a_name_the_interface_would_change_is_refused(self, name):
+        v = FakeSource()
+        with pytest.raises(ValueError) as raised:
+            create_file_data_source(v, name, self.PATH)
+        assert name in str(raised.value)
+        assert v.created == []
+
     def test_it_returns_the_name_to_assign_from(self):
-        v = FakeVeneerForFiles()
+        v = FakeSource()
         assert create_file_data_source(v, 'fire_tss', self.PATH) == 'fire_tss'
+
+
+class TestCreateVeneerDataSources:
+    def test_a_name_the_interface_would_change_is_refused(self):
+        v = MagicMock()
+        with pytest.raises(ValueError, match='fire.tss'):
+            create_veneer_data_sources(
+                v, pd.DataFrame(), pd.DataFrame(), tss_source_name='fire.tss')
+        v.create_data_source.assert_not_called()
+
+
+class FakeConstituents:
+    """The constituent list of a Source model, and veneer-py's calls on it."""
+
+    def __init__(self, constituents=(), adds=True):
+        self.constituents = list(constituents)
+        self.adds = adds
+        self.added = []
+        self.model = MagicMock()
+        self.model.get_constituents.side_effect = (
+            lambda: list(self.constituents))
+        self.model.add_constituent.side_effect = self._add
+
+    def _add(self, name):
+        self.added.append(name)
+        if self.adds:
+            self.constituents.append(name)
+        return {'Exception': None, 'Response': None}
+
+
+class TestEnsureConstituent:
+    def test_a_named_constituent_the_model_has_is_used(self):
+        v = FakeConstituents(['Salt', 'TSS'])
+        assert ensure_constituent(v, 'TSS') == 'TSS'
+        assert v.added == []
+
+    def test_a_named_constituent_the_model_lacks_is_created(self, caplog):
+        v = FakeConstituents(['Salt'])
+        with caplog.at_level(logging.INFO):
+            assert ensure_constituent(v, 'TSS') == 'TSS'
+        assert v.added == ['TSS']
+        assert "Created constituent 'TSS'" in caplog.text
+
+    def test_a_named_constituent_is_matched_regardless_of_case(self, caplog):
+        """Rather than create a second constituent that differs only in
+        case."""
+        v = FakeConstituents(['Salt', 'TSS'])
+        assert ensure_constituent(v, 'tss') == 'TSS'
+        assert v.added == []
+        assert "'TSS'" in caplog.text
+
+    def test_left_unnamed_a_likely_constituent_is_picked(self):
+        v = FakeConstituents(['Salt', 'Fine Sediment'])
+        assert ensure_constituent(v) == 'Fine Sediment'
+        assert v.added == []
+
+    def test_left_unnamed_in_a_model_without_constituents_tss_is_created(
+            self, caplog):
+        v = FakeConstituents([])
+        with caplog.at_level(logging.INFO):
+            assert ensure_constituent(v) == 'TSS'
+        assert v.added == ['TSS']
+        assert "Created constituent 'TSS'" in caplog.text
+
+    def test_left_unnamed_an_unrelated_constituent_is_not_taken_over(
+            self, caplog):
+        """Configuring the Load Distributor replaces a constituent's
+        generation models, so a salt model is not the place for sediment."""
+        v = FakeConstituents(['Salt', 'Nitrogen'])
+        assert ensure_constituent(v) == 'TSS'
+        assert v.added == ['TSS']
+        assert 'Salt' in caplog.text and 'source.constituent' in caplog.text
+
+    def test_a_constituent_source_did_not_create_is_reported(self):
+        v = FakeConstituents([], adds=False)
+        with pytest.raises(RuntimeError, match='TSS'):
+            ensure_constituent(v, 'TSS')
