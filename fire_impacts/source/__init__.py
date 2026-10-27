@@ -21,6 +21,7 @@ from .veneer_config import (
     save_model,
     configure_source_model_with_fire_data,
     LIKELY_CONSTITUENTS,
+    SEDIMENT_CONSTITUENTS,
     DEFAULT_CONSTITUENT,
     LIKELY_FUNCTIONAL_UNITS,
     LOAD_DISTRIBUTOR_DLL,
@@ -44,6 +45,7 @@ from .utils import (
 __all__ = [
     # Configuration constants
     'LIKELY_CONSTITUENTS',
+    'SEDIMENT_CONSTITUENTS',
     'DEFAULT_CONSTITUENT',
     'LIKELY_FUNCTIONAL_UNITS',
     'LOAD_DISTRIBUTOR_DLL',

@@ -124,6 +124,13 @@ from fire_impacts.source import (
 # notebook auto-detects them from the running Source model and shows you
 # what it picked. A constituent the model lacks is created.
 #
+# The data source names, `tss_data_source` and `rainfall_data_source`,
+# cannot contain `.`, `@`, `>`, `,` or a backslash. With its interface
+# open, Source renames a data source whose name has any of them, and the
+# notebook would then not find it under the name it asked for. So
+# `study.toml` refuses such a name when it loads, here, and suggests one
+# to use — before anything below has changed the Source model.
+#
 # Running the cell prints each setting and where it came from, so you can
 # check the notebook is about to do what you expect.
 
@@ -495,11 +502,6 @@ write_replicate_csvs(SOURCE_REPLICATE)
 # nothing called `source.tss_data_source`, which Source reports as a
 # `NullReferenceException`. So the data source is renamed, and its units
 # applied under the new name.
-#
-# For the same reason, `source.tss_data_source` and
-# `source.rainfall_data_source` cannot contain `.`, `@`, `>`, `,` or a
-# backslash: Source's interface would change the name. The data sources
-# are refused, with a name to use instead, rather than lost.
 
 # %%
 create_file_data_source(

@@ -298,13 +298,15 @@ class SourceIntegrationSettings:
     tss_data_source: str = field(default='fire_tss', metadata={
         'example': "'fire_tss'",
         'help': 'name of the Source data source holding sediment load. '
-                'Also names the CSV written for it, so keep it to '
-                'characters a filename may contain.'})
+                "No '.', '@', '>', ',' or backslash: Source's interface "
+                'would rename it. Also names the CSV written for it, so '
+                'keep it to characters a filename may contain.'})
     rainfall_data_source: str = field(default='stochastic_rain', metadata={
         'example': "'stochastic_rain'",
-        'help': 'name of the Source data source holding rainfall. Also '
-                'names the CSV written for it, so keep it to characters '
-                'a filename may contain.'})
+        'help': 'name of the Source data source holding rainfall. '
+                "No '.', '@', '>', ',' or backslash: Source's interface "
+                'would rename it. Also names the CSV written for it, so '
+                'keep it to characters a filename may contain.'})
 
     def __post_init__(self):
         # Refused at load rather than in SourceIntegration: SimulationEnsemble
@@ -315,6 +317,13 @@ class SourceIntegrationSettings:
                 f'timestep = {self.timestep!r} is not a timestep this '
                 f"library can feed Source; use 'D' for a daily model or "
                 f"'h' for an hourly one.")
+        # Likewise: SourceIntegration would otherwise only refuse these
+        # after it had already reconfigured the Source model.
+        from ._source_names import data_source_name_problem
+        for name in ('tss_data_source', 'rainfall_data_source'):
+            problem = data_source_name_problem(getattr(self, name))
+            if problem is not None:
+                raise ValueError(f'{name}: {problem}')
 
     ###########################################################################
     @property

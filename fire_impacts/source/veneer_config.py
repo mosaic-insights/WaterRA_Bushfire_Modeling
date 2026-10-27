@@ -12,6 +12,11 @@ import veneer
 from typing import Optional, Dict, List
 import logging
 
+from .._source_names import (
+    data_source_name_problem,
+    restricted_data_source_name,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,7 +26,11 @@ logger = logging.getLogger(__name__)
 
 # Checked in order; the first substring match wins.
 LIKELY_CONSTITUENTS = ['TSS', 'Sediment', 'Contaminant', 'Pollutant']
-# Created by ensure_constituent when the model has none of the above.
+# What ensure_constituent looks for. Sediment only: 'Contaminant' and
+# 'Pollutant' above as often name a nutrient, whose generation models the
+# Load Distributor step would replace.
+SEDIMENT_CONSTITUENTS = ['TSS', 'Sediment', 'Suspended Solid']
+# Created by ensure_constituent when the model has none of those.
 DEFAULT_CONSTITUENT = 'TSS'
 LIKELY_FUNCTIONAL_UNITS = [
     'Forested', 'Forest', 'Urban',
@@ -262,7 +271,7 @@ def ensure_constituent(
     - constituent: Constituent to use (eg source.constituent). Created if
       the model lacks it. Left as None, one is picked from the model.
     - candidate_list: Constituent substrings to pick from, in order, when
-      constituent is None. Defaults to LIKELY_CONSTITUENTS.
+      constituent is None. Defaults to SEDIMENT_CONSTITUENTS.
     - default: Constituent to create when constituent is None and the
       model has nothing matching candidate_list (default 'TSS').
 
@@ -270,12 +279,16 @@ def ensure_constituent(
     - The constituent name exactly as it appears in Source.
     ------------------------------------------------------------------------
     Notes:
-    - A named constituent matches one in the model regardless of case,
-      rather than creating a second that differs only in case.
-    - Unlike detect_constituent, this never falls back to an unrelated
-      constituent (Salt, say): configuring the Load Distributor replaces
-      that constituent's generation models. It creates `default` instead,
-      and says which constituents it passed over.
+    - A named constituent matches one in the model exactly, or else
+      regardless of case, rather than creating a second that differs only
+      in case. Raises ValueError if several differ from it only in case.
+    - Unlike detect_constituent, this only ever picks a sediment
+      constituent: configuring the Load Distributor replaces the chosen
+      constituent's generation models, so taking over a nutrient or salt
+      one would wreck it. That rules out detect_constituent's fallback to
+      the first constituent, and its 'Contaminant' and 'Pollutant'
+      candidates. With no sediment constituent it creates `default`, and
+      says which constituents it passed over.
     - Creating a constituent uses veneer-py's add_constituent, which
       requires Veneer's "Allow Scripts".
     ------------------------------------------------------------------------
@@ -294,10 +307,16 @@ def ensure_constituent(
                 f"'{same_but_case[0]}' in the Source model; using "
                 f"'{same_but_case[0]}'.")
             return same_but_case[0]
+        if same_but_case:
+            raise ValueError(
+                f"The Source model has no constituent '{constituent}', but "
+                f"has several differing from it only in case: "
+                f"{', '.join(repr(c) for c in same_but_case)}. Set "
+                f"source.constituent to the one to use, exactly as written.")
         return _add_constituent(v, constituent, available)
 
     if candidate_list is None:
-        candidate_list = LIKELY_CONSTITUENTS
+        candidate_list = SEDIMENT_CONSTITUENTS
     match = _first_match(available, candidate_list, 'constituent')
     if match is not None:
         return match
@@ -509,41 +528,12 @@ def load_fire_impact_data(
 # Veneer data source management
 # ---------------------------------------------------------------------------
 
-def restricted_data_source_name(name: str) -> str:
-    """
-    Return the name the Source interface gives a data source called `name`.
-
-    Parameters:
-    - name: A data source name, as given to Veneer.
-
-    Returns:
-    - The name with '.', '@', '>', ',' and backslash each replaced by an
-      underscore, cut to 200 characters, and stripped of surrounding
-      spaces.
-    ------------------------------------------------------------------------
-    Notes:
-    - This mirrors Source's DataManager.RestrictName. Source applies it
-      when its interface shows a data source, and the new name sticks. So
-      with the interface open, a data source Veneer creates from a file
-      path ends up named after the path with its backslashes and full stop
-      turned into underscores. A Veneer command line keeps the name as
-      given.
-    ------------------------------------------------------------------------
-    """
-    for reserved in '.@>,\\':
-        name = name.replace(reserved, '_')
-    return name[:200].strip(' ')
-
-
 def _check_data_source_name(name: str) -> None:
-    """Refuse a data source name the Source interface would change."""
-    restricted = restricted_data_source_name(name)
-    if restricted != name:
-        raise ValueError(
-            f"Source would rename data source '{name}' to '{restricted}' "
-            f"when its interface is open, and then not find it under the "
-            f"name asked for. Use a name without '.', '@', '>', ',' or "
-            f"backslashes, such as '{restricted}'.")
+    """Refuse a data source name the Source interface would change - see
+    restricted_data_source_name."""
+    problem = data_source_name_problem(name)
+    if problem is not None:
+        raise ValueError(problem)
 
 
 def create_veneer_data_sources(

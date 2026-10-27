@@ -10,11 +10,13 @@ newer templates.
 """
 
 import os
+from dataclasses import fields
 
 import pytest
 
 from fire_impacts.study import (
-    CONFIG_NAME, StudyConfigError, StudySettings, load_study,
+    CONFIG_NAME, SourceIntegrationSettings, StudyConfigError, StudySettings,
+    load_study,
 )
 
 MINIMAL = """
@@ -352,6 +354,45 @@ def test_an_unsupported_source_timestep_is_refused_at_load(tmp_path, value):
     assert 'source.timestep' in message
     assert repr(value) in message
     assert "'D'" in message and "'h'" in message
+
+
+DATA_SOURCE_FIELDS = ['tss_data_source', 'rainfall_data_source']
+
+
+@pytest.mark.parametrize('field_name', DATA_SOURCE_FIELDS)
+@pytest.mark.parametrize('value, safe', [
+    ('fire.tss', 'fire_tss'), ('fire,tss', 'fire_tss'),
+    ('fire@tss', 'fire_tss'), ('fire>tss', 'fire_tss'),
+    ('runs\\tss', 'runs_tss')])
+def test_a_data_source_name_source_would_rename_is_refused_at_load(
+        tmp_path, field_name, value, safe):
+    """Source's interface renames a data source with any of these in its
+    name, and the notebook then cannot find it. Caught when the file loads
+    rather than in SourceIntegration, where it would surface only after
+    the Load Distributor step had already changed the model."""
+    with pytest.raises(StudyConfigError) as exc:
+        load_study(str(write_study(
+            tmp_path, MINIMAL + f"\n[source]\n{field_name} = '{value}'\n")))
+    message = str(exc.value)
+    assert f'source.{field_name}' in message
+    assert value in message
+    assert repr(safe) in message
+
+
+@pytest.mark.parametrize('field_name', DATA_SOURCE_FIELDS)
+def test_a_data_source_name_source_keeps_is_accepted(tmp_path, field_name):
+    study = load_study(str(write_study(
+        tmp_path, MINIMAL + f"\n[source]\n{field_name} = 'fire-tss 2'\n")))
+    assert getattr(study.source, field_name) == 'fire-tss 2'
+
+
+@pytest.mark.parametrize('field_name', DATA_SOURCE_FIELDS)
+def test_the_data_source_help_names_the_refused_characters(field_name):
+    [spec] = [f for f in fields(SourceIntegrationSettings)
+              if f.name == field_name]
+    help_text = spec.metadata['help']
+    for c in ["'.'", "'@'", "'>'", "','", 'backslash']:
+        assert c in help_text
 
 
 def test_source_connects_to_an_open_source_unless_a_project_is_named(

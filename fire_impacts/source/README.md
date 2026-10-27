@@ -67,8 +67,11 @@ When `constituent` or `functional_unit` parameters are `None`, the module uses t
 
 - A constituent you name is used if the model has it (matching regardless of
   case), and created with veneer-py's `v.model.add_constituent` if not.
-- Left unnamed, it picks a match from `LIKELY_CONSTITUENTS` as above, but never
-  falls back to an unrelated constituent: with no match it creates
+- Left unnamed, it picks a match from `SEDIMENT_CONSTITUENTS`
+  (`['TSS', 'Sediment', 'Suspended Solid']`), never an unrelated constituent:
+  not the first one in the model, and not a `Contaminant` or `Pollutant` match,
+  which as often names a nutrient. The Load Distributor step replaces the
+  chosen constituent's generation models. With no match it creates
   `DEFAULT_CONSTITUENT` (`'TSS'`) and logs the constituents it passed over.
 
 ### Functional Unit Detection

@@ -534,6 +534,21 @@ class TestEnsureConstituent:
         assert v.added == []
         assert "'TSS'" in caplog.text
 
+    def test_an_exact_match_wins_over_one_differing_in_case(self):
+        v = FakeConstituents(['tss', 'TSS', 'Tss'])
+        assert ensure_constituent(v, 'TSS') == 'TSS'
+        assert v.added == []
+
+    def test_several_matches_differing_only_in_case_are_refused(self):
+        """Neither is obviously the one meant, and creating a third would
+        only add to the confusion."""
+        v = FakeConstituents(['Salt', 'tss', 'Tss'])
+        with pytest.raises(ValueError) as raised:
+            ensure_constituent(v, 'TSS')
+        assert "'tss'" in str(raised.value) and "'Tss'" in str(raised.value)
+        assert 'source.constituent' in str(raised.value)
+        assert v.added == []
+
     def test_left_unnamed_a_likely_constituent_is_picked(self):
         v = FakeConstituents(['Salt', 'Fine Sediment'])
         assert ensure_constituent(v) == 'Fine Sediment'
@@ -555,6 +570,24 @@ class TestEnsureConstituent:
         assert ensure_constituent(v) == 'TSS'
         assert v.added == ['TSS']
         assert 'Salt' in caplog.text and 'source.constituent' in caplog.text
+
+    @pytest.mark.parametrize('model', [
+        ['Pollutant_N', 'Salt'], ['Contaminant'], ['Nitrogen Pollutant']])
+    def test_left_unnamed_only_sediment_is_looked_for(self, model, caplog):
+        """detect_constituent's candidates include 'Contaminant' and
+        'Pollutant', which as often name a nutrient - and the Load
+        Distributor step would replace its generation models."""
+        v = FakeConstituents(model)
+        assert ensure_constituent(v) == 'TSS'
+        assert v.added == ['TSS']
+        assert model[0] in caplog.text
+
+    @pytest.mark.parametrize('name', [
+        'TSS', 'tss_load', 'Fine Sediment', 'Total Suspended Solids'])
+    def test_left_unnamed_a_sediment_constituent_is_found(self, name):
+        v = FakeConstituents(['Nitrogen', name])
+        assert ensure_constituent(v) == name
+        assert v.added == []
 
     def test_a_constituent_source_did_not_create_is_reported(self):
         v = FakeConstituents([], adds=False)
