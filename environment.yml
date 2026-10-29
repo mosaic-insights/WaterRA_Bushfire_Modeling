@@ -32,7 +32,7 @@ dependencies:
     - dea-tools # requires pg_config to build from source!
     - cql2 # Required by calculate_fire_severity() method
     - https://github.com/joelrahman/pysheds/archive/refs/heads/master.zip
-    - https://github.com/flowmatters/veneer-py/archive/master.zip # For eWater Source interaction
+    - https://github.com/flowmatters/veneer-py/archive/v0.3.0.zip # For eWater Source interaction
   # - anaconda
 
 
