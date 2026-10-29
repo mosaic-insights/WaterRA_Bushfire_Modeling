@@ -6,6 +6,7 @@ import ast
 import sys
 import pytest
 import logging
+from pathlib import PureWindowsPath
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -354,6 +355,37 @@ class FakeSourceThatLoadsNothing(FakeSource):
         self.created.append(dict(name=name, data=data, units=units))
 
 
+class FakeVeneerPy030(FakeSource):
+    """Veneer and Source behind veneer-py 0.3.0, which names a file data
+    source itself: data_source_name, or else the file's stem, put through
+    the interface's rule. It replaces any data source already of that name,
+    and returns the name it kept.
+
+    keeps: the name veneer-py reports it kept, when that is not the one
+    asked for - an older Veneer with "Allow Scripts" off keeps the one
+    Source gave the data source."""
+
+    def __init__(self, keeps=None, **kwargs):
+        super().__init__(**kwargs)
+        self.keeps = keeps
+
+    def create_data_source(self, name, data=None, units=None, precision=3,
+                           reload_on_run=False, data_source_name=None):
+        self.created.append(dict(name=name, data=data, units=units,
+                                 reload_on_run=reload_on_run,
+                                 data_source_name=data_source_name))
+        if data_source_name is None:
+            data_source_name = (PureWindowsPath(name).stem
+                                if data is None else name)
+        kept = self.keeps or _gui_name(data_source_name)
+        for g in [g for g in self.dm.DataGroups if g.Name == kept]:
+            self.dm.RemoveGroup(g)
+        self.dm.DataGroups.append(FakeGroup(kept))
+        if units is not None:
+            self._set_units(kept, units)
+        return kept
+
+
 def _string_constants(script):
     """Every string literal in a script, as IronPython would read it."""
     return {node.value for node in ast.walk(ast.parse(script))
@@ -500,6 +532,78 @@ class TestCreateFileDataSource:
     def test_it_returns_the_name_to_assign_from(self):
         v = FakeSource()
         assert create_file_data_source(v, 'fire_tss', self.PATH) == 'fire_tss'
+
+
+class TestCreateFileDataSourceWithVeneerPy030:
+    """veneer-py 0.3.0 names a file data source after the file's stem
+    unless told otherwise, so nothing is left named after the path for
+    create_file_data_source to find and rename. It takes the name
+    instead."""
+
+    PATH = r'C:\Projects\Runs\2001_fire\stochastic\source_inputs\fire_tss.csv'
+    OTHER_STEM = r'C:\Projects\Runs\2001_fire\source_inputs\replicate.csv'
+
+    def test_the_data_source_ends_up_with_the_name_asked_for(self):
+        v = FakeVeneerPy030()
+        assert create_file_data_source(v, 'fire_tss', self.PATH) == 'fire_tss'
+        assert v.names == ['fire_tss']
+
+    def test_veneer_py_is_asked_for_the_name(self):
+        v = FakeVeneerPy030()
+        create_file_data_source(v, 'fire_tss', self.OTHER_STEM)
+
+        [call] = v.created
+        assert call['name'] == self.OTHER_STEM
+        assert call['data'] is None
+        assert call['data_source_name'] == 'fire_tss'
+        assert call['reload_on_run'] is True
+        assert v.names == ['fire_tss']
+
+    def test_no_script_of_its_own_is_sent(self):
+        """veneer-py names the data source, needing no script at all with
+        a Veneer of protocol 20261027 or later."""
+        v = FakeVeneerPy030()
+        create_file_data_source(v, 'fire_tss', self.PATH)
+        assert v.scripts == []
+
+    def test_a_data_source_with_that_name_is_replaced(self):
+        """Part B's in-memory one, or the one a failed earlier attempt
+        left."""
+        v = FakeVeneerPy030(groups=['fire_tss', 'stochastic_rain'])
+        create_file_data_source(v, 'fire_tss', self.PATH)
+        assert sorted(v.names) == ['fire_tss', 'stochastic_rain']
+
+    def test_units_are_applied_under_the_name(self):
+        v = FakeVeneerPy030()
+        create_file_data_source(
+            v, 'fire_tss', self.OTHER_STEM, units='kg/day',
+            reload_on_run=False)
+        assert v.units == {'fire_tss': 'kg/day'}
+
+    def test_units_for_a_file_source_reloads_are_still_refused(self):
+        v = FakeVeneerPy030()
+        with pytest.raises(ValueError, match='parses as a unit'):
+            create_file_data_source(v, 'fire_tss', self.PATH, units='kg/day')
+        assert v.created == []
+
+    def test_a_name_the_interface_would_change_is_still_refused(self):
+        v = FakeVeneerPy030()
+        with pytest.raises(ValueError, match='fire.tss'):
+            create_file_data_source(v, 'fire.tss', self.PATH)
+        assert v.created == []
+
+    def test_a_data_source_left_under_another_name_is_reported(self):
+        """An older Veneer with "Allow Scripts" off leaves the data source
+        with the name Source gave it, and assigning from the one asked for
+        would fail with a NullReferenceException."""
+        kept = _gui_name(self.PATH)
+        v = FakeVeneerPy030(keeps=kept)
+        with pytest.raises(Exception) as raised:
+            create_file_data_source(v, 'fire_tss', self.PATH)
+        message = str(raised.value)
+        assert repr(kept) in message
+        assert "'fire_tss'" in message
+        assert 'Allow Scripts' in message
 
 
 class TestWriteReplicateCsvs:
