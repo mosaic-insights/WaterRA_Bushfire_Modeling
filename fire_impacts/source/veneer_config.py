@@ -6,8 +6,6 @@ Load Distributor constituent-generation model, push fire-impact
 time-series as Veneer data sources, and trigger simulation runs.
 """
 
-import inspect
-import json
 import pandas as pd
 import veneer
 from typing import Optional, Dict, List
@@ -603,22 +601,19 @@ def create_file_data_source(
     - name, for passing on to the assignment functions.
     ------------------------------------------------------------------------
     Notes:
-    - veneer-py 0.3.0 and later name the data source themselves, and are
-      given ``name`` to name it (data_source_name); left to themselves they
-      name it after the file's stem. They replace any other data source
-      already called ``name``, moving its assignments to the new one. With
-      a Veneer older than protocol version 20261027 they name it with a
-      script, which requires Veneer's "Allow Scripts"; without it the data
-      source keeps the name Source gave it, and an Exception says so.
-    - Up to veneer-py 0.2.1, Veneer names a file-based data source after
-      the path it was given, not the file's stem, and with its interface
-      open Source then turns that path's backslashes and full stop into
-      underscores (see restricted_data_source_name). Assigning from
-      ``name`` would find no such data source, and Source fails with a
-      NullReferenceException - the same error a column/catchment name
-      mismatch gives. So the data source is renamed here, whichever of the
-      two names it has; the file it loads from is stored separately and is
-      unaffected.
+    - veneer-py names a file data source after the file's stem unless
+      told otherwise; here it is told ``name``. Assigning from a name
+      Source does not have fails with a NullReferenceException - the same
+      error a column/catchment name mismatch gives. The file the data
+      source loads from is stored separately and is unaffected.
+    - Any other data source already called ``name`` is replaced, and its
+      assignments move to the new one's columns of the same names: Part
+      B's in-memory one, say, or one left by an earlier attempt.
+    - With a Veneer older than protocol version 20261027, veneer-py names
+      the data source with a script, which requires Veneer's "Allow
+      Scripts". Without it the data source keeps the name Source gave it,
+      and an Exception says so.
+    - Needs veneer-py 0.3.0 or later (TypeError otherwise).
     - With reload_on_run, units are refused (ValueError): give them in the
       CSV's column headers instead, as write_data_source_csv does. Units
       given here are applied once, after the file is loaded, but Source
@@ -631,14 +626,8 @@ def create_file_data_source(
       which are not ours to choose. (Seen on Source 5.60 and 6.10; with
       column names that do not parse as units, applied units do survive
       the reload.)
-    - Without reload_on_run, units are applied after the rename, under
-      ``name``. veneer-py 0.2.1 would otherwise look the data source up
-      under the path, and fail when the interface has renamed it.
-    - Up to veneer-py 0.2.1, any other data source already called ``name``
-      is removed first - an in-memory one of the same name, say, or the
-      empty one a failed assignment leaves behind - as is any left from an
-      earlier attempt under either version of the path. Requires Veneer's
-      "Allow Scripts".
+    - Without reload_on_run, units are applied once the data source is
+      created, under ``name``.
     - Raises ValueError for a ``name`` the Source interface would itself
       change.
     ------------------------------------------------------------------------
@@ -656,78 +645,25 @@ def create_file_data_source(
             f"write_data_source_csv.")
     path = str(path)
     logger.info(f"Creating data source '{name}' from {path}")
-    if _names_file_data_sources(v):
+    try:
         given = v.create_data_source(
             path, reload_on_run=reload_on_run, data_source_name=name)
-        if given != name:
-            raise Exception(
-                f"The data source loaded from {path} is named {given!r}, "
-                f"not {name!r}, so nothing could be assigned from it. With "
-                f"a Veneer older than protocol version 20261027, veneer-py "
-                f"names it with a script: turn on Veneer's \"Allow "
-                f"Scripts\" option.")
-    else:
-        _create_and_rename_file_data_source(v, name, path, reload_on_run)
+    except TypeError as e:
+        if 'data_source_name' not in str(e):
+            raise
+        raise TypeError(
+            f"Creating data source '{name}' needs veneer-py 0.3.0 or later "
+            f"(this one is {getattr(veneer, '__version__', 'older')}).") from e
+    if given != name:
+        raise Exception(
+            f"The data source loaded from {path} is named {given!r}, not "
+            f"{name!r}, so nothing could be assigned from it. With a Veneer "
+            f"older than protocol version 20261027, veneer-py names it with "
+            f"a script: turn on Veneer's \"Allow Scripts\" option.")
 
     if units is not None:
         v.model.set_data_source_units(name, units)
     return name
-
-
-def _names_file_data_sources(v: veneer.Veneer) -> bool:
-    """Whether v's create_data_source names a file data source itself, as
-    veneer-py 0.3.0 and later do (data_source_name)."""
-    try:
-        parameters = inspect.signature(v.create_data_source).parameters
-    except (TypeError, ValueError):
-        return False
-    return 'data_source_name' in parameters
-
-
-def _create_and_rename_file_data_source(
-    v: veneer.Veneer, name: str, path: str, reload_on_run: bool,
-) -> None:
-    """Up to veneer-py 0.2.1: create the data source, which Veneer names
-    after the path, then rename it with a script - see
-    create_file_data_source."""
-    v.create_data_source(path, reload_on_run=reload_on_run)
-
-    # String literals IronPython reads back unchanged. Pasted in raw, a
-    # Windows path's '\2001...' and '\f...' would become escape sequences;
-    # and non-ASCII characters go in as themselves, because IronPython 2
-    # leaves a \u escape in an ordinary string as literal characters.
-    def literal(s):
-        return json.dumps(s, ensure_ascii=False)
-
-    # Source's own renaming rule where it has one, so a version whose rule
-    # differs is still matched; the copy here otherwise.
-    script = (
-        f'raw = {literal(path)}\n'
-        'try:\n'
-        '    import clr\n'
-        "    clr.AddReference('RiverSystem')\n"
-        '    from RiverSystem.DataManagement.DataManager import DataManager\n'
-        '    restricted = DataManager.RestrictName(raw)\n'
-        'except Exception:\n'
-        f'    restricted = {literal(restricted_data_source_name(path))}\n'
-        f'name = {literal(name)}\n'
-        'dm = scenario.Network.DataManager\n'
-        'from_file = [g for g in dm.DataGroups\n'
-        '             if g.Name == raw or g.Name == restricted]\n'
-        'if not from_file:\n'
-        '    raise Exception("No data source was created from " + raw)\n'
-        '# The one just created: Veneer adds it after any earlier ones.\n'
-        'grp = from_file[-1]\n'
-        'for other in [g for g in dm.DataGroups\n'
-        '              if g.Name in (name, raw, restricted)\n'
-        '              and not g is grp]:\n'
-        '    dm.RemoveGroup(other)\n'
-        'grp.Name = name\n'
-        'result = grp.Name\n'
-    )
-    response = v.model.run_script(script, init=True)
-    if response.get('Exception') is not None:
-        raise Exception(response['Exception'])
 
 
 def write_data_source_csv(data: pd.DataFrame, path, units: str) -> None:

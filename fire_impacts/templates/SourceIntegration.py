@@ -508,19 +508,19 @@ tss_csv.read_text().splitlines()[0], rain_csv.read_text().splitlines()[0]
 # from the two CSVs, under the same names, with `reload_on_run=True` so
 # Source re-reads the files at the start of every run.
 #
-# `create_file_data_source` sees to the names. Left to itself, Veneer
-# names a file-based data source after the file's full path — and with
-# Source's interface open, Source then turns that path's backslashes and
-# full stop into underscores. Either way the assignments below would find
-# nothing called `source.tss_data_source`, which Source reports as a
-# `NullReferenceException`. So the data source is renamed. Its units come
-# from the CSV headers written above, so none are given here.
+# `create_file_data_source` gives each data source the name asked for,
+# and checks it got it: the assignments below look for
+# `source.tss_data_source` and `source.rainfall_data_source`, and Source
+# reports a missing one as a `NullReferenceException`. Each new data
+# source replaces the one of the same name, and the assignments from it
+# move across. Its units come from the CSV headers written above, so none
+# are given here.
 
 # %%
 create_file_data_source(v, TSS_SOURCE, tss_csv)
 create_file_data_source(v, RAINFALL_SOURCE, rain_csv)
 
-# Both names should be listed here, and no CSV paths.
+# Both names should be listed here.
 [ds['Name'] for ds in v.data_sources()]
 
 # %% [markdown]

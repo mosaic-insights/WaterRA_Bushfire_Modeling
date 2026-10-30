@@ -25,11 +25,10 @@ def restricted_data_source_name(name: str) -> str:
     ------------------------------------------------------------------------
     Notes:
     - This mirrors Source's DataManager.RestrictName. Source applies it
-      when its interface shows a data source, and the new name sticks. So
-      with the interface open, a data source Veneer creates from a file
-      path ends up named after the path with its backslashes and full stop
-      turned into underscores. A Veneer command line keeps the name as
-      given.
+      when its interface shows a data source, and the new name sticks; a
+      Veneer command line keeps the name as given. veneer-py 0.3.0 and
+      later apply it to every name they give a data source, so a name it
+      changes is not the one asked for, with or without the interface.
     ------------------------------------------------------------------------
     """
     for reserved in RESERVED_CHARACTERS:
